@@ -7,7 +7,6 @@ Batch operation service for Kubernetes-style API
 """
 
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,25 +17,6 @@ from app.core.exceptions import ValidationException
 from app.services.kind import kind_service
 
 logger = logging.getLogger(__name__)
-
-WEWORK_DEBUG_LOG_PATH = Path("/tmp/wework-debug-1")
-
-
-def _append_wework_debug_log(message: str) -> None:
-    """Append a plain-text debug line to /tmp/wework-debug-1."""
-    try:
-        WEWORK_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        with WEWORK_DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"{timestamp} [backend] {message}\n")
-    except Exception:
-        pass
-
-
-def _mask_api_key(value: str) -> str:
-    if len(value) > 12:
-        return f"{value[:8]}...{value[-4:]}"
-    return "***" if value else "EMPTY"
 
 
 class BatchService:
@@ -99,22 +79,6 @@ class BatchService:
                             "operation": "created",
                             "success": True,
                         }
-                    )
-
-                if kind == "Model":
-                    spec = resource.get("spec", {}) or {}
-                    model_config = spec.get("modelConfig", {}) or {}
-                    env = model_config.get("env", {}) or {}
-                    api_key = str(env.get("api_key", ""))
-                    _append_wework_debug_log(
-                        f"model_apply kind={kind} name={name} namespace={namespace} "
-                        f"operation={results[-1]['operation']} "
-                        f"model={env.get('model')} "
-                        f"model_id={env.get('model_id')} "
-                        f"base_url={env.get('base_url')} "
-                        f"api_key={_mask_api_key(api_key)} "
-                        f"apiFormat={spec.get('apiFormat')} "
-                        f"protocol={spec.get('protocol')}"
                     )
 
             except Exception as e:

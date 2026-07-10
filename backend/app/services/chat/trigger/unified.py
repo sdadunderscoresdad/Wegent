@@ -17,9 +17,6 @@ Key changes from the original trigger_ai_response:
 """
 
 import logging
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException
@@ -145,33 +142,6 @@ def _task_model_override_available(
     return model_spec is not None
 
 
-WEWORK_DEBUG_LOG_PATH = Path("/tmp/wework-debug-1")
-
-
-def _append_wework_debug_log(message: str) -> None:
-    """Append a plain-text debug line to /tmp/wework-debug-1.
-
-    Also echoes the line to stderr so backend console logs capture diagnostics
-    even when the debug file is unavailable.
-    """
-    line = ""
-    try:
-        WEWORK_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        line = f"{timestamp} [backend] {message}"
-        with WEWORK_DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"{line}\n")
-    except Exception as exc:
-        try:
-            print(
-                f"[wework-debug-fallback] {line or message} (write_failed={exc})",
-                file=sys.stderr,
-                flush=True,
-            )
-        except Exception:
-            pass
-
-
 def _model_has_explicit_codex_credentials(model_config: Dict[str, Any]) -> bool:
     """Return True when the model config already carries its own endpoint credentials."""
     base_url = str(model_config.get("base_url") or "").strip()
@@ -212,22 +182,9 @@ def _build_codex_runtime_model_config(
             config["model_provider"] = str(provider_id)
         if provider_name:
             config["provider_name"] = str(provider_name)
-        _append_wework_debug_log(
-            f"build_codex_runtime_model_config requested_name={requested_name} "
-            f"resolved_model_id={config['model_id']} user_id={user_id} "
-            f"provider_id={provider_id} provider_name={provider_name} "
-            f"source=official_codex"
-        )
         return config
 
-    _append_wework_debug_log(
-        f"build_codex_runtime_model_config_entry requested_name={requested_name} "
-        f"user_id={user_id} db_present={db is not None} "
-        f"provider_id={provider_id} provider_name={provider_name}"
-    )
-
     resolved_config: Optional[Dict[str, Any]] = None
-    crd_resolution_error: Optional[str] = None
     if db is not None and user_id is not None:
         try:
             from app.services.chat.config.model_resolver import (
@@ -236,24 +193,8 @@ def _build_codex_runtime_model_config(
             )
 
             _kind, model_spec = _find_model_with_namespace(db, model_name, user_id)
-            _append_wework_debug_log(
-                f"build_codex_runtime_model_config_lookup requested_name={requested_name} "
-                f"user_id={user_id} kind_found={_kind is not None} "
-                f"spec_found={model_spec is not None} "
-                f"spec_keys={sorted(model_spec.keys()) if model_spec else None} "
-                f"kind_namespace={getattr(_kind, 'namespace', None)} "
-                f"kind_name={getattr(_kind, 'name', None)}"
-            )
             if model_spec:
                 full_config = _extract_model_config(model_spec)
-                _append_wework_debug_log(
-                    f"build_codex_runtime_model_config_extract requested_name={requested_name} "
-                    f"user_id={user_id} "
-                    f"full_config_keys={sorted(full_config.keys())} "
-                    f"raw_model_id={full_config.get('model_id')} "
-                    f"raw_base_url={full_config.get('base_url')} "
-                    f"api_key_present={bool(full_config.get('api_key'))}"
-                )
                 resolved_config = {
                     "model": "openai",
                     "model_id": str(full_config.get("model_id") or model_name),
@@ -276,19 +217,8 @@ def _build_codex_runtime_model_config(
                     resolved_config["temperature"] = full_config["temperature"]
                 if full_config.get("think_config"):
                     resolved_config["think_config"] = dict(full_config["think_config"])
-        except Exception as exc:
-            import traceback
-
-            crd_resolution_error = f"{exc}\n{traceback.format_exc()}"
-            _append_wework_debug_log(
-                f"codex_runtime_model_resolve_failed requested_name={requested_name} "
-                f"user_id={user_id} error={exc}"
-            )
-    else:
-        _append_wework_debug_log(
-            f"build_codex_runtime_model_config_no_db requested_name={requested_name} "
-            f"user_id={user_id} db_present={db is not None}"
-        )
+        except Exception:
+            pass
 
     if resolved_config is None:
         resolved_config = {
@@ -302,16 +232,6 @@ def _build_codex_runtime_model_config(
         resolved_config["model_provider"] = str(provider_id)
     if provider_name:
         resolved_config["provider_name"] = str(provider_name)
-
-    _append_wework_debug_log(
-        f"build_codex_runtime_model_config requested_name={requested_name} "
-        f"resolved_model_id={resolved_config['model_id']} user_id={user_id} "
-        f"provider_id={provider_id} provider_name={provider_name} "
-        f"has_base_url={bool(resolved_config.get('base_url'))} "
-        f"has_api_key={bool(resolved_config.get('api_key'))} "
-        f"source={'crd' if resolved_config.get('base_url') or resolved_config.get('api_key') else 'minimal'} "
-        f"crd_error={crd_resolution_error is not None}"
-    )
     return resolved_config
 
 
@@ -361,14 +281,6 @@ def _apply_user_runtime_config(
 
     has_credentials = _model_has_explicit_codex_credentials(request.model_config)
     prefer_user_config = bool(status.get("use_user_config")) and not has_credentials
-
-    _append_wework_debug_log(
-        f"apply_user_runtime_config user_id={user.id} "
-        f"has_model_credentials={has_credentials} "
-        f"user_pref_use_user_config={bool(status.get('use_user_config'))} "
-        f"decided_use_user_config={prefer_user_config} "
-        f"model_keys={sorted(request.model_config.keys())}"
-    )
 
     runtime_config = dict(request.model_config.get("runtime_config") or {})
     runtime_config[CODEX_RUNTIME] = {
