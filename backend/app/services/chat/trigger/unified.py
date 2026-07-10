@@ -17,6 +17,7 @@ Key changes from the original trigger_ai_response:
 """
 
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
@@ -148,14 +149,27 @@ WEWORK_DEBUG_LOG_PATH = Path("/tmp/wework-debug-1")
 
 
 def _append_wework_debug_log(message: str) -> None:
-    """Append a plain-text debug line to /tmp/wework-debug-1."""
+    """Append a plain-text debug line to /tmp/wework-debug-1.
+
+    Also echoes the line to stderr so backend console logs capture diagnostics
+    even when the debug file is unavailable.
+    """
+    line = ""
     try:
         WEWORK_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"{timestamp} [backend] {message}"
         with WEWORK_DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"{timestamp} [backend] {message}\n")
-    except Exception:
-        pass
+            handle.write(f"{line}\n")
+    except Exception as exc:
+        try:
+            print(
+                f"[wework-debug-fallback] {line or message} (write_failed={exc})",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception:
+            pass
 
 
 def _model_has_explicit_codex_credentials(model_config: Dict[str, Any]) -> bool:
@@ -166,28 +180,139 @@ def _model_has_explicit_codex_credentials(model_config: Dict[str, Any]) -> bool:
 
 
 def _build_codex_runtime_model_config(
-    model_name: str, model_options: Optional[Dict[str, Any]] = None
+    model_name: str,
+    model_options: Optional[Dict[str, Any]] = None,
+    db: Optional["Session"] = None,
+    user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Build a minimal Codex-compatible model config for Wework runtime models."""
-    model_id = (
-        CODEX_RUNTIME_MODEL_ID if model_name == CODEX_RUNTIME_MODEL_NAME else model_name
-    )
-    config: Dict[str, Any] = {
-        "model": "openai",
-        "model_id": model_id,
-        "api_format": "responses",
-        "protocol": "openai-responses",
-    }
+    """Build a Codex-compatible model config for Wework runtime models.
+
+    When the requested name matches a Wegent Model CRD, the full model config
+    (model_id, base_url, api_key, default_headers, etc.) is extracted from the
+    CRD so that third-party Codex providers receive the same credentials the
+    Wegent web frontend would use. Otherwise a minimal runtime config is built
+    for runtime-only or official Codex models.
+    """
+    requested_name = model_name
     options = model_options or {}
     provider_id = options.get("codexProviderId") or options.get("codex_model_provider")
     provider_name = options.get("codexProviderName") or options.get(
         "codex_provider_name"
     )
+
+    # Official Codex runtime model: keep the existing minimal config.
+    if model_name == CODEX_RUNTIME_MODEL_NAME:
+        config: Dict[str, Any] = {
+            "model": "openai",
+            "model_id": CODEX_RUNTIME_MODEL_ID,
+            "api_format": "responses",
+            "protocol": "openai-responses",
+        }
+        if provider_id:
+            config["model_provider"] = str(provider_id)
+        if provider_name:
+            config["provider_name"] = str(provider_name)
+        _append_wework_debug_log(
+            f"build_codex_runtime_model_config requested_name={requested_name} "
+            f"resolved_model_id={config['model_id']} user_id={user_id} "
+            f"provider_id={provider_id} provider_name={provider_name} "
+            f"source=official_codex"
+        )
+        return config
+
+    _append_wework_debug_log(
+        f"build_codex_runtime_model_config_entry requested_name={requested_name} "
+        f"user_id={user_id} db_present={db is not None} "
+        f"provider_id={provider_id} provider_name={provider_name}"
+    )
+
+    resolved_config: Optional[Dict[str, Any]] = None
+    crd_resolution_error: Optional[str] = None
+    if db is not None and user_id is not None:
+        try:
+            from app.services.chat.config.model_resolver import (
+                _extract_model_config,
+                _find_model_with_namespace,
+            )
+
+            _kind, model_spec = _find_model_with_namespace(db, model_name, user_id)
+            _append_wework_debug_log(
+                f"build_codex_runtime_model_config_lookup requested_name={requested_name} "
+                f"user_id={user_id} kind_found={_kind is not None} "
+                f"spec_found={model_spec is not None} "
+                f"spec_keys={sorted(model_spec.keys()) if model_spec else None} "
+                f"kind_namespace={getattr(_kind, 'namespace', None)} "
+                f"kind_name={getattr(_kind, 'name', None)}"
+            )
+            if model_spec:
+                full_config = _extract_model_config(model_spec)
+                _append_wework_debug_log(
+                    f"build_codex_runtime_model_config_extract requested_name={requested_name} "
+                    f"user_id={user_id} "
+                    f"full_config_keys={sorted(full_config.keys())} "
+                    f"raw_model_id={full_config.get('model_id')} "
+                    f"raw_base_url={full_config.get('base_url')} "
+                    f"api_key_present={bool(full_config.get('api_key'))}"
+                )
+                resolved_config = {
+                    "model": "openai",
+                    "model_id": str(full_config.get("model_id") or model_name),
+                    "api_format": "responses",
+                    "protocol": "openai-responses",
+                    "base_url": str(full_config.get("base_url") or "").strip(),
+                    "api_key": str(full_config.get("api_key") or "").strip(),
+                }
+                if full_config.get("default_headers"):
+                    resolved_config["default_headers"] = dict(
+                        full_config["default_headers"]
+                    )
+                if full_config.get("context_window") is not None:
+                    resolved_config["context_window"] = full_config["context_window"]
+                if full_config.get("max_output_tokens") is not None:
+                    resolved_config["max_output_tokens"] = full_config[
+                        "max_output_tokens"
+                    ]
+                if full_config.get("temperature") is not None:
+                    resolved_config["temperature"] = full_config["temperature"]
+                if full_config.get("think_config"):
+                    resolved_config["think_config"] = dict(full_config["think_config"])
+        except Exception as exc:
+            import traceback
+
+            crd_resolution_error = f"{exc}\n{traceback.format_exc()}"
+            _append_wework_debug_log(
+                f"codex_runtime_model_resolve_failed requested_name={requested_name} "
+                f"user_id={user_id} error={exc}"
+            )
+    else:
+        _append_wework_debug_log(
+            f"build_codex_runtime_model_config_no_db requested_name={requested_name} "
+            f"user_id={user_id} db_present={db is not None}"
+        )
+
+    if resolved_config is None:
+        resolved_config = {
+            "model": "openai",
+            "model_id": model_name,
+            "api_format": "responses",
+            "protocol": "openai-responses",
+        }
+
     if provider_id:
-        config["model_provider"] = str(provider_id)
+        resolved_config["model_provider"] = str(provider_id)
     if provider_name:
-        config["provider_name"] = str(provider_name)
-    return config
+        resolved_config["provider_name"] = str(provider_name)
+
+    _append_wework_debug_log(
+        f"build_codex_runtime_model_config requested_name={requested_name} "
+        f"resolved_model_id={resolved_config['model_id']} user_id={user_id} "
+        f"provider_id={provider_id} provider_name={provider_name} "
+        f"has_base_url={bool(resolved_config.get('base_url'))} "
+        f"has_api_key={bool(resolved_config.get('api_key'))} "
+        f"source={'crd' if resolved_config.get('base_url') or resolved_config.get('api_key') else 'minimal'} "
+        f"crd_error={crd_resolution_error is not None}"
+    )
+    return resolved_config
 
 
 def _is_codex_model_config(model_config: Dict[str, Any]) -> bool:
@@ -498,7 +623,9 @@ async def build_execution_request(
                 and (override_model_type == RUNTIME_MODEL_TYPE)
             ):
                 runtime_model_config = _build_codex_runtime_model_config(
-                    override_model_name
+                    override_model_name,
+                    db=db,
+                    user_id=user.id,
                 )
                 logger.info(
                     "[build_execution_request] Using runtime model config: "

@@ -3358,6 +3358,14 @@ def _build_runtime_execution_request(
 ):
     """Build an executor request from CRD config without persisting Task rows."""
 
+    from app.services.chat.trigger.unified import _append_wework_debug_log
+
+    _append_wework_debug_log(
+        f"build_runtime_execution_request_entry user_id={user_id} "
+        f"request_model_id={request.model_id} runtime={request.runtime} "
+        f"model_type={request.model_type}"
+    )
+
     from app.services.execution import TaskRequestBuilder
 
     user = _get_user(db, user_id)
@@ -3379,7 +3387,9 @@ def _build_runtime_execution_request(
     )
     payload = _runtime_execution_payload(request)
     runtime_model_config, override_model_name, force_override = _runtime_model_override(
-        request
+        db,
+        user_id,
+        request,
     )
     execution_request = TaskRequestBuilder(db).build(
         subtask=subtask,
@@ -3540,26 +3550,42 @@ def _request_execution_workspace(
 
 
 def _runtime_model_override(
+    db: Session,
+    user_id: int,
     request: RuntimeTaskCreateRequest,
 ) -> tuple[Optional[dict[str, Any]], Optional[str], bool]:
+    from app.services.chat.trigger.unified import _append_wework_debug_log
+
+    _append_wework_debug_log(
+        f"runtime_model_override_entry request_model_id={request.model_id} "
+        f"runtime={request.runtime} model_type={request.model_type} "
+        f"user_id={user_id} has_db={db is not None}"
+    )
     if not request.model_id:
         return None, None, False
     if request.runtime == "codex" and request.model_type == RUNTIME_MODEL_TYPE:
         from app.services.chat.trigger.unified import (
-            _append_wework_debug_log,
             _build_codex_runtime_model_config,
         )
 
         config = _build_codex_runtime_model_config(
-            request.model_id, dict(request.model_options)
+            request.model_id,
+            dict(request.model_options),
+            db=db,
+            user_id=user_id,
         )
         _append_wework_debug_log(
             f"runtime_model_override runtime={request.runtime} "
-            f"model_id={request.model_id} model_type={request.model_type} "
+            f"request_model_id={request.model_id} model_type={request.model_type} "
+            f"resolved_model_id={config.get('model_id')} "
             f"model_options_keys={sorted(request.model_options.keys())} "
             f"config_keys={sorted(config.keys())}"
         )
         return config, None, False
+    _append_wework_debug_log(
+        f"runtime_model_override_fallback request_model_id={request.model_id} "
+        f"runtime={request.runtime} model_type={request.model_type}"
+    )
     return None, request.model_id, True
 
 
