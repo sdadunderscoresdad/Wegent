@@ -3379,9 +3379,7 @@ def _build_runtime_execution_request(
     )
     payload = _runtime_execution_payload(request)
     runtime_model_config, override_model_name, force_override = _runtime_model_override(
-        db,
-        user_id,
-        request,
+        request
     )
     execution_request = TaskRequestBuilder(db).build(
         subtask=subtask,
@@ -3542,8 +3540,6 @@ def _request_execution_workspace(
 
 
 def _runtime_model_override(
-    db: Session,
-    user_id: int,
     request: RuntimeTaskCreateRequest,
 ) -> tuple[Optional[dict[str, Any]], Optional[str], bool]:
     if not request.model_id:
@@ -3555,15 +3551,11 @@ def _runtime_model_override(
         )
 
         config = _build_codex_runtime_model_config(
-            request.model_id,
-            dict(request.model_options),
-            db=db,
-            user_id=user_id,
+            request.model_id, dict(request.model_options)
         )
         _append_wework_debug_log(
             f"runtime_model_override runtime={request.runtime} "
-            f"request_model_id={request.model_id} model_type={request.model_type} "
-            f"resolved_model_id={config.get('model_id')} "
+            f"model_id={request.model_id} model_type={request.model_type} "
             f"model_options_keys={sorted(request.model_options.keys())} "
             f"config_keys={sorted(config.keys())}"
         )
