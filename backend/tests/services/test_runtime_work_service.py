@@ -3532,3 +3532,107 @@ async def test_runtime_transfer_direct_hosts_filters_loopback_for_cross_device(
         )
         == []
     )
+
+
+def _codex_provider_model(
+    test_db,
+    user_id: int,
+    *,
+    name: str,
+    api_model_id: str,
+) -> Kind:
+    """Create a user Model CRD whose CRD name differs from its API model_id."""
+    model_crd = {
+        "apiVersion": "agent.wecode.io/v1",
+        "kind": "Model",
+        "metadata": {"name": name, "namespace": "default"},
+        "spec": {
+            "protocol": "openai-responses",
+            "apiFormat": "responses",
+            "modelConfig": {
+                "env": {
+                    "model": "openai",
+                    "model_id": api_model_id,
+                    "base_url": "https://api.example.com/v1",
+                    "api_key": "sk-test",
+                }
+            },
+        },
+        "status": {"state": "Available"},
+    }
+    kind = Kind(
+        user_id=user_id,
+        kind="Model",
+        name=name,
+        namespace="default",
+        json=model_crd,
+        is_active=True,
+    )
+    test_db.add(kind)
+    test_db.commit()
+    test_db.refresh(kind)
+    return kind
+
+
+def test_runtime_model_override_resolves_crd_name_to_env_model_id(
+    test_db,
+    test_user,
+):
+    from app.schemas.runtime_work import RuntimeTaskCreateRequest
+    from app.services import runtime_work_service
+
+    _codex_provider_model(
+        test_db,
+        test_user.id,
+        name="doubaofortest",
+        api_model_id="deepseek-chat",
+    )
+    request = RuntimeTaskCreateRequest(
+        teamId=1,
+        runtime="codex",
+        message="hello",
+        modelId="doubaofortest",
+        modelType=runtime_work_service.RUNTIME_MODEL_TYPE,
+    )
+
+    config, override_model_name, force_override = (
+        runtime_work_service._runtime_model_override(
+            db=test_db,
+            user_id=test_user.id,
+            request=request,
+        )
+    )
+
+    assert config is not None
+    assert config["model_id"] == "deepseek-chat"
+    assert override_model_name is None
+    assert force_override is False
+
+
+def test_runtime_model_override_falls_back_to_request_model_id_for_unknown_model(
+    test_db,
+    test_user,
+):
+    from app.schemas.runtime_work import RuntimeTaskCreateRequest
+    from app.services import runtime_work_service
+
+    request = RuntimeTaskCreateRequest(
+        teamId=1,
+        runtime="codex",
+        message="hello",
+        modelId="unknown-model",
+        modelType=runtime_work_service.RUNTIME_MODEL_TYPE,
+    )
+
+    config, override_model_name, force_override = (
+        runtime_work_service._runtime_model_override(
+            db=test_db,
+            user_id=test_user.id,
+            request=request,
+        )
+    )
+
+    assert config is not None
+    assert config["model_id"] == "unknown-model"
+    assert override_model_name is None
+    assert force_override is False

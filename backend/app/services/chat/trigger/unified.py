@@ -166,12 +166,37 @@ def _model_has_explicit_codex_credentials(model_config: Dict[str, Any]) -> bool:
 
 
 def _build_codex_runtime_model_config(
-    model_name: str, model_options: Optional[Dict[str, Any]] = None
+    model_name: str,
+    model_options: Optional[Dict[str, Any]] = None,
+    db: Optional["Session"] = None,
+    user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build a minimal Codex-compatible model config for Wework runtime models."""
+    requested_name = model_name
     model_id = (
         CODEX_RUNTIME_MODEL_ID if model_name == CODEX_RUNTIME_MODEL_NAME else model_name
     )
+    if (
+        db is not None
+        and user_id is not None
+        and model_name != CODEX_RUNTIME_MODEL_NAME
+    ):
+        try:
+            from app.services.chat.config.model_resolver import (
+                _find_model_with_namespace,
+            )
+
+            _kind, model_spec = _find_model_with_namespace(db, model_name, user_id)
+            if model_spec:
+                env = (model_spec.get("modelConfig") or {}).get("env") or {}
+                actual_model_id = env.get("model_id")
+                if actual_model_id:
+                    model_id = str(actual_model_id)
+        except Exception as exc:
+            _append_wework_debug_log(
+                f"codex_runtime_model_resolve_failed requested_name={requested_name} "
+                f"user_id={user_id} error={exc}"
+            )
     config: Dict[str, Any] = {
         "model": "openai",
         "model_id": model_id,
@@ -187,6 +212,11 @@ def _build_codex_runtime_model_config(
         config["model_provider"] = str(provider_id)
     if provider_name:
         config["provider_name"] = str(provider_name)
+    _append_wework_debug_log(
+        f"build_codex_runtime_model_config requested_name={requested_name} "
+        f"resolved_model_id={model_id} user_id={user_id} "
+        f"provider_id={provider_id} provider_name={provider_name}"
+    )
     return config
 
 
@@ -498,7 +528,9 @@ async def build_execution_request(
                 and (override_model_type == RUNTIME_MODEL_TYPE)
             ):
                 runtime_model_config = _build_codex_runtime_model_config(
-                    override_model_name
+                    override_model_name,
+                    db=db,
+                    user_id=user.id,
                 )
                 logger.info(
                     "[build_execution_request] Using runtime model config: "
