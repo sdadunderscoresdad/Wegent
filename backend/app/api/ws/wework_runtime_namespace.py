@@ -123,6 +123,13 @@ class WeworkRuntimeNamespace(socketio.AsyncNamespace):
         if params is None:
             params = data.get("payload", {})
 
+        from app.services.chat.trigger.unified import _append_wework_debug_log
+
+        _append_wework_debug_log(
+            f"wework_runtime_request user_id={user_id} method={method} "
+            f"device_id={device_id} params_keys={sorted(params.keys()) if isinstance(params, dict) else 'invalid'}"
+        )
+
         if not method:
             return ipc_error(data, "bad_request", "method is required", request_id)
         if not device_id:

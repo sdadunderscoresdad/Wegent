@@ -17,6 +17,8 @@ Key changes from the original trigger_ai_response:
 """
 
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException
@@ -142,17 +144,50 @@ def _task_model_override_available(
     return model_spec is not None
 
 
-def _build_codex_runtime_model_config(model_name: str) -> Dict[str, Any]:
+WEWORK_DEBUG_LOG_PATH = Path("/tmp/wework-debug-1")
+
+
+def _append_wework_debug_log(message: str) -> None:
+    """Append a plain-text debug line to /tmp/wework-debug-1."""
+    try:
+        WEWORK_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with WEWORK_DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} [backend] {message}\n")
+    except Exception:
+        pass
+
+
+def _model_has_explicit_codex_credentials(model_config: Dict[str, Any]) -> bool:
+    """Return True when the model config already carries its own endpoint credentials."""
+    base_url = str(model_config.get("base_url") or "").strip()
+    api_key = str(model_config.get("api_key") or "").strip()
+    return bool(base_url) and bool(api_key)
+
+
+def _build_codex_runtime_model_config(
+    model_name: str, model_options: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Build a minimal Codex-compatible model config for Wework runtime models."""
     model_id = (
         CODEX_RUNTIME_MODEL_ID if model_name == CODEX_RUNTIME_MODEL_NAME else model_name
     )
-    return {
+    config: Dict[str, Any] = {
         "model": "openai",
         "model_id": model_id,
         "api_format": "responses",
         "protocol": "openai-responses",
     }
+    options = model_options or {}
+    provider_id = options.get("codexProviderId") or options.get("codex_model_provider")
+    provider_name = options.get("codexProviderName") or options.get(
+        "codex_provider_name"
+    )
+    if provider_id:
+        config["model_provider"] = str(provider_id)
+    if provider_name:
+        config["provider_name"] = str(provider_name)
+    return config
 
 
 def _is_codex_model_config(model_config: Dict[str, Any]) -> bool:
@@ -175,7 +210,14 @@ def _apply_user_runtime_config(
     request: "ExecutionRequest",
     user: User,
 ) -> Optional[Dict[str, Any]]:
-    """Attach user runtime config status to model_config for executor routing."""
+    """Attach user runtime config status to model_config for executor routing.
+
+    If the selected model already carries explicit endpoint credentials (base_url +
+    api_key), keep the user's Codex auth.json synced to the device for convenience
+    but do not override the request with use_user_config. This lets Wegent-managed
+    third-party Codex models use their own credentials instead of being shadowed by
+    the user's personal auth.json.
+    """
     if not _is_codex_model_config(request.model_config):
         return None
 
@@ -192,9 +234,20 @@ def _apply_user_runtime_config(
         )
         return None
 
+    has_credentials = _model_has_explicit_codex_credentials(request.model_config)
+    prefer_user_config = bool(status.get("use_user_config")) and not has_credentials
+
+    _append_wework_debug_log(
+        f"apply_user_runtime_config user_id={user.id} "
+        f"has_model_credentials={has_credentials} "
+        f"user_pref_use_user_config={bool(status.get('use_user_config'))} "
+        f"decided_use_user_config={prefer_user_config} "
+        f"model_keys={sorted(request.model_config.keys())}"
+    )
+
     runtime_config = dict(request.model_config.get("runtime_config") or {})
     runtime_config[CODEX_RUNTIME] = {
-        "use_user_config": bool(status.get("use_user_config")),
+        "use_user_config": prefer_user_config,
         "configured": bool(status.get("configured")),
         "target_path": status.get("target_path"),
         "auth_json_sha256": status.get("auth_json_sha256"),

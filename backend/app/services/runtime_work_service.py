@@ -3396,6 +3396,29 @@ def _build_runtime_execution_request(
     _apply_runtime_task_target(execution_request, target)
     _apply_runtime_model_options(db, execution_request, user, payload)
     _apply_runtime_attachments(db, execution_request, user_id, request.attachment_ids)
+
+    from app.services.chat.trigger.unified import _append_wework_debug_log
+
+    model_config = execution_request.model_config or {}
+    runtime_config = model_config.get("runtime_config") or {}
+    codex_runtime = runtime_config.get("codex") or {}
+    api_key_value = str(model_config.get("api_key") or "")
+    masked_key = (
+        f"{api_key_value[:8]}...{api_key_value[-4:]}"
+        if len(api_key_value) > 12
+        else ("***" if api_key_value else "EMPTY")
+    )
+    _append_wework_debug_log(
+        f"build_runtime_execution_request task_id={execution_request.task_id} "
+        f"model_id={model_config.get('model_id')} "
+        f"base_url={model_config.get('base_url')} "
+        f"api_key={masked_key} "
+        f"model_provider={model_config.get('model_provider')} "
+        f"provider_name={model_config.get('provider_name')} "
+        f"default_headers_keys={sorted((model_config.get('default_headers') or {}).keys())} "
+        f"use_user_config={codex_runtime.get('use_user_config')} "
+        f"model_keys={sorted(model_config.keys())}"
+    )
     return execution_request
 
 
@@ -3522,9 +3545,21 @@ def _runtime_model_override(
     if not request.model_id:
         return None, None, False
     if request.runtime == "codex" and request.model_type == RUNTIME_MODEL_TYPE:
-        from app.services.chat.trigger.unified import _build_codex_runtime_model_config
+        from app.services.chat.trigger.unified import (
+            _append_wework_debug_log,
+            _build_codex_runtime_model_config,
+        )
 
-        return _build_codex_runtime_model_config(request.model_id), None, False
+        config = _build_codex_runtime_model_config(
+            request.model_id, dict(request.model_options)
+        )
+        _append_wework_debug_log(
+            f"runtime_model_override runtime={request.runtime} "
+            f"model_id={request.model_id} model_type={request.model_type} "
+            f"model_options_keys={sorted(request.model_options.keys())} "
+            f"config_keys={sorted(config.keys())}"
+        )
+        return config, None, False
     return None, request.model_id, True
 
 
