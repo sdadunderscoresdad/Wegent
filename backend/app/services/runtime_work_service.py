@@ -1060,6 +1060,29 @@ async def create_runtime_task(
         "title": _runtime_task_title(request),
         "executionRequest": execution_request.to_dict(),
     }
+    execution_request_dict = (
+        execution_request.to_dict()
+        if callable(getattr(execution_request, "to_dict", None))
+        else {}
+    )
+    _wework_debug_log(
+        "create_runtime_task.payload",
+        {
+            "model_id": (
+                getattr(execution_request, "model_config", {}).get("model_id")
+                if hasattr(execution_request, "model_config")
+                else None
+            ),
+            "model_config": (
+                dict(getattr(execution_request, "model_config", {}))
+                if hasattr(execution_request, "model_config")
+                else None
+            ),
+            "payload_model_id": (execution_request_dict.get("model_config") or {}).get(
+                "model_id"
+            ),
+        },
+    )
     if request.local_task_id:
         payload["taskId"] = request.local_task_id
     try:
@@ -3397,6 +3420,23 @@ def _build_runtime_execution_request(
     _apply_runtime_task_target(execution_request, target)
     _apply_runtime_model_options(db, execution_request, user, payload)
     _apply_runtime_attachments(db, execution_request, user_id, request.attachment_ids)
+    _wework_debug_log(
+        "_build_runtime_execution_request.result",
+        {
+            "model_id": (
+                getattr(execution_request, "model_config", {}).get("model_id")
+                if hasattr(execution_request, "model_config")
+                else None
+            ),
+            "override_model_name": override_model_name,
+            "force_override": force_override,
+            "model_config": (
+                dict(getattr(execution_request, "model_config", {}))
+                if hasattr(execution_request, "model_config")
+                else None
+            ),
+        },
+    )
     return execution_request
 
 
@@ -3539,6 +3579,21 @@ def _runtime_model_override(
     return None, request.model_id, True
 
 
+def _wework_debug_log(label: str, data: dict) -> None:
+    """Append a structured debug line to /tmp/weworkDebug for tracing model_id."""
+    try:
+        entry = {
+            "ts": datetime.utcnow().isoformat(),
+            "source": "backend-runtime-work-service",
+            "label": label,
+            "data": data,
+        }
+        with open("/tmp/weworkDebug", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 def resolve_codex_runtime_model_config(
     db: Session,
     user_id: int,
@@ -3553,12 +3608,21 @@ def resolve_codex_runtime_model_config(
     """
     from app.services.chat.trigger.unified import _build_codex_runtime_model_config
 
-    return _build_codex_runtime_model_config(
+    config = _build_codex_runtime_model_config(
         model_id,
         model_options or {},
         db=db,
         user_id=user_id,
     )
+    _wework_debug_log(
+        "resolve_codex_runtime_model_config.result",
+        {
+            "input_model_id": model_id,
+            "output_model_id": config.get("model_id"),
+            "config": config,
+        },
+    )
+    return config
 
 
 def _apply_runtime_task_target(

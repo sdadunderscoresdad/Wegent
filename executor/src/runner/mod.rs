@@ -4,6 +4,21 @@
 
 use std::{future::Future, pin::Pin};
 
+fn wework_debug_log(label: &str, data: serde_json::Value) {
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "source": "executor-runner",
+        "label": label,
+        "data": data,
+    });
+    if let Ok(line) = serde_json::to_string(&entry) {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/weworkDebug") {
+            use std::io::Write;
+            let _ = writeln!(file, "{}", line);
+        }
+    }
+}
+
 use crate::{
     emitter::{EventEnvelope, ResponsesEventBuilder},
     logging::{log_executor_event, task_fields},
@@ -67,6 +82,15 @@ where
         let engine = self.engine.clone();
         let sink = self.sink.clone();
         Box::pin(async move {
+            wework_debug_log(
+                "runner.submit.request",
+                serde_json::json!({
+                    "task_id": request.task_id,
+                    "subtask_id": request.subtask_id,
+                    "model_id": request.model_config.get("model_id"),
+                    "model_config": request.model_config,
+                }),
+            );
             let builder = event_builder(&request);
             let fields = task_fields(&request.task_id, &request.subtask_id);
             log_executor_event("sending response.created callback", &fields);

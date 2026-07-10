@@ -589,6 +589,26 @@ async def create_runtime_task_endpoint(
     )
 
 
+import json
+import os
+from datetime import datetime
+
+
+def _wework_debug_log(label: str, data: dict) -> None:
+    """Append a structured debug line to /tmp/weworkDebug for tracing model_id."""
+    try:
+        entry = {
+            "ts": datetime.utcnow().isoformat(),
+            "source": "backend",
+            "label": label,
+            "data": data,
+        }
+        with open("/tmp/weworkDebug", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 @router.post(
     "/resolve-model-config",
     response_model=RuntimeWorkResolveModelConfigResponse,
@@ -605,11 +625,23 @@ def resolve_runtime_model_config_endpoint(
     the CRD metadata.name for cloud-configured models. It uses this endpoint to
     fetch the real provider model_id, base_url, api_key and other settings.
     """
+    _wework_debug_log(
+        "resolve-model-config.request",
+        {
+            "model_id": request.model_id,
+            "model_type": request.model_type,
+            "model_options": dict(request.model_options),
+        },
+    )
     model_config = runtime_work_service.resolve_codex_runtime_model_config(
         db=db,
         user_id=current_user.id,
         model_id=request.model_id,
         model_options=dict(request.model_options),
+    )
+    _wework_debug_log(
+        "resolve-model-config.response",
+        {"model_id": model_config.get("model_id"), "model_config": model_config},
     )
     return {"model_config": model_config}
 
