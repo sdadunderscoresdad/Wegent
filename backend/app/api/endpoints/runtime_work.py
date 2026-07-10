@@ -4,6 +4,10 @@
 
 """Runtime-native local work endpoints for Wework."""
 
+import json
+import os
+from datetime import datetime
+
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -589,11 +593,6 @@ async def create_runtime_task_endpoint(
     )
 
 
-import json
-import os
-from datetime import datetime
-
-
 def _wework_debug_log(label: str, data: dict) -> None:
     """Append a structured debug line to /tmp/weworkDebug for tracing model_id."""
     try:
@@ -643,7 +642,7 @@ def resolve_runtime_model_config_endpoint(
         "resolve-model-config.response",
         {"model_id": model_config.get("model_id"), "model_config": model_config},
     )
-    return {"model_config": model_config}
+    return {"resolved_model_config": model_config}
 
 
 @router.post(
