@@ -84,7 +84,6 @@ import { getLocalProxyUrl } from '@/features/model-settings/localProxySettings'
 import { createLocalChatStream } from './localChatStream'
 import { createLocalAttachmentApi } from './localAttachments'
 import { LOCAL_USER, saveLocalUserPreferences } from './localSession'
-import { weworkDebugLog } from '@/lib/weworkDebugLog'
 import type { KeybindingOverride } from '@/lib/keybindings'
 
 const LOCAL_DEVICE_ID = 'local-device'
@@ -948,13 +947,6 @@ function buildLocalRuntimeExecutionRequest(
     localRuntimeModelConfig(input.modelId, input.modelOptions, input.resolvedModelConfig),
     input.modelOptions
   )
-  weworkDebugLog('buildLocalRuntimeExecutionRequest.modelConfig', {
-    taskId,
-    inputModelId: input.modelId,
-    resolvedModelId: input.resolvedModelConfig?.model_id,
-    outputModelId: modelConfig.model_id,
-    modelConfig,
-  })
   const reasoning = runtimeReasoning(input.modelOptions)
   const collaborationMode = runtimeCollaborationMode(input.modelOptions)
   const skillNames = (input.additionalSkills ?? []).map(skillName).filter(isNonEmptyString)
@@ -1150,12 +1142,6 @@ async function createLocalRuntimeTaskPayload(
         normalizedData.modelType,
         normalizedData.modelOptions
       )
-      weworkDebugLog('createLocalRuntimeTaskPayload.resolvedModelConfig', {
-        modelId: normalizedData.modelId,
-        modelType: normalizedData.modelType,
-        resolvedModelId: resolvedModelConfig?.model_id,
-        resolvedModelConfig,
-      })
     } catch (error) {
       console.error('[Wework] Failed to resolve cloud model config', {
         modelId: normalizedData.modelId,
@@ -1164,12 +1150,6 @@ async function createLocalRuntimeTaskPayload(
       })
     }
   }
-
-  weworkDebugLog('createLocalRuntimeTaskPayload.beforeBuild', {
-    modelId: normalizedData.modelId,
-    modelType: normalizedData.modelType,
-    resolvedModelId: resolvedModelConfig?.model_id,
-  })
 
   return {
     ...payload,
@@ -1242,12 +1222,6 @@ async function createLocalRuntimeSendPayload(
         normalizedData.modelType,
         normalizedData.modelOptions
       )
-      weworkDebugLog('createLocalRuntimeSendPayload.resolvedModelConfig', {
-        modelId: normalizedData.modelId,
-        modelType: normalizedData.modelType,
-        resolvedModelId: resolvedModelConfig?.model_id,
-        resolvedModelConfig,
-      })
     } catch (error) {
       console.error('[Wework] Failed to resolve cloud model config for send', {
         modelId: normalizedData.modelId,
@@ -1256,12 +1230,6 @@ async function createLocalRuntimeSendPayload(
       })
     }
   }
-
-  weworkDebugLog('createLocalRuntimeSendPayload.beforeBuild', {
-    modelId: normalizedData.modelId,
-    modelType: normalizedData.modelType,
-    resolvedModelId: resolvedModelConfig?.model_id,
-  })
 
   if (normalizedData.requestUserInputResponse || normalizedData.request_user_input_response) {
     const payload = { ...normalizedData } as Record<string, unknown>

@@ -219,35 +219,6 @@ fn open_app_log_directory(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-#[cfg(desktop)]
-#[tauri::command]
-fn write_debug_log(label: String, data: serde_json::Value) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let entry = serde_json::json!({
-        "ts": now,
-        "source": "wework-frontend",
-        "label": label,
-        "data": data,
-    });
-    if let Ok(line) = serde_json::to_string(&entry) {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/weworkDebug")
-        {
-            use std::io::Write;
-            let _ = writeln!(file, "{}", line);
-        }
-    }
-}
-
-#[cfg(not(desktop))]
-#[tauri::command]
-fn write_debug_log(_label: String, _data: serde_json::Value) {}
-
 #[cfg(not(desktop))]
 #[tauri::command]
 fn get_app_log_directory(_app: tauri::AppHandle) -> Result<String, String> {
@@ -2934,7 +2905,6 @@ pub fn run() {
             get_app_preferences,
             close_main_window_to_tray,
             open_app_log_directory,
-            write_debug_log,
             get_wework_process_snapshot,
             open_main_webview_devtools,
             install_wework_cli,
