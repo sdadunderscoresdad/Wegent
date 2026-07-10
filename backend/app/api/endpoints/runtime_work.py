@@ -43,6 +43,8 @@ from app.schemas.runtime_work import (
     RuntimeTranscriptRequest,
     RuntimeTranscriptResponse,
     RuntimeWorkListResponse,
+    RuntimeWorkResolveModelConfigRequest,
+    RuntimeWorkResolveModelConfigResponse,
     RuntimeWorkSearchRequest,
     RuntimeWorkSearchResponse,
     RuntimeWorkspaceOpenRequest,
@@ -585,6 +587,31 @@ async def create_runtime_task_endpoint(
         user_id=current_user.id,
         request=request,
     )
+
+
+@router.post(
+    "/resolve-model-config",
+    response_model=RuntimeWorkResolveModelConfigResponse,
+    response_model_by_alias=True,
+)
+def resolve_runtime_model_config_endpoint(
+    request: RuntimeWorkResolveModelConfigRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resolve a Wegent Model CRD name to a Codex-compatible model config.
+
+    The WeWork desktop client builds execution requests locally and only knows
+    the CRD metadata.name for cloud-configured models. It uses this endpoint to
+    fetch the real provider model_id, base_url, api_key and other settings.
+    """
+    model_config = runtime_work_service.resolve_codex_runtime_model_config(
+        db=db,
+        user_id=current_user.id,
+        model_id=request.model_id,
+        model_options=dict(request.model_options),
+    )
+    return {"model_config": model_config}
 
 
 @router.post(

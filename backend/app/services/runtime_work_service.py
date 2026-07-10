@@ -3539,6 +3539,28 @@ def _runtime_model_override(
     return None, request.model_id, True
 
 
+def resolve_codex_runtime_model_config(
+    db: Session,
+    user_id: int,
+    model_id: str,
+    model_options: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Resolve a Wegent Model CRD name to a Codex-compatible model config.
+
+    This is used by the WeWork desktop client when it builds execution requests
+    locally: the desktop only knows the CRD metadata.name, so it asks the backend
+    to resolve the real provider model_id, base_url, api_key and other settings.
+    """
+    from app.services.chat.trigger.unified import _build_codex_runtime_model_config
+
+    return _build_codex_runtime_model_config(
+        model_id,
+        model_options or {},
+        db=db,
+        user_id=user_id,
+    )
+
+
 def _apply_runtime_task_target(
     execution_request,
     target: RuntimeTaskTarget,
