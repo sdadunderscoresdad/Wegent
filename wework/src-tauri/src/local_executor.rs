@@ -47,7 +47,11 @@ const LOCAL_EXECUTOR_SIGNAL_AUDIT_FILE_NAME: &str = "wework-executor-signal-audi
 const LOCAL_EXECUTOR_RUNTIME_DIR_NAME: &str = "app-runtime";
 const LOCAL_EXECUTOR_LOG_TAIL_BYTES: u64 = 200 * 1024;
 const LOCAL_EXECUTOR_LOG_TAIL_LINES: usize = 20;
-const LOCAL_EXECUTOR_READY_TIMEOUT_SECS: u64 = if cfg!(debug_assertions) { 60 } else { 10 };
+const LOCAL_EXECUTOR_READY_TIMEOUT_SECS: u64 = if cfg!(debug_assertions) {
+    if cfg!(windows) { 180 } else { 60 }
+} else {
+    10
+};
 const LOCAL_EXECUTOR_PROCESS_GROUP_GRACE_MS: u64 = 500;
 const LOCAL_EXECUTOR_PROCESS_GROUP_POLL_MS: u64 = 20;
 const LOCAL_EXECUTOR_REQUEST_TIMEOUT_SECONDS: u64 = 60;
@@ -402,7 +406,12 @@ pub struct CodexHomeMigrationStatus {
 #[serde(rename_all = "camelCase")]
 pub struct CodexHomeInitializeOptions {
     migrate_native_home: bool,
+    #[serde(default = "default_remote_apps_enabled")]
     remote_apps_enabled: bool,
+}
+
+fn default_remote_apps_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -2127,7 +2136,7 @@ pub async fn local_executor_migrate_native_codex_home() -> Result<CodexHomeMigra
 {
     local_executor_initialize_codex_home(CodexHomeInitializeOptions {
         migrate_native_home: true,
-        remote_apps_enabled: false,
+        remote_apps_enabled: true,
     })
     .await
 }
@@ -2323,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_local_config_remote_apps_defaults_to_disabled() {
+    fn codex_local_config_remote_apps_reports_missing_or_false_as_disabled() {
         assert!(!read_remote_apps_enabled_from_config(""));
         assert!(!read_remote_apps_enabled_from_config("[features]\n"));
         assert!(!read_remote_apps_enabled_from_config(
@@ -2332,6 +2341,14 @@ mod tests {
         assert!(!read_remote_apps_enabled_from_config(
             "[other]\napps = true\n"
         ));
+    }
+
+    #[test]
+    fn codex_home_initialization_defaults_remote_apps_to_enabled() {
+        let options: CodexHomeInitializeOptions =
+            serde_json::from_value(serde_json::json!({ "migrateNativeHome": true })).unwrap();
+
+        assert!(options.remote_apps_enabled);
     }
 
     #[test]
@@ -2410,9 +2427,9 @@ shell_environment_policy = "inherit"
 
     #[test]
     fn codex_local_config_remote_apps_inserts_features_section() {
-        let next = set_remote_apps_enabled_in_config("model = \"gpt-5.5\"\n", false);
+        let next = set_remote_apps_enabled_in_config("model = \"gpt-5.5\"\n", true);
 
-        assert_eq!(next, "model = \"gpt-5.5\"\n\n[features]\napps = false\n");
+        assert_eq!(next, "model = \"gpt-5.5\"\n\n[features]\napps = true\n");
     }
 
     #[test]

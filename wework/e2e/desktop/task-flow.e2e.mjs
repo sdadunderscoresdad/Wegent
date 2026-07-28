@@ -5,7 +5,7 @@ import { createServer } from 'node:http'
 import { access, appendFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { loadDesktopScenario } from './scenario-loader.mjs'
 import { stopProcess, stopProcessGroup } from './process-lifecycle.mjs'
@@ -29,6 +29,19 @@ const REQUEST_USER_INPUT_PROMPT =
 const REQUEST_USER_INPUT_QUESTION = 'Which implementation direction should be used?'
 const REQUEST_USER_INPUT_COMPLETION_TEXT = 'WEWORK_DESKTOP_E2E_REQUEST_INPUT_COMPLETE'
 const SEND_MODE_DRAFT = 'WEWORK_DESKTOP_E2E_SEND_MODE_DRAFT'
+const QUEUED_FOLLOW_UP = 'WEWORK_DESKTOP_E2E_QUEUED_FOLLOW_UP'
+const BACKGROUND_GUIDANCE = 'WEWORK_DESKTOP_E2E_BACKGROUND_GUIDANCE'
+const QUEUE_DIRECT_INITIAL = 'WEWORK_DESKTOP_E2E_QUEUE_DIRECT_INITIAL'
+const QUEUE_DIRECT_FIRST = 'WEWORK_DESKTOP_E2E_QUEUE_DIRECT_FIRST'
+const QUEUE_DIRECT_SECOND = 'WEWORK_DESKTOP_E2E_QUEUE_DIRECT_SECOND'
+const QUEUE_DIRECT_THIRD = 'WEWORK_DESKTOP_E2E_QUEUE_DIRECT_THIRD'
+const QUEUE_PRESERVE_INITIAL = 'WEWORK_DESKTOP_E2E_QUEUE_PRESERVE_INITIAL'
+const QUEUE_PRESERVE_QUEUED = 'WEWORK_DESKTOP_E2E_QUEUE_PRESERVE_QUEUED'
+const QUEUE_PRESERVE_MANUAL = 'WEWORK_DESKTOP_E2E_QUEUE_PRESERVE_MANUAL'
+const QUEUE_CLEAR_INITIAL = 'WEWORK_DESKTOP_E2E_QUEUE_CLEAR_INITIAL'
+const QUEUE_CLEAR_QUEUED = 'WEWORK_DESKTOP_E2E_QUEUE_CLEAR_QUEUED'
+const QUEUE_CLEAR_MANUAL = 'WEWORK_DESKTOP_E2E_QUEUE_CLEAR_MANUAL'
+const QUEUE_MANAGEMENT_COMPLETION_PREFIX = 'WEWORK_DESKTOP_E2E_QUEUE_COMPLETE'
 const UNSENT_BLANK_TASK_DRAFT = 'WEWORK_DESKTOP_E2E_UNSENT_BLANK_TASK_DRAFT'
 const UNSENT_FIRST_TASK_DRAFT = 'WEWORK_DESKTOP_E2E_UNSENT_FIRST_TASK_DRAFT'
 const UNSENT_SECOND_TASK_DRAFT = 'WEWORK_DESKTOP_E2E_UNSENT_SECOND_TASK_DRAFT'
@@ -160,6 +173,9 @@ const CLOUD_EXECUTION_MODEL_PROTOCOL_MATRIX_CASES = MODEL_PROTOCOL_MATRIX_CASES.
 const LOCAL_CUSTOM_MODEL_PROTOCOL_MATRIX_CASES = LOCAL_EXECUTION_MODEL_PROTOCOL_MATRIX_CASES.filter(
   model => model.source === 'local'
 )
+const MIXED_TOOL_TURN_MODEL_PROTOCOL_MATRIX_CASES = LOCAL_CUSTOM_MODEL_PROTOCOL_MATRIX_CASES.filter(
+  model => model.protocol === 'chat' || model.protocol === 'anthropic'
+)
 const LOCAL_CONNECTED_MODEL_PROTOCOL_MATRIX_CASES =
   LOCAL_EXECUTION_MODEL_PROTOCOL_MATRIX_CASES.filter(model => model.source !== 'local')
 const HIDDEN_CLOUD_MODEL_PROTOCOL_MATRIX_CASES = CLOUD_EXECUTION_MODEL_PROTOCOL_MATRIX_CASES.filter(
@@ -180,6 +196,24 @@ const LOCAL_MODEL_SWITCH_COMPLETE = 'WEWORK_LOCAL_MODEL_SWITCH_COMPLETE'
 const LOCAL_MODEL_SWITCH_INVALID_CALL_ID = 'functions.exec_command:0'
 const LOCAL_MODEL_SWITCH_ARTIFACT = 'wework-model-switch-protocol.txt'
 const LOCAL_MODEL_SWITCH_ARTIFACT_CONTENT = 'WEWORK_MODEL_SWITCH_PROTOCOL_EXEC_COMMAND'
+const PROVIDER_SWITCH_LUNA_OPTION_ID = 'local-model:desktop-e2e-luna-overseas'
+const PROVIDER_SWITCH_LUNA_LABEL = 'GPT 5.6 Luna (海外)'
+const PROVIDER_SWITCH_LUNA_MODEL_ID = 'gpt-5.6-luna'
+const PROVIDER_SWITCH_SOL_OPTION_ID = 'gpt-5.6-sol'
+const PROVIDER_SWITCH_SOL_LABEL = 'GPT 5.6 Sol'
+// Official Codex option used to verify the provider boundary restriction. The
+// local E2E Codex catalog is classified as third-party (custom provider), so
+// the official option is served from the cloud model catalog with a model id
+// that does not collide with the local Codex catalog (otherwise the catalog
+// merge drops it as a duplicate runtime Codex model).
+const PROVIDER_SWITCH_OFFICIAL_OPTION_ID = 'codex-gpt-5.5'
+const PROVIDER_SWITCH_OFFICIAL_LABEL = 'GPT 5.5'
+const PROVIDER_SWITCH_OFFICIAL_MODEL_ID = 'gpt-5.5'
+const PROVIDER_SWITCH_OFFICIAL_MODEL_LABEL = 'GPT 5.5'
+const PROVIDER_SWITCH_PROMPT =
+  'WEWORK_DESKTOP_E2E_PROVIDER_SWITCH: fail on Luna, then retry this turn with Sol.'
+const PROVIDER_SWITCH_FAILURE = 'WEWORK_DESKTOP_E2E_LUNA_INTENTIONAL_FAILURE'
+const PROVIDER_SWITCH_COMPLETION = 'WEWORK_DESKTOP_E2E_PROVIDER_SWITCH_SOL_COMPLETE'
 const BLOCKED_CLOUD_MODEL_PATH = '/api/models/unified'
 const CLOUD_PUBLIC_MODEL_NAME = 'desktop-e2e-public-model'
 const CLOUD_PUBLIC_MODEL_LABEL = 'Desktop E2E Public Model'
@@ -193,6 +227,12 @@ const ATTACHMENT_ONLY_FILENAME = 'same-name-attachment.png'
 const PASTED_ZIP_FILENAME = 'pasted-feedback.zip'
 const PASTED_ZIP_COMPLETION_TEXT = 'WEWORK_DESKTOP_E2E_PASTED_ZIP_COMPLETE'
 const PASTED_ZIP_BASE64 = Buffer.from('PK\x03\x04WEWORK_E2E_ZIP').toString('base64')
+const PASTED_PATH_FOLDER_NAME = 'pasted-context-folder'
+const PASTED_PATH_FILE_NAME = 'pasted-context.md'
+const PASTED_PATH_COMPLETION_TEXT = 'WEWORK_DESKTOP_E2E_PASTED_PATHS_COMPLETE'
+const DROPPED_PATH_FOLDER_NAME = 'dropped-context-folder'
+const DROPPED_PATH_FILE_NAME = 'dropped-context.md'
+const DROPPED_PATH_COMPLETION_TEXT = 'WEWORK_DESKTOP_E2E_DROPPED_PATHS_COMPLETE'
 const TOOL_BLOCK_ORDER_TASK_ID = 'wework-e2e-tool-block-order'
 const TOOL_BLOCK_ORDER_TASK_TITLE = 'Tool block chronological order'
 const TOOL_BLOCK_ORDER_COMPLETION_TEXT = 'WEWORK_DESKTOP_E2E_TOOL_BLOCK_ORDER_COMPLETE'
@@ -225,12 +265,19 @@ const GOAL_IDLE_ONLY = process.argv.includes('--goal-idle-only')
 const GOAL_RESTART_ONLY = process.argv.includes('--goal-restart-only')
 const TURN_NAVIGATION_ONLY = process.argv.includes('--turn-navigation-only')
 const ATTACHMENT_ONLY = process.argv.includes('--attachment-only')
+const PASTED_WORKSPACE_PATHS_ONLY = process.argv.includes('--pasted-workspace-paths-only')
+const DROPPED_WORKSPACE_PATHS_ONLY = process.argv.includes('--dropped-workspace-paths-only')
+const SYSTEM_DRAG_PANEL_ONLY = process.argv.includes('--system-drag-panel-only')
 const MODEL_SWITCH_ONLY = process.argv.includes('--model-switch-only')
 const CLOUD_ONLY = process.argv.includes('--cloud-only')
 const PLUGINS_ONLY = process.argv.includes('--plugins-only')
 const MEMORY_ONLY = process.argv.includes('--memory-only')
 const TOOL_BLOCK_ORDER_ONLY = process.argv.includes('--tool-block-order-only')
+const QUEUE_NAVIGATION_ONLY = process.argv.includes('--queue-navigation-only')
+const GUIDANCE_BACKGROUND_ONLY = process.argv.includes('--guidance-background-only')
+const QUEUE_MANAGEMENT_ONLY = process.argv.includes('--queue-management-only')
 const DESKTOP_SCENARIO_ONLY = process.env.WEWORK_E2E_DESKTOP_SCENARIO_ONLY === 'true'
+const MIXED_TOOL_TURNS_ONLY = process.env.WEWORK_E2E_MIXED_TOOL_TURNS_ONLY === '1'
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const weworkDir = resolve(scriptDir, '..', '..')
@@ -429,6 +476,311 @@ async function sendPromptWithButton(
   })
   await control.command('press', selector, { key: 'Enter', timeoutMs })
   await waitForSuccessfulMatrixSubmission(control, selector, prompt, timeoutMs)
+}
+
+async function verifyQueuedFollowUpNavigation({ composerSelector, control, projectRowSelector }) {
+  await control.command('fill', composerSelector, { value: QUEUED_FOLLOW_UP })
+  await control.command('press', composerSelector, { key: 'Enter' })
+  await control.command('waitFor', '[data-testid="conversation-queue-panel"]', {
+    text: QUEUED_FOLLOW_UP,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'queue-navigation-01-source-queued.png')
+
+  const runningTaskSnapshot = await waitForSnapshot(
+    control,
+    snapshot => snapshot.testIds.some(testId => testId.startsWith('runtime-local-task-row-')),
+    'The streaming task row was not available before switching conversations'
+  )
+  const runningTaskRowTestId = runningTaskSnapshot.testIds.find(testId =>
+    testId.startsWith('runtime-local-task-row-')
+  )
+  assert.ok(runningTaskRowTestId, 'The streaming task row identity was not found')
+
+  await control.command(
+    'clickWhenEnabled',
+    `${projectRowSelector} [data-testid="project-new-conversation-button"]`,
+    { timeoutMs: UI_TIMEOUT_MS }
+  )
+  await control.command('waitFor', composerSelector, { timeoutMs: UI_TIMEOUT_MS })
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('conversation-queue-panel'),
+    'The queued follow-up leaked into the other conversation'
+  )
+  await captureVerificationScreenshot(control, 'queue-navigation-02-other-conversation.png')
+
+  await ensureTaskRowVisible(control, runningTaskRowTestId)
+  await control.command('clickWhenEnabled', `[data-testid="${runningTaskRowTestId}"]`, {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="conversation-queue-panel"]', {
+    text: QUEUED_FOLLOW_UP,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'queue-navigation-03-source-restored.png')
+
+  await control.command('click', '[data-testid^="queue-cancel-button-"]')
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('conversation-queue-panel'),
+    'The queued follow-up could not be cleared after restoration'
+  )
+}
+
+async function verifyBackgroundGuidanceNavigation({
+  composerSelector,
+  control,
+  projectRowSelector,
+}) {
+  const runningTaskSnapshot = await waitForSnapshot(
+    control,
+    snapshot => snapshot.testIds.some(testId => testId.startsWith('runtime-local-task-row-')),
+    'The streaming task row was not available before sending guidance'
+  )
+  const runningTaskRowTestId = runningTaskSnapshot.testIds.find(testId =>
+    testId.startsWith('runtime-local-task-row-')
+  )
+  assert.ok(runningTaskRowTestId, 'The streaming task row identity was not found')
+
+  await control.command('fill', composerSelector, { value: BACKGROUND_GUIDANCE })
+  await control.command('click', '[data-testid="send-mode-menu-button"]')
+  await control.command('click', '[data-testid="guide-current-turn-option"]')
+  await control.command('waitFor', '[data-testid="conversation-queue-panel"]', {
+    text: BACKGROUND_GUIDANCE,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  const guidanceStatus = await control.command(
+    'getText',
+    '[data-testid="conversation-queue-panel"]'
+  )
+  assert.match(guidanceStatus, /引导中|Guiding/, 'The guidance did not enter its sending state')
+  await captureVerificationScreenshot(control, 'guidance-background-01-sending.png')
+
+  await control.command(
+    'clickWhenEnabled',
+    `${projectRowSelector} [data-testid="project-new-conversation-button"]`,
+    { timeoutMs: UI_TIMEOUT_MS }
+  )
+  await control.command('waitFor', composerSelector, { timeoutMs: UI_TIMEOUT_MS })
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('conversation-queue-panel'),
+    'The active guidance leaked into the other conversation'
+  )
+  await control.command('press', 'body', { key: 'Escape' })
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 500))
+  await captureVerificationScreenshot(control, 'guidance-background-02-other-task.png')
+
+  control.releaseInitialToolExecution()
+  await withTimeout(
+    control.awaitScenarioRequestCount('initial', 2),
+    UI_TIMEOUT_MS,
+    'The guided background task did not continue after its tool completed'
+  )
+
+  await ensureTaskRowVisible(control, runningTaskRowTestId)
+  await control.command('clickWhenEnabled', `[data-testid="${runningTaskRowTestId}"]`, {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="message-user"]', {
+    text: BACKGROUND_GUIDANCE,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await waitForSnapshot(
+    control,
+    snapshot =>
+      !snapshot.testIds.includes('conversation-queue-panel') &&
+      !snapshot.text.includes('引导中') &&
+      !snapshot.text.includes('Guiding'),
+    'The applied background guidance remained stuck in its sending state'
+  )
+  await captureVerificationScreenshot(control, 'guidance-background-03-applied.png')
+}
+
+async function startPausedQueueCase({ composerSelector, control, initialPrompt, queuedPrompts }) {
+  await control.command('click', '[data-testid="new-chat-button"]')
+  await control.command('waitFor', composerSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await selectE2EModel(control)
+
+  const requestCountBefore = control.scenarioRequests.get('queue_management')?.length ?? 0
+  await sendPrompt(control, composerSelector, initialPrompt)
+  await withTimeout(
+    control.awaitScenarioRequestCount('queue_management', requestCountBefore + 1),
+    UI_TIMEOUT_MS,
+    `The queue management scenario did not receive ${initialPrompt}`
+  )
+  await control.command('waitFor', '[data-testid="pause-response-button"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+
+  for (const prompt of queuedPrompts) {
+    await control.command('fill', composerSelector, { value: prompt })
+    await control.command('press', composerSelector, { key: 'Enter' })
+    await control.command('waitFor', '[data-testid="conversation-queue-panel"]', {
+      text: prompt,
+      timeoutMs: UI_TIMEOUT_MS,
+    })
+  }
+
+  return requestCountBefore
+}
+
+async function pauseQueuedConversation(control) {
+  await control.command('click', '[data-testid="pause-response-button"]')
+  await control.command('waitFor', '[data-testid="assistant-stopped-notice"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="resume-queue-button"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  const queueText = await control.command('getText', '[data-testid="conversation-queue-panel"]')
+  assert.match(queueText, /队列已暂停|Queue paused/, 'Stopping did not pause the queued messages')
+}
+
+function assertLatestScenarioRequestContains(control, scenario, prompt, message) {
+  const request = control.scenarioRequests.get(scenario)?.at(-1)
+  assert.ok(request, `${message}: no ${scenario} request was recorded`)
+  assert.equal(latestModelInputText(request.body).includes(prompt), true, message)
+}
+
+async function verifyPausedQueueLifecycle({ composerSelector, control }) {
+  control.setScenario('queue_management')
+
+  const directRequestOffset = await startPausedQueueCase({
+    composerSelector,
+    control,
+    initialPrompt: QUEUE_DIRECT_INITIAL,
+    queuedPrompts: [QUEUE_DIRECT_FIRST, QUEUE_DIRECT_SECOND, QUEUE_DIRECT_THIRD],
+  })
+  const queueSnapshot = JSON.parse(
+    await control.command('snapshot', '[data-testid="conversation-queue-panel"]')
+  )
+  const dragHandleTestIds = queueSnapshot.testIds.filter(testId =>
+    testId.startsWith('queue-drag-handle-')
+  )
+  assert.equal(dragHandleTestIds.length, 3, 'The three queued messages did not expose drag handles')
+  const firstQueuedId = dragHandleTestIds[0].slice('queue-drag-handle-'.length)
+  await control.command('drag', `[data-testid="${dragHandleTestIds[2]}"]`, {
+    target: `[data-testid="conversation-queue-row-${firstQueuedId}"]`,
+  })
+  const reorderedText = await control.command('getText', '[data-testid="conversation-queue-panel"]')
+  assert.ok(
+    reorderedText.indexOf(QUEUE_DIRECT_THIRD) < reorderedText.indexOf(QUEUE_DIRECT_FIRST),
+    'Dragging did not update the queued message order in real time'
+  )
+  await captureVerificationScreenshot(control, 'queue-management-01-reordered.png')
+
+  await pauseQueuedConversation(control)
+  assert.equal(
+    control.scenarioRequests.get('queue_management')?.length,
+    directRequestOffset + 1,
+    'Stopping immediately sent a queued message instead of pausing the queue'
+  )
+  await captureVerificationScreenshot(control, 'queue-management-02-paused.png')
+
+  await control.command('click', '[data-testid="resume-queue-button"]')
+  await withTimeout(
+    control.awaitScenarioRequestCount('queue_management', directRequestOffset + 2),
+    UI_TIMEOUT_MS,
+    'Continuing the queue did not send its first message'
+  )
+  assertLatestScenarioRequestContains(
+    control,
+    'queue_management',
+    QUEUE_DIRECT_THIRD,
+    'Continuing the queue did not send the message moved to the top'
+  )
+  await withTimeout(
+    control.awaitScenarioRequestCount('queue_management', directRequestOffset + 4),
+    UI_TIMEOUT_MS,
+    'The resumed queue did not drain in its visible order'
+  )
+  const directRequests = control.scenarioRequests
+    .get('queue_management')
+    .slice(directRequestOffset + 1, directRequestOffset + 4)
+    .map(request => latestModelInputText(request.body))
+  assert.equal(directRequests[0].includes(QUEUE_DIRECT_THIRD), true)
+  assert.equal(directRequests[1].includes(QUEUE_DIRECT_FIRST), true)
+  assert.equal(directRequests[2].includes(QUEUE_DIRECT_SECOND), true)
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('conversation-queue-panel'),
+    'The directly resumed queue did not clear after sending'
+  )
+
+  const preserveRequestOffset = await startPausedQueueCase({
+    composerSelector,
+    control,
+    initialPrompt: QUEUE_PRESERVE_INITIAL,
+    queuedPrompts: [QUEUE_PRESERVE_QUEUED],
+  })
+  await pauseQueuedConversation(control)
+  await control.command('fill', composerSelector, { value: QUEUE_PRESERVE_MANUAL })
+  await control.command('press', composerSelector, { key: 'Enter' })
+  await control.command('waitFor', '[data-testid="paused-queue-send-dialog"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.command('click', '[data-testid="paused-queue-send-cancel-button"]')
+  assert.equal(
+    await control.command('getValue', composerSelector),
+    QUEUE_PRESERVE_MANUAL,
+    'Cancelling the paused-queue dialog discarded the composer input'
+  )
+  await control.command('press', composerSelector, { key: 'Enter' })
+  await control.command('click', '[data-testid="paused-queue-send-preserve-button"]')
+  assert.equal(
+    await control.command('getValue', composerSelector),
+    '',
+    'Preserving the queue did not clear the submitted composer input'
+  )
+  await withTimeout(
+    control.awaitScenarioRequestCount('queue_management', preserveRequestOffset + 3),
+    UI_TIMEOUT_MS,
+    'Preserving the queue did not send both the manual message and queued message'
+  )
+  const preserveRequests = control.scenarioRequests
+    .get('queue_management')
+    .slice(preserveRequestOffset + 1, preserveRequestOffset + 3)
+    .map(request => latestModelInputText(request.body))
+  assert.equal(preserveRequests[0].includes(QUEUE_PRESERVE_MANUAL), true)
+  assert.equal(preserveRequests[1].includes(QUEUE_PRESERVE_QUEUED), true)
+
+  const clearRequestOffset = await startPausedQueueCase({
+    composerSelector,
+    control,
+    initialPrompt: QUEUE_CLEAR_INITIAL,
+    queuedPrompts: [QUEUE_CLEAR_QUEUED],
+  })
+  await pauseQueuedConversation(control)
+  await control.command('fill', composerSelector, { value: QUEUE_CLEAR_MANUAL })
+  await control.command('press', composerSelector, { key: 'Enter' })
+  await control.command('click', '[data-testid="paused-queue-send-clear-button"]')
+  await withTimeout(
+    control.awaitScenarioRequestCount('queue_management', clearRequestOffset + 2),
+    UI_TIMEOUT_MS,
+    'Clearing the queue did not send the new manual message'
+  )
+  assertLatestScenarioRequestContains(
+    control,
+    'queue_management',
+    QUEUE_CLEAR_MANUAL,
+    'Clearing the queue sent the wrong message'
+  )
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('conversation-queue-panel'),
+    'Clearing the queue left queued messages visible'
+  )
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 500))
+  assert.equal(
+    control.scenarioRequests.get('queue_management')?.length,
+    clearRequestOffset + 2,
+    'A cleared queued message was still sent'
+  )
+  await captureVerificationScreenshot(control, 'queue-management-03-dialog-paths.png')
 }
 
 async function waitForSuccessfulMatrixSubmission(control, selector, prompt, timeoutMs) {
@@ -1733,6 +2085,16 @@ async function selectE2EModel(control, modelId = MODEL_ID, modelLabel = MODEL_LA
     timeoutMs: UI_TIMEOUT_MS,
   })
   await control.command('click', `[data-testid="model-option-${modelId}"]`)
+  const selectionSnapshot = JSON.parse(await control.command('snapshot', 'body'))
+  if (selectionSnapshot.testIds.includes('model-switch-warning-dialog')) {
+    await control.command(
+      'clickWhenEnabled',
+      '[data-testid="model-switch-warning-confirm-button"]',
+      {
+        timeoutMs: UI_TIMEOUT_MS,
+      }
+    )
+  }
   await control.command('waitFor', '[data-testid="model-selector-button"]', {
     text: modelLabel,
     timeoutMs: UI_TIMEOUT_MS,
@@ -1743,6 +2105,66 @@ async function selectE2EModel(control, modelId = MODEL_ID, modelLabel = MODEL_LA
     snapshot => !snapshot.testIds.includes('model-selector-menu'),
     'The model selector menu did not close after selecting the E2E model'
   )
+}
+
+async function verifyProviderSwitchWarning(control, composerSelector) {
+  control.setScenario('provider_switch_retry')
+  await control.command('click', '[data-testid="new-chat-button"]')
+  await control.command('waitFor', composerSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await selectE2EModel(control, PROVIDER_SWITCH_LUNA_OPTION_ID, PROVIDER_SWITCH_LUNA_LABEL)
+  await sendPrompt(control, composerSelector, PROVIDER_SWITCH_PROMPT)
+  await control.command('waitFor', ACTIVE_SWITCH_MODEL_RETRY_SELECTOR, {
+    visible: true,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  assert.equal(
+    control.scenarioRequests.get('provider_switch_retry')?.length,
+    1,
+    'The failed Luna turn was unexpectedly sent more than once'
+  )
+
+  await control.command('scrollIntoView', ACTIVE_SWITCH_MODEL_RETRY_SELECTOR)
+  await control.command('clickWhenEnabled', ACTIVE_SWITCH_MODEL_RETRY_SELECTOR, {
+    stableMs: COMPOSER_READY_STABILITY_MS,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="model-selector-menu"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await ensureModelOptionVisible(control, `model-option-${PROVIDER_SWITCH_OFFICIAL_OPTION_ID}`)
+  const officialModelSelector = `[data-testid="model-option-${PROVIDER_SWITCH_OFFICIAL_OPTION_ID}"]`
+  await control.command('waitFor', officialModelSelector, {
+    text: PROVIDER_SWITCH_OFFICIAL_LABEL,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  const disabledModelText = await control.command('getText', officialModelSelector)
+  assert.ok(
+    disabledModelText.includes(PROVIDER_SWITCH_SOL_LABEL),
+    'The target model option did not display the expected model label'
+  )
+  assert.doesNotMatch(
+    disabledModelText,
+    /官方 Codex|Official Codex/,
+    'The target model option displayed the provider restriction inline'
+  )
+  await control.command('click', officialModelSelector)
+  await control.command('waitFor', '[data-testid="model-switch-warning-dialog"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  assert.equal(
+    control.scenarioRequests.get('provider_switch_retry')?.length,
+    1,
+    'Opening the provider-switch confirmation unexpectedly sent another request'
+  )
+  await control.command('click', '[data-testid="model-switch-warning-cancel-button"]')
+  await waitForSnapshot(
+    control,
+    snapshot => !snapshot.testIds.includes('model-switch-warning-dialog'),
+    'The model-switch warning dialog remained open after cancellation'
+  )
+  await control.command('press', 'body', { key: 'Escape' })
 }
 
 async function verifyBackgroundTaskWindowLifecycle({
@@ -2339,6 +2761,144 @@ async function verifyPastedZipAttachment({ composerSelector, control }) {
   await captureVerificationScreenshot(control, 'pasted-zip-attachment.png')
 }
 
+async function verifySystemDragPanelLayout(control) {
+  await control.command('navigate', 'body', { value: '/system-drag' })
+  await control.command('waitFor', '[data-testid="system-drag-panel"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+    visible: true,
+  })
+  const [metrics] = JSON.parse(
+    await control.command('getElementMetrics', '[data-testid="system-drag-panel"]')
+  )
+  assert.deepEqual(
+    { height: metrics.height, width: metrics.width },
+    { height: 60, width: 440 },
+    'The system drag panel did not use the compact desktop dimensions'
+  )
+  const snapshot = JSON.parse(
+    await control.command('snapshot', '[data-testid="system-drag-panel"]')
+  )
+  assert.match(
+    snapshot.text,
+    /Create new chat|创建新对话/,
+    'The system drag panel did not expose the new-chat destination'
+  )
+  assert.match(
+    snapshot.text,
+    /Temporary stash|临时暂存/,
+    'The system drag panel did not expose the stash destination'
+  )
+  await captureVerificationScreenshot(
+    control,
+    'system-drag-panel.png',
+    '[data-testid="system-drag-panel"]'
+  )
+  await control.command('navigate', 'body', { value: '/' })
+  await control.command('waitFor', '[data-testid="new-chat-button"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+}
+
+async function verifyPastedWorkspacePaths({ composerSelector, control, workspacePath }) {
+  control.setScenario('pasted_workspace_paths')
+  const folderPath = join(workspacePath, PASTED_PATH_FOLDER_NAME)
+  const filePath = join(workspacePath, PASTED_PATH_FILE_NAME)
+  await mkdir(folderPath, { recursive: true })
+  await writeFile(join(folderPath, 'nested.txt'), 'nested path context\n')
+  await writeFile(filePath, '# Pasted path context\n')
+
+  await control.command('click', '[data-testid="new-chat-button"]')
+  await control.command('waitFor', composerSelector, { timeoutMs: WORKBENCH_READY_TIMEOUT_MS })
+  await control.command('pastePaths', composerSelector, {
+    value: JSON.stringify([
+      {
+        uri: pathToFileURL(folderPath).href,
+        name: PASTED_PATH_FOLDER_NAME,
+        isDirectory: true,
+      },
+      {
+        uri: pathToFileURL(filePath).href,
+        name: PASTED_PATH_FILE_NAME,
+        mimeType: 'text/markdown',
+      },
+    ]),
+  })
+  await control.command(
+    'waitFor',
+    `[data-testid="composer-path-chip-${PASTED_PATH_FOLDER_NAME}"]`,
+    { timeoutMs: UI_TIMEOUT_MS }
+  )
+  await control.command('waitFor', '[data-testid="composer-path-chip-pasted-context-md"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  const snapshot = JSON.parse(await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR))
+  assert.equal(
+    snapshot.testIds.includes('attachment-badge'),
+    false,
+    'Pasted local paths were copied into attachment uploads'
+  )
+  await captureVerificationScreenshot(control, 'pasted-workspace-paths.png')
+  await control.command('clickWhenEnabled', '[data-testid="send-message-button"]', {
+    stableMs: COMPOSER_READY_STABILITY_MS,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.awaitScenarioRequestCount('pasted_workspace_paths', 1)
+  await control.command('waitFor', '[data-testid="message-assistant"]', {
+    text: PASTED_PATH_COMPLETION_TEXT,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+}
+
+async function verifyDroppedWorkspacePaths({ composerSelector, control, workspacePath }) {
+  control.setScenario('dropped_workspace_paths')
+  const folderPath = join(workspacePath, DROPPED_PATH_FOLDER_NAME)
+  const filePath = join(workspacePath, DROPPED_PATH_FILE_NAME)
+  await mkdir(folderPath, { recursive: true })
+  await writeFile(join(folderPath, 'nested.txt'), 'nested dropped path context\n')
+  await writeFile(filePath, '# Dropped path context\n')
+
+  await control.command('click', '[data-testid="new-chat-button"]')
+  await control.command('waitFor', composerSelector, { timeoutMs: WORKBENCH_READY_TIMEOUT_MS })
+  await control.command('dropPaths', composerSelector, {
+    value: JSON.stringify([
+      {
+        uri: pathToFileURL(folderPath).href,
+        name: DROPPED_PATH_FOLDER_NAME,
+        isDirectory: true,
+      },
+      {
+        uri: pathToFileURL(filePath).href,
+        name: DROPPED_PATH_FILE_NAME,
+        mimeType: 'text/markdown',
+      },
+    ]),
+  })
+  await control.command(
+    'waitFor',
+    `[data-testid="composer-path-chip-${DROPPED_PATH_FOLDER_NAME}"]`,
+    { timeoutMs: UI_TIMEOUT_MS }
+  )
+  await control.command('waitFor', '[data-testid="composer-path-chip-dropped-context-md"]', {
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  const snapshot = JSON.parse(await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR))
+  assert.equal(
+    snapshot.testIds.includes('attachment-badge'),
+    false,
+    'Dropped local paths were copied into attachment uploads'
+  )
+  await captureVerificationScreenshot(control, 'dropped-workspace-paths.png')
+  await control.command('clickWhenEnabled', '[data-testid="send-message-button"]', {
+    stableMs: COMPOSER_READY_STABILITY_MS,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+  await control.awaitScenarioRequestCount('dropped_workspace_paths', 1)
+  await control.command('waitFor', '[data-testid="message-assistant"]', {
+    text: DROPPED_PATH_COMPLETION_TEXT,
+    timeoutMs: UI_TIMEOUT_MS,
+  })
+}
+
 async function verifySideChatAttachmentIsolation({ control, taskRowTestId }) {
   const sideChatSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="right-workspace-chat-panel"]`
   const rightPanelShellSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="right-workspace-panel-shell"]`
@@ -2505,6 +3065,12 @@ function codexRequestKind(body) {
   } catch {
     return null
   }
+}
+
+function latestModelInputText(body) {
+  const input = Array.isArray(body.input) ? body.input.at(-1) : body.input
+  const message = Array.isArray(body.messages) ? body.messages.at(-1) : null
+  return JSON.stringify(input ?? message ?? '')
 }
 
 function responseCreated(id) {
@@ -2702,6 +3268,10 @@ function matrixToolPrompt(model) {
 
 function matrixToolCompletion(model) {
   return `${matrixToolPrompt(model)}_COMPLETE`
+}
+
+function matrixToolPreamble(model) {
+  return `${matrixToolPrompt(model)}_RUNNING_TOOL`
 }
 
 function matrixArtifact(model) {
@@ -3654,17 +4224,21 @@ class DesktopE2EServer {
         'goal_restart',
         'turn_navigation',
         'cancellation',
+        'queue_management',
         'retry',
         'reconnect',
         'fresh_chat',
         'attachment_only',
         'pasted_zip_attachment',
+        'pasted_workspace_paths',
+        'dropped_workspace_paths',
         'memory',
         'concurrent_memory',
         'side_chat_attachment',
         'cloud_initial',
         'cloud_follow_up',
         'model_protocol_matrix',
+        'provider_switch_retry',
       ].includes(scenario),
       `Unknown desktop E2E scenario: ${scenario}`
     )
@@ -3851,6 +4425,22 @@ class DesktopE2EServer {
               isActive: true,
             },
             {
+              name: PROVIDER_SWITCH_OFFICIAL_OPTION_ID,
+              type: 'runtime',
+              displayName: PROVIDER_SWITCH_OFFICIAL_LABEL,
+              provider: 'openai',
+              modelId: PROVIDER_SWITCH_OFFICIAL_MODEL_ID,
+              namespace: 'default',
+              config: {
+                protocol: 'openai-responses',
+                apiFormat: 'responses',
+                weworkModelKind: 'codex-official',
+                ui: { family: 'codex-official', modelLabel: PROVIDER_SWITCH_OFFICIAL_MODEL_LABEL },
+              },
+              runtime: { family: 'openai.openai-responses' },
+              isActive: true,
+            },
+            {
               name: CLOUD_PUBLIC_MODEL_NAME,
               type: 'public',
               displayName: CLOUD_PUBLIC_MODEL_LABEL,
@@ -4021,6 +4611,11 @@ class DesktopE2EServer {
 
     if (this.scenario === 'model_protocol_matrix') {
       this.handleModelProtocolMatrixResponse(response, protocol, body, request.headers)
+      return
+    }
+
+    if (this.scenario === 'provider_switch_retry') {
+      this.handleProviderSwitchRetryResponse(response, protocol, body, modelRequest)
       return
     }
 
@@ -4589,6 +5184,60 @@ class DesktopE2EServer {
       return
     }
 
+    if (this.scenario === 'pasted_workspace_paths') {
+      this.recordScenarioRequest('pasted_workspace_paths', modelRequest)
+      const requestText = JSON.stringify(body)
+      const folderPath = join(this.workspacePath, PASTED_PATH_FOLDER_NAME)
+      const filePath = join(this.workspacePath, PASTED_PATH_FILE_NAME)
+      assert.ok(
+        requestText.includes(folderPath),
+        'The pasted folder reference was not forwarded to the real Codex request'
+      )
+      assert.ok(
+        requestText.includes(filePath),
+        'The pasted file reference was not forwarded to the real Codex request'
+      )
+      assert.equal(
+        requestText.includes('nested path context') ||
+          requestText.includes('# Pasted path context'),
+        false,
+        'The pasted paths copied file contents into the model request'
+      )
+      this.writeSse(response, [
+        responseCreated(responseId),
+        assistantMessage(PASTED_PATH_COMPLETION_TEXT),
+        responseCompleted(responseId),
+      ])
+      return
+    }
+
+    if (this.scenario === 'dropped_workspace_paths') {
+      this.recordScenarioRequest('dropped_workspace_paths', modelRequest)
+      const requestText = JSON.stringify(body)
+      const folderPath = join(this.workspacePath, DROPPED_PATH_FOLDER_NAME)
+      const filePath = join(this.workspacePath, DROPPED_PATH_FILE_NAME)
+      assert.ok(
+        requestText.includes(folderPath),
+        'The dropped folder reference was not forwarded to the real Codex request'
+      )
+      assert.ok(
+        requestText.includes(filePath),
+        'The dropped file reference was not forwarded to the real Codex request'
+      )
+      assert.equal(
+        requestText.includes('nested dropped path context') ||
+          requestText.includes('# Dropped path context'),
+        false,
+        'The dropped paths copied file contents into the model request'
+      )
+      this.writeSse(response, [
+        responseCreated(responseId),
+        assistantMessage(DROPPED_PATH_COMPLETION_TEXT),
+        responseCompleted(responseId),
+      ])
+      return
+    }
+
     if (this.scenario === 'side_chat_attachment') {
       this.recordScenarioRequest('side_chat_attachment', modelRequest)
       const requestText = JSON.stringify(body)
@@ -4618,6 +5267,39 @@ class DesktopE2EServer {
         'Content-Type': 'text/event-stream; charset=utf-8',
       })
       response.write(createSse([responseCreated(responseId)]))
+      return
+    }
+
+    if (this.scenario === 'queue_management') {
+      this.recordScenarioRequest('queue_management', modelRequest)
+      const latestInput = latestModelInputText(body)
+      const initialPrompts = [QUEUE_DIRECT_INITIAL, QUEUE_PRESERVE_INITIAL, QUEUE_CLEAR_INITIAL]
+      if (initialPrompts.some(prompt => latestInput.includes(prompt))) {
+        response.writeHead(200, {
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        })
+        response.write(createSse([responseCreated(responseId)]))
+        return
+      }
+
+      const followUpPrompts = [
+        QUEUE_DIRECT_FIRST,
+        QUEUE_DIRECT_SECOND,
+        QUEUE_DIRECT_THIRD,
+        QUEUE_PRESERVE_QUEUED,
+        QUEUE_PRESERVE_MANUAL,
+        QUEUE_CLEAR_MANUAL,
+      ]
+      const prompt = followUpPrompts.find(candidate => latestInput.includes(candidate))
+      assert.ok(prompt, `Unexpected queue management request: ${latestInput}`)
+      this.writeSse(response, [
+        responseCreated(responseId),
+        assistantMessage(`${QUEUE_MANAGEMENT_COMPLETION_PREFIX}:${prompt}`),
+        responseCompleted(responseId),
+      ])
       return
     }
 
@@ -4674,6 +5356,52 @@ class DesktopE2EServer {
     }
 
     throw new Error(`Unexpected desktop E2E scenario: ${this.scenario}`)
+  }
+
+  handleProviderSwitchRetryResponse(response, protocol, body, modelRequest) {
+    assert.equal(protocol, 'responses', 'The provider-switch request reached the wrong endpoint')
+    const requestKind = codexRequestKind(body)
+    if (requestKind === 'prewarm' || requestKind === 'compaction') {
+      const responseId = `provider-switch-background-${this.modelRequests.length}`
+      this.writeSse(response, [responseCreated(responseId), responseCompleted(responseId)])
+      return
+    }
+
+    assert.ok(
+      JSON.stringify(body).includes(PROVIDER_SWITCH_PROMPT),
+      'The provider-switch request lost the user prompt'
+    )
+    this.recordScenarioRequest('provider_switch_retry', modelRequest)
+    const promptRequestCount = this.scenarioRequests.get('provider_switch_retry').length
+    if (promptRequestCount === 1) {
+      assert.equal(
+        body.model,
+        PROVIDER_SWITCH_LUNA_MODEL_ID,
+        'The initial provider-switch turn did not reach Luna'
+      )
+      json(response, 400, {
+        error: {
+          type: 'invalid_request_error',
+          message: PROVIDER_SWITCH_FAILURE,
+        },
+      })
+      return
+    }
+    if (promptRequestCount === 2) {
+      assert.equal(
+        body.model,
+        PROVIDER_SWITCH_SOL_OPTION_ID,
+        `The provider-switch retry was still routed to ${String(body.model)}`
+      )
+      const responseId = 'provider-switch-sol-complete'
+      this.writeSse(response, [
+        responseCreated(responseId),
+        assistantMessage(PROVIDER_SWITCH_COMPLETION),
+        responseCompleted(responseId),
+      ])
+      return
+    }
+    throw new Error(`The provider-switch prompt was sent ${promptRequestCount} times`)
   }
 
   handleModelProtocolMatrixResponse(response, protocol, body, headers) {
@@ -4776,16 +5504,51 @@ class DesktopE2EServer {
       return
     }
     if (model.protocol === 'chat') {
+      const assistant = body.messages?.find(
+        message =>
+          message?.role === 'assistant' &&
+          message?.content?.includes(matrixToolPreamble(model)) &&
+          message?.tool_calls?.some(call => call?.function?.name === 'apply_patch')
+      )
       assert.ok(
-        body.messages?.some(message => message?.role === 'tool'),
-        `${matrixCaseId(model)} lost the function tool result`
+        assistant,
+        `${matrixCaseId(model)} split assistant text and tool_calls into different messages`
+      )
+      const call = assistant.tool_calls.find(
+        candidate => candidate?.function?.name === 'apply_patch'
+      )
+      assert.ok(
+        body.messages?.some(
+          message => message?.role === 'tool' && message?.tool_call_id === call?.id
+        ),
+        `${matrixCaseId(model)} lost the function tool result or call ID`
       )
       return
     }
-    const blocks = body.messages?.flatMap(message => message?.content ?? []) ?? []
+    const assistant = body.messages?.find(
+      message =>
+        message?.role === 'assistant' &&
+        message?.content?.some(
+          block => block?.type === 'text' && block?.text?.includes(matrixToolPreamble(model))
+        ) &&
+        message?.content?.some(block => block?.type === 'tool_use' && block?.name === 'apply_patch')
+    )
     assert.ok(
-      blocks.some(block => block?.type === 'tool_result'),
-      `${matrixCaseId(model)} lost the Anthropic tool_result`
+      assistant,
+      `${matrixCaseId(model)} split assistant text and tool_use into different messages`
+    )
+    const call = assistant.content.find(
+      block => block?.type === 'tool_use' && block?.name === 'apply_patch'
+    )
+    assert.ok(
+      body.messages?.some(
+        message =>
+          message?.role === 'user' &&
+          message?.content?.some(
+            block => block?.type === 'tool_result' && block?.tool_use_id === call?.id
+          )
+      ),
+      `${matrixCaseId(model)} lost the Anthropic tool_result or tool_use_id`
     )
   }
 
@@ -4803,10 +5566,22 @@ class DesktopE2EServer {
       return
     }
     if (model.protocol === 'chat') {
-      this.writeChatToolCall(response, patch)
+      this.writeChatToolCall(
+        response,
+        patch,
+        'chat-local-apply-patch',
+        'apply_patch',
+        matrixToolPreamble(model)
+      )
       return
     }
-    this.writeAnthropicToolCall(response, patch)
+    this.writeAnthropicToolCall(
+      response,
+      patch,
+      'anthropic-local-apply-patch',
+      'apply_patch',
+      matrixToolPreamble(model)
+    )
   }
 
   writeMatrixAssistantMessage(response, model, text) {
@@ -4906,6 +5681,24 @@ class DesktopE2EServer {
         excludes: [followUpPrompt],
       })
       this.assertLocalApplyPatchTool(model, body)
+      this.assertLocalNamespaceTools(model, body)
+      if (model.protocol !== 'responses') {
+        state.stage = 'awaiting_namespace_tool_output'
+        this.writeLocalNamespaceToolCall(response, model)
+        return
+      }
+      state.stage = 'awaiting_tool_output'
+      this.writeLocalToolCall(response, model, localProtocolPatch(model))
+      return
+    }
+    if (state.stage === 'awaiting_namespace_tool_output') {
+      this.assertLocalConversation(model, body, {
+        includes: [],
+        excludes: [followUpPrompt],
+      })
+      this.assertLocalApplyPatchTool(model, body)
+      this.assertLocalNamespaceTools(model, body)
+      this.assertLocalNamespaceToolOutput(model, body)
       state.stage = 'awaiting_tool_output'
       this.writeLocalToolCall(response, model, localProtocolPatch(model))
       return
@@ -5104,6 +5897,57 @@ class DesktopE2EServer {
     )
   }
 
+  assertLocalNamespaceTools(model, body) {
+    if (model.protocol === 'responses') return
+    const tools = Array.isArray(body.tools) ? body.tools : []
+    const names = tools
+      .map(candidate => candidate?.name ?? candidate?.function?.name)
+      .filter(Boolean)
+
+    assert.ok(
+      names.includes('browser_snapshot'),
+      `${model.protocol} did not flatten the wework_browser namespace: ${names.join(', ')}`
+    )
+    assert.equal(
+      names.includes('wework_browser'),
+      false,
+      `${model.protocol} exposed the namespace container as a callable function`
+    )
+  }
+
+  assertLocalNamespaceToolOutput(model, body) {
+    const serialized = JSON.stringify(body)
+    assert.equal(
+      serialized.includes('unsupported function call: browser_snapshot'),
+      false,
+      `${model.protocol} did not restore the wework_browser namespace on the tool call`
+    )
+
+    if (model.protocol === 'chat') {
+      const call = body.messages
+        ?.flatMap(message => message?.tool_calls ?? [])
+        .find(candidate => candidate?.function?.name === 'browser_snapshot')
+      assert.ok(call, 'Chat lost the flattened browser_snapshot call history')
+      assert.ok(
+        body.messages?.some(
+          message => message?.role === 'tool' && message?.tool_call_id === call?.id
+        ),
+        'Chat lost the namespaced browser_snapshot result'
+      )
+      return
+    }
+
+    const blocks = body.messages?.flatMap(message => message?.content ?? []) ?? []
+    const call = blocks.find(
+      block => block?.type === 'tool_use' && block?.name === 'browser_snapshot'
+    )
+    assert.ok(call, 'Anthropic lost the flattened browser_snapshot call history')
+    assert.ok(
+      blocks.some(block => block?.type === 'tool_result' && block?.tool_use_id === call?.id),
+      'Anthropic lost the namespaced browser_snapshot result'
+    )
+  }
+
   assertApplyPatchOutputContract(model, description) {
     for (const instruction of [
       'Critical apply_patch input contract:',
@@ -5296,6 +6140,15 @@ class DesktopE2EServer {
     this.writeAnthropicToolCall(response, patch)
   }
 
+  writeLocalNamespaceToolCall(response, model) {
+    const callId = `${model.protocol}-local-browser-snapshot`
+    if (model.protocol === 'chat') {
+      this.writeChatToolCall(response, {}, callId, 'browser_snapshot')
+      return
+    }
+    this.writeAnthropicToolCall(response, {}, callId, 'browser_snapshot')
+  }
+
   writeLocalAssistantMessage(response, model, text) {
     if (model.protocol === 'responses') {
       const id = `local-${model.protocol}-message`
@@ -5316,13 +6169,31 @@ class DesktopE2EServer {
     response,
     toolInput,
     callId = 'chat-local-apply-patch',
-    toolName = 'apply_patch'
+    toolName = 'apply_patch',
+    assistantText = ''
   ) {
     const argumentsValue = JSON.stringify(
       toolName === 'apply_patch' ? { input: toolInput } : toolInput
     )
     const splitAt = Math.max(1, Math.floor(argumentsValue.length / 2))
-    const chunks = [
+    const chunks = []
+    if (assistantText) {
+      chunks.push({
+        id: 'chat-local-tool',
+        object: 'chat.completion.chunk',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content: assistantText,
+            },
+            finish_reason: null,
+          },
+        ],
+      })
+    }
+    chunks.push(
       {
         id: 'chat-local-tool',
         object: 'chat.completion.chunk',
@@ -5368,8 +6239,8 @@ class DesktopE2EServer {
             finish_reason: 'tool_calls',
           },
         ],
-      },
-    ]
+      }
+    )
     this.writeRawSse(
       response,
       `${chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`
@@ -5389,10 +6260,12 @@ class DesktopE2EServer {
     response,
     toolInput,
     callId = 'anthropic-local-apply-patch',
-    toolName = 'apply_patch'
+    toolName = 'apply_patch',
+    assistantText = ''
   ) {
     const input = JSON.stringify(toolName === 'apply_patch' ? { input: toolInput } : toolInput)
-    this.writeAnthropicSse(response, [
+    const toolIndex = assistantText ? 1 : 0
+    const events = [
       [
         'message_start',
         {
@@ -5408,11 +6281,34 @@ class DesktopE2EServer {
           },
         },
       ],
+    ]
+    if (assistantText) {
+      events.push(
+        [
+          'content_block_start',
+          {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          },
+        ],
+        [
+          'content_block_delta',
+          {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: assistantText },
+          },
+        ],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }]
+      )
+    }
+    events.push(
       [
         'content_block_start',
         {
           type: 'content_block_start',
-          index: 0,
+          index: toolIndex,
           content_block: {
             type: 'tool_use',
             id: callId,
@@ -5425,11 +6321,11 @@ class DesktopE2EServer {
         'content_block_delta',
         {
           type: 'content_block_delta',
-          index: 0,
+          index: toolIndex,
           delta: { type: 'input_json_delta', partial_json: input },
         },
       ],
-      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ['content_block_stop', { type: 'content_block_stop', index: toolIndex }],
       [
         'message_delta',
         {
@@ -5438,8 +6334,9 @@ class DesktopE2EServer {
           usage: { output_tokens: 1 },
         },
       ],
-      ['message_stop', { type: 'message_stop' }],
-    ])
+      ['message_stop', { type: 'message_stop' }]
+    )
+    this.writeAnthropicSse(response, events)
   }
 
   writeAnthropicError(response, message) {
@@ -6125,6 +7022,59 @@ async function verifyRetryFailureRestoration(control, composerSelector) {
       timeoutMs: UI_TIMEOUT_MS,
     }
   )
+  let successfulRetrySnapshot = JSON.parse(
+    await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR)
+  )
+  assert.equal(
+    successfulRetrySnapshot.testIds.includes('assistant-error-card'),
+    false,
+    'The failed attempt card remained after retry succeeded'
+  )
+  assert.equal(
+    successfulRetrySnapshot.testIds.filter(testId => testId === 'message-assistant').length,
+    1,
+    'Retry success left an empty assistant turn in the live conversation'
+  )
+
+  await control.command('click', '[data-testid="new-chat-button"]')
+  await control.command('waitFor', composerSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('click', `[data-testid="${retryTaskRowTestId}"]`)
+  await waitForWorkbenchTask(
+    control,
+    retryTaskId,
+    'The successful retry task did not become active again'
+  )
+  await control.command(
+    'clickIfPresent',
+    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="scroll-to-bottom-button"]`
+  )
+  await control.command(
+    'waitFor',
+    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"]`,
+    {
+      text: RETRY_COMPLETION_TEXT,
+      stableMs: COMPOSER_READY_STABILITY_MS,
+      timeoutMs: UI_TIMEOUT_MS,
+    }
+  )
+  successfulRetrySnapshot = JSON.parse(await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR))
+  assert.equal(
+    successfulRetrySnapshot.testIds.includes('assistant-error-card'),
+    false,
+    'A cached failure card returned after reopening the successfully retried conversation'
+  )
+  assert.equal(
+    successfulRetrySnapshot.testIds.filter(testId => testId === 'message-assistant').length,
+    1,
+    'Reopening a successful retry restored an empty failed assistant turn'
+  )
+  await captureVerificationScreenshot(
+    control,
+    'retry-02-success-restored-without-failed-turn.png',
+    ACTIVE_WORKBENCH_SELECTOR
+  )
   assert.equal(
     control.scenarioRequests.get('retry')?.length,
     2,
@@ -6247,7 +7197,14 @@ async function main() {
 
   const desktopScenario = await loadDesktopScenario(
     process.env.WEWORK_E2E_DESKTOP_SCENARIO_MODULE,
-    { resultDir, uiTimeoutMs: UI_TIMEOUT_MS, workspacePath }
+    {
+      captureScreenshot: (control, name, selector) =>
+        captureVerificationScreenshot(control, name, selector),
+      resultDir,
+      standalone: DESKTOP_SCENARIO_ONLY,
+      uiTimeoutMs: UI_TIMEOUT_MS,
+      workspacePath,
+    }
   )
   if (DESKTOP_SCENARIO_ONLY && !desktopScenario) {
     throw new Error('Desktop scenario-only mode requires WEWORK_E2E_DESKTOP_SCENARIO_MODULE')
@@ -6349,6 +7306,13 @@ async function main() {
       'The desktop controller did not connect from a webview'
     )
     await control.command('focusMainWindow', 'body')
+
+    if (SYSTEM_DRAG_PANEL_ONLY) {
+      phase = 'system-drag-panel-layout'
+      await verifySystemDragPanelLayout(control)
+      console.log(`Wework desktop system-drag-panel E2E passed. Evidence: ${resultDir}`)
+      return
+    }
 
     if (CLOUD_ONLY) {
       phase = 'local-connected-model-protocol-matrix'
@@ -6516,6 +7480,38 @@ async function main() {
       return
     }
 
+    if (PASTED_WORKSPACE_PATHS_ONLY) {
+      phase = 'pasted-workspace-paths'
+      await control.command('click', '[data-testid="new-chat-button"]')
+      await control.command('waitFor', ACTIVE_COMPOSER_SELECTOR, {
+        timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+      })
+      await selectE2EModel(control, DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL)
+      await verifyPastedWorkspacePaths({
+        composerSelector: ACTIVE_COMPOSER_SELECTOR,
+        control,
+        workspacePath,
+      })
+      console.log(`Wework desktop pasted-workspace-paths E2E passed. Evidence: ${resultDir}`)
+      return
+    }
+
+    if (DROPPED_WORKSPACE_PATHS_ONLY) {
+      phase = 'dropped-workspace-paths'
+      await control.command('click', '[data-testid="new-chat-button"]')
+      await control.command('waitFor', ACTIVE_COMPOSER_SELECTOR, {
+        timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+      })
+      await selectE2EModel(control, DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL)
+      await verifyDroppedWorkspacePaths({
+        composerSelector: ACTIVE_COMPOSER_SELECTOR,
+        control,
+        workspacePath,
+      })
+      console.log(`Wework desktop dropped-workspace-paths E2E passed. Evidence: ${resultDir}`)
+      return
+    }
+
     if (SHORT_CONVERSATION_ONLY) {
       phase = 'short-conversation-layout'
       control.setScenario('fresh_chat')
@@ -6536,19 +7532,20 @@ async function main() {
       return
     }
 
-    if (desktopScenario) {
+    if (desktopScenario && DESKTOP_SCENARIO_ONLY) {
       phase = 'desktop-extension-scenario'
       await desktopScenario.verify(control)
-      if (DESKTOP_SCENARIO_ONLY) {
-        await writeFile(
-          join(resultDir, 'model-requests.json'),
-          `${JSON.stringify(control.modelRequests, null, 2)}\n`,
-          'utf8'
-        )
-        console.log(`Wework desktop extension scenario E2E passed. Evidence: ${resultDir}`)
-        return
-      }
+      await writeFile(
+        join(resultDir, 'model-requests.json'),
+        `${JSON.stringify(control.modelRequests, null, 2)}\n`,
+        'utf8'
+      )
+      console.log(`Wework desktop extension scenario E2E passed. Evidence: ${resultDir}`)
+      return
     }
+
+    phase = 'system-drag-panel-layout'
+    await verifySystemDragPanelLayout(control)
 
     phase = 'remote-project-dialog'
     await control.command('click', '[data-testid="projects-create-button"]')
@@ -6784,6 +7781,37 @@ async function main() {
       timeoutMs: UI_TIMEOUT_MS,
     })
 
+    if (MIXED_TOOL_TURNS_ONLY) {
+      phase = 'mixed-assistant-tool-turns'
+      await verifyModelProtocolMatrix({
+        cases: MIXED_TOOL_TURN_MODEL_PROTOCOL_MATRIX_CASES,
+        composerSelector,
+        control,
+        newConversationSelector: `${projectRowSelector} [data-testid="project-new-conversation-button"]`,
+        screenshotPrefix: 'mixed-assistant-tool-turn',
+        workspacePath,
+      })
+      await writeFile(
+        join(resultDir, 'model-requests.json'),
+        `${JSON.stringify(control.modelRequests, null, 2)}\n`,
+        'utf8'
+      )
+      console.log(`Wework mixed assistant tool-turn desktop E2E passed. Evidence: ${resultDir}`)
+      return
+    }
+
+    if (QUEUE_MANAGEMENT_ONLY) {
+      phase = 'queue-management'
+      await verifyPausedQueueLifecycle({ composerSelector, control })
+      await writeFile(
+        join(resultDir, 'model-requests.json'),
+        `${JSON.stringify(control.modelRequests, null, 2)}\n`,
+        'utf8'
+      )
+      console.log(`Wework queue management desktop E2E passed. Evidence: ${resultDir}`)
+      return
+    }
+
     if (MEMORY_ONLY) {
       phase = 'memory-growth'
       await selectE2EModel(control)
@@ -6845,28 +7873,42 @@ async function main() {
       )
       await captureVerificationScreenshot(control, '02-send-mode-menu-open.png')
       await control.command('press', 'body', { key: 'Escape' })
-      await control.command('fill', composerSelector, { value: '' })
+      if (!GUIDANCE_BACKGROUND_ONLY) {
+        await verifyQueuedFollowUpNavigation({
+          composerSelector,
+          control,
+          projectRowSelector,
+        })
+      }
+      if (QUEUE_NAVIGATION_ONLY) {
+        await writeFile(
+          join(resultDir, 'model-requests.json'),
+          `${JSON.stringify(control.modelRequests, null, 2)}\n`,
+          'utf8'
+        )
+        console.log(`Wework queue navigation desktop E2E passed. Evidence: ${resultDir}`)
+        return
+      }
+      await verifyBackgroundGuidanceNavigation({
+        composerSelector,
+        control,
+        projectRowSelector,
+      })
+      if (GUIDANCE_BACKGROUND_ONLY) {
+        await writeFile(
+          join(resultDir, 'model-requests.json'),
+          `${JSON.stringify(control.modelRequests, null, 2)}\n`,
+          'utf8'
+        )
+        console.log(`Wework background guidance desktop E2E passed. Evidence: ${resultDir}`)
+        return
+      }
     }
 
     phase = 'initial-task-completion'
-    await control.command('waitFor', '[data-testid="environment-info-button"]', {
-      timeoutMs: UI_TIMEOUT_MS,
-    })
-    const environmentSnapshot = JSON.parse(await control.command('snapshot', 'body'))
-    if (!environmentSnapshot.testIds.includes('environment-changes-button')) {
-      await control.command('click', '[data-testid="environment-info-button"]')
+    if (control.modelStage !== 'complete') {
+      control.releaseInitialToolExecution()
     }
-    await control.command('waitFor', '[data-testid="environment-changes-button"]', {
-      text: '+0',
-      timeoutMs: UI_TIMEOUT_MS,
-    })
-    const cleanEnvironmentText = await control.command(
-      'getText',
-      '[data-testid="environment-changes-button"]'
-    )
-    assert.match(cleanEnvironmentText, /\+0\s*-0/, 'The clean workspace diff was not displayed')
-
-    control.releaseInitialToolExecution()
     await control.command('waitFor', '[data-testid="message-assistant"]', {
       text: COMPLETION_TEXT,
       timeoutMs: UI_TIMEOUT_MS,
@@ -6881,8 +7923,8 @@ async function main() {
     )
     assert.match(
       processingSummaryText,
-      /调用 2 个工具，编辑 1 个文件|Called 2 tools, edited 1 file/,
-      'The processing summary did not report tool calls and edited files separately'
+      /编辑 1 个文件|edited 1 file/,
+      'The processing summary did not report the edited file'
     )
     await control.command('waitFor', '[aria-label="编辑 1"], [aria-label="Edits 1"]', {
       timeoutMs: UI_TIMEOUT_MS,
@@ -6946,11 +7988,8 @@ async function main() {
       '[data-testid="processing-live-preview"]'
     )
     await control.command('click', '[data-testid="processing-summary-toggle"]')
-    await control.command('waitFor', '[data-testid="environment-changes-button"]', {
-      text: '+1',
-      timeoutMs: UI_TIMEOUT_MS,
-    })
     await control.command('waitFor', '[data-testid="file-change-stats-label"]', {
+      text: '+1',
       timeoutMs: UI_TIMEOUT_MS,
     })
     if (VIEW_IMAGE_ONLY) {
@@ -7215,14 +8254,12 @@ async function main() {
           text: targetModel.label,
           timeoutMs: UI_TIMEOUT_MS,
         })
-        const appliedModelLabel = await control.command(
-          'getText',
+        await waitForSnapshot(
+          control,
+          snapshot => !/下一轮|Next/.test(snapshot.text),
+          `${switchCase.id} left the applied model marked as next-turn only`,
+          UI_TIMEOUT_MS,
           '[data-testid="model-selector-button"]'
-        )
-        assert.doesNotMatch(
-          appliedModelLabel,
-          /下一轮|Next/,
-          `${switchCase.id} left the applied model marked as next-turn only`
         )
         modelSwitchVerification.push({
           direction: switchCase.id,
@@ -7239,6 +8276,8 @@ async function main() {
           await captureVerificationScreenshot(control, 'model-switch-retry-04-completed.png')
         }
       }
+      phase = 'provider-switch-retry'
+      await verifyProviderSwitchWarning(control, composerSelector)
       await writeFile(
         join(resultDir, 'model-switch-protocol-verification.json'),
         `${JSON.stringify(modelSwitchVerification, null, 2)}\n`,
@@ -7353,6 +8392,9 @@ async function main() {
       executorLogPath,
       restartDesktopApp,
     })
+
+    phase = 'queue-management'
+    await verifyPausedQueueLifecycle({ composerSelector, control })
 
     phase = 'cancellation'
     control.setScenario('cancellation')
@@ -7679,6 +8721,12 @@ async function main() {
     phase = 'pasted-zip-attachment'
     await verifyPastedZipAttachment({ composerSelector, control })
 
+    phase = 'pasted-workspace-paths'
+    await verifyPastedWorkspacePaths({ composerSelector, control, workspacePath })
+
+    phase = 'dropped-workspace-paths'
+    await verifyDroppedWorkspacePaths({ composerSelector, control, workspacePath })
+
     phase = 'tool-block-chronological-order'
     await verifyToolBlockChronologicalOrder({
       control,
@@ -7686,6 +8734,11 @@ async function main() {
       restartDesktopApp,
       workspacePath,
     })
+
+    if (desktopScenario) {
+      phase = 'desktop-extension-scenario'
+      await desktopScenario.verify(control)
+    }
 
     await writeFile(
       join(resultDir, 'model-requests.json'),

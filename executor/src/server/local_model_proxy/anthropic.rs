@@ -10,6 +10,8 @@ use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
 
+use crate::logging::log_executor_event;
+
 use super::chat::{self, ToolContext};
 
 pub(super) fn responses_to_anthropic(body: &Value) -> Result<(Value, ToolContext), String> {
@@ -331,16 +333,21 @@ impl<S> AnthropicStreamState<S> {
                     .pointer("/usage/output_tokens")
                     .and_then(Value::as_u64)
                     .unwrap_or(self.output_tokens);
-                let stop = event
-                    .pointer("/delta/stop_reason")
-                    .and_then(Value::as_str)
-                    .map(|value| {
-                        if value == "max_tokens" {
-                            "length"
-                        } else {
-                            "stop"
-                        }
-                    });
+                let upstream_stop = event.pointer("/delta/stop_reason").and_then(Value::as_str);
+                let stop = upstream_stop.map(anthropic_finish_reason);
+                if let Some(upstream_stop) = upstream_stop {
+                    log_executor_event(
+                        "local model proxy anthropic stop reason",
+                        &[
+                            ("upstream_stop_reason", upstream_stop.to_owned()),
+                            (
+                                "mapped_finish_reason",
+                                anthropic_finish_reason(upstream_stop).to_owned(),
+                            ),
+                            ("output_tokens", self.output_tokens.to_string()),
+                        ],
+                    );
+                }
                 self.emit(json!({
                     "choices": [{"delta": {}, "finish_reason": stop}],
                     "usage": {"prompt_tokens": self.input_tokens, "completion_tokens": self.output_tokens}
@@ -355,6 +362,20 @@ impl<S> AnthropicStreamState<S> {
         let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
         let block = event.get("content_block").unwrap_or(&Value::Null);
         if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+            log_executor_event(
+                "local model proxy anthropic tool use",
+                &[
+                    ("tool_index", index.to_string()),
+                    (
+                        "tool_name",
+                        block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    ),
+                ],
+            );
             self.emit(json!({"choices": [{"delta": {"tool_calls": [{
                 "index": index,
                 "id": block.get("id"),
@@ -386,6 +407,14 @@ impl<S> AnthropicStreamState<S> {
             "data: {}\n\n",
             serde_json::to_string(&value).unwrap_or_default()
         ))));
+    }
+}
+
+fn anthropic_finish_reason(value: &str) -> &str {
+    match value {
+        "max_tokens" => "length",
+        "tool_use" => "tool_calls",
+        _ => "stop",
     }
 }
 
@@ -427,6 +456,66 @@ mod tests {
             "tool_result"
         );
         assert_eq!(converted["tools"][0]["name"], "apply_patch");
+    }
+
+    #[test]
+    fn keeps_assistant_text_and_tool_use_in_one_anthropic_message() {
+        let input = json!({
+            "model": "kimi-for-coding",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Inspect it"}]},
+                {"role": "assistant", "content": [{"type": "output_text", "text": "I will inspect it."}]},
+                {"type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": "{\"cmd\":\"pwd\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "/workspace"}
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "exec_command",
+                "parameters": {"type": "object"}
+            }]
+        });
+
+        let (converted, _) = responses_to_anthropic(&input).expect("request should convert");
+        let messages = converted["messages"].as_array().expect("messages");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["type"], "text");
+        assert_eq!(messages[1]["content"][0]["text"], "I will inspect it.");
+        assert_eq!(messages[1]["content"][1]["type"], "tool_use");
+        assert_eq!(messages[1]["content"][1]["name"], "exec_command");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert!(!messages
+            .windows(2)
+            .any(|pair| pair[0]["role"] == "assistant" && pair[1]["role"] == "assistant"));
+    }
+
+    #[test]
+    fn flattens_namespace_tools_for_anthropic_messages() {
+        let input = json!({
+            "model": "kimi-for-coding",
+            "input": [{"role": "user", "content": "Inspect the page"}],
+            "tools": [{
+                "type": "namespace",
+                "name": "wework_browser",
+                "tools": [{
+                    "type": "function",
+                    "name": "browser_snapshot",
+                    "description": "Capture the page",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            }]
+        });
+
+        let (converted, _) = responses_to_anthropic(&input).expect("request should convert");
+
+        assert_eq!(converted["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(converted["tools"][0]["name"], "browser_snapshot");
+        assert_eq!(converted["tools"][0]["description"], "Capture the page");
+        assert_eq!(
+            converted["tools"][0]["input_schema"],
+            json!({"type": "object", "properties": {}})
+        );
     }
 
     #[test]
@@ -481,6 +570,52 @@ mod tests {
         assert!(output.contains("response.output_text.delta"));
         assert!(output.contains("response.custom_tool_call_input.done"));
         assert!(output.contains("\"input_tokens\":10"));
+    }
+
+    #[tokio::test]
+    async fn restores_namespace_on_anthropic_tool_calls() {
+        let events = [
+            json!({"type":"message_start","message":{"id":"msg_1","model":"kimi-for-coding","usage":{"input_tokens":1}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_1","name":"browser_snapshot","input":{}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}),
+        ];
+        let source = futures_util::stream::iter(
+            events
+                .into_iter()
+                .map(|event| Ok::<_, std::io::Error>(Bytes::from(format!("data: {event}\n\n")))),
+        );
+        let input = json!({
+            "tools": [{
+                "type": "namespace",
+                "name": "wework_browser",
+                "tools": [{
+                    "type": "function",
+                    "name": "browser_snapshot",
+                    "parameters": {"type": "object"}
+                }]
+            }]
+        });
+        let context = chat::responses_to_chat(&input)
+            .expect("context should build")
+            .1;
+        let output = anthropic_sse_to_responses(source, context)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .collect::<String>();
+
+        assert!(output.contains("\"name\":\"browser_snapshot\""));
+        assert!(output.contains("\"namespace\":\"wework_browser\""));
+    }
+
+    #[test]
+    fn maps_anthropic_tool_stop_reason_to_tool_calls() {
+        assert_eq!(anthropic_finish_reason("tool_use"), "tool_calls");
+        assert_eq!(anthropic_finish_reason("max_tokens"), "length");
+        assert_eq!(anthropic_finish_reason("end_turn"), "stop");
     }
 
     #[tokio::test]
