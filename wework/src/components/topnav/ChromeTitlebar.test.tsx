@@ -205,13 +205,13 @@ describe('ChromeTitlebar', () => {
     disableTauri()
   })
 
-  test('shows custom window frame controls in Tauri runtime on Windows', () => {
+  test('shows custom window frame controls and feedback button in Tauri runtime on Windows', () => {
     mockUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
     enableTauri()
     render(<ChromeTitlebar tabs={mockTabs} activeKey="wework" onNavigate={vi.fn()} />)
     expect(screen.getByTestId('window-frame-controls')).toBeInTheDocument()
     expect(screen.queryByTestId('macos-traffic-light-spacer')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('topnav-feedback-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('topnav-feedback-button')).toBeInTheDocument()
     disableTauri()
   })
 

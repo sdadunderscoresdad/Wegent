@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, test, vi, beforeEach } from 'vitest'
+import '@/i18n'
 import { WindowFrameControls } from './WindowFrameControls'
 
 const mocks = vi.hoisted(() => {
@@ -30,6 +31,13 @@ describe('WindowFrameControls', () => {
     expect(screen.getByTestId('window-minimize-button')).toBeInTheDocument()
     expect(screen.getByTestId('window-maximize-button')).toBeInTheDocument()
     expect(screen.getByTestId('window-close-button')).toBeInTheDocument()
+  })
+
+  test('renders translated labels for window control buttons', () => {
+    render(<WindowFrameControls />)
+    expect(screen.getByTestId('window-minimize-button')).toHaveAttribute('aria-label', '最小化')
+    expect(screen.getByTestId('window-maximize-button')).toHaveAttribute('aria-label', '最大化')
+    expect(screen.getByTestId('window-close-button')).toHaveAttribute('aria-label', '关闭')
   })
 
   test('minimize button calls window.minimize', async () => {

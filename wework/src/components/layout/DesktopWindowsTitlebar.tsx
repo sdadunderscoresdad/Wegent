@@ -1,6 +1,8 @@
 import { DesktopAppSwitcher, type DesktopAppKey } from '@/components/layout/DesktopAppSwitcher'
 import { DesktopWindowControls } from '@/components/layout/DesktopWindowControls'
 import { WindowFrameControls } from '@/components/layout/WindowFrameControls'
+import { TopnavFeedbackButton } from '@/components/topnav/TopnavFeedbackButton'
+import { WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH } from './DesktopTitlebarConstants'
 import { useWindowFocus } from '@/hooks/useWindowFocus'
 import { cn } from '@/lib/utils'
 import { getPlatform } from '@/lib/platform'
@@ -50,9 +52,11 @@ export function DesktopWindowsTitlebar({
         <DesktopAppSwitcher activeApp={activeApp} onNavigate={onNavigate} />
       </div>
       <div
-        className="pointer-events-auto absolute right-0 top-0 z-chrome h-full w-[138px]"
+        className="pointer-events-auto absolute right-0 top-0 z-chrome flex h-full items-center justify-end gap-1"
         data-tauri-drag-region={false}
+        style={{ width: WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH }}
       >
+        <TopnavFeedbackButton />
         <WindowFrameControls className="h-full justify-end" />
       </div>
     </div>

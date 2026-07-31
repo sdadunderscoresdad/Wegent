@@ -11,11 +11,9 @@ import { TitlebarExtensionSlot } from '@extensions/titlebar'
 import { MacOSTitleBarDragRegion } from '@/components/layout/MacOSTitleBarDragRegion'
 import { DesktopAppSwitcher } from '@/components/layout/DesktopAppSwitcher'
 import { WindowFrameControls } from '@/components/layout/WindowFrameControls'
-import { TaskFeedbackDialog } from '@/features/feedback/TaskFeedbackDialog'
-import { useTranslation } from '@/hooks/useTranslation'
-import { MessageSquareWarning } from 'lucide-react'
-import { DESKTOP_TOP_BAR_BUTTON_CLASS } from '@/components/layout/DesktopTopBar'
-import { useState, type ReactNode } from 'react'
+import { TopnavFeedbackButton } from './TopnavFeedbackButton'
+import { WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH } from '@/components/layout/DesktopTitlebarConstants'
+import { type ReactNode } from 'react'
 
 interface ChromeTitlebarProps {
   tabs: AppTab[]
@@ -122,9 +120,9 @@ export function ChromeTitlebar({
         style={{
           right:
             isTauri && platform === 'win'
-              ? 'calc(138px + 5rem)'
+              ? `calc(${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px + 5rem)`
               : isTauri && platform === 'linux'
-                ? 'calc(138px + 5rem)'
+                ? `calc(${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px + 5rem)`
                 : '5rem',
           width: 'var(--right-workspace-titlebar-width, auto)',
         }}
@@ -146,7 +144,10 @@ export function ChromeTitlebar({
         data-testid="titlebar-actions"
         className="pointer-events-auto absolute right-0 top-0 z-chrome flex h-full w-[5rem] shrink-0 items-center justify-end gap-1 pr-3"
         style={{
-          right: isTauri && (platform === 'linux' || platform === 'win') ? '138px' : undefined,
+          right:
+            isTauri && (platform === 'linux' || platform === 'win')
+              ? `${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px`
+              : undefined,
         }}
       />
 
@@ -160,38 +161,14 @@ export function ChromeTitlebar({
       {/* Windows: custom window frame controls */}
       {isTauri && platform === 'win' && (
         <div
-          className="relative z-chrome w-[138px] shrink-0 self-stretch"
+          className="relative z-chrome flex shrink-0 items-center justify-end gap-1 self-stretch"
           data-tauri-drag-region={false}
+          style={{ width: WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH }}
         >
+          <TopnavFeedbackButton />
           <WindowFrameControls className="h-full justify-end" />
         </div>
       )}
     </div>
-  )
-}
-
-function TopnavFeedbackButton() {
-  const { t } = useTranslation('common')
-  const [open, setOpen] = useState(false)
-
-  return (
-    <>
-      <button
-        type="button"
-        data-testid="topnav-feedback-button"
-        className={DESKTOP_TOP_BAR_BUTTON_CLASS}
-        aria-label={t('workbench.feedback_button')}
-        title={t('workbench.feedback_button')}
-        onClick={() => setOpen(true)}
-      >
-        <MessageSquareWarning className="h-4 w-4" />
-      </button>
-      <TaskFeedbackDialog
-        open={open}
-        hasActiveTask={false}
-        onClose={() => setOpen(false)}
-        getTaskContext={() => Promise.resolve({})}
-      />
-    </>
   )
 }

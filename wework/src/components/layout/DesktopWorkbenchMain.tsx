@@ -73,6 +73,7 @@ import { DesktopWindowControls } from './DesktopWindowControls'
 import { DesktopAppSwitcher } from './DesktopAppSwitcher'
 import { MacOSTitleBarDragRegion } from './MacOSTitleBarDragRegion'
 import { WindowFrameControls } from './WindowFrameControls'
+import { WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH } from './DesktopTitlebarConstants'
 import { isTauriRuntime } from '@/lib/runtime-environment'
 import { getPlatform } from '@/lib/platform'
 import { getLocalPathKind } from '@/lib/local-terminal'
@@ -1145,7 +1146,8 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
       ? '100%'
       : `calc(100% - ${rightSplitChatWidth}px)`
     : '0px'
-  const rightPanelTabBarRightOffset = getPlatform() === 'mac' ? '0px' : '138px'
+  const rightPanelTabBarRightOffset =
+    getPlatform() === 'mac' ? '0px' : `${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px`
   const rightPanelTabBarWidth = rightPanelOpen
     ? `calc(${rightPanelExpanded ? '100%' : `100% - ${rightSplitChatWidth}px`} - ${rightPanelTabBarRightOffset} - ${COLLAPSED_RIGHT_TITLEBAR_ACTIONS_CLEARANCE})`
     : '0px'
@@ -2241,7 +2243,7 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
           right:
             platform === 'mac'
               ? COLLAPSED_RIGHT_TITLEBAR_ACTIONS_CLEARANCE
-              : `calc(138px + ${COLLAPSED_RIGHT_TITLEBAR_ACTIONS_CLEARANCE})`,
+              : `calc(${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px + ${COLLAPSED_RIGHT_TITLEBAR_ACTIONS_CLEARANCE})`,
           width: rightPanelTabBarWidth,
         }}
       >
@@ -2259,7 +2261,7 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
           rightSplitResizing ? 'transition-none' : RIGHT_PANEL_WIDTH_TRANSITION_CLASS
         )}
         style={{
-          right: platform === 'mac' ? '0px' : '138px',
+          right: platform === 'mac' ? '0px' : `${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px`,
           width: COLLAPSED_RIGHT_TITLEBAR_ACTIONS_CLEARANCE,
         }}
       >
@@ -2267,8 +2269,9 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
       </div>
       {platform === 'win' && (
         <div
-          className="relative z-chrome w-[138px] shrink-0 self-stretch"
+          className="relative z-chrome shrink-0 self-stretch"
           data-tauri-drag-region={false}
+          style={{ width: WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH }}
         >
           <WindowFrameControls className="h-full justify-end" />
         </div>
@@ -2311,7 +2314,10 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
             width: rightPanelOpen
               ? `${Math.max(
                   0,
-                  workbenchContentWidth - rightSplitChatWidth - 138 - panelTogglesWidth
+                  workbenchContentWidth -
+                    rightSplitChatWidth -
+                    WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH -
+                    panelTogglesWidth
                 )}px`
               : 0,
           }}
@@ -2326,7 +2332,7 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
           )}
           style={{
             right: rightPanelOpen
-              ? `${Math.max(0, workbenchContentWidth - rightSplitChatWidth - 138)}px`
+              ? `${Math.max(0, workbenchContentWidth - rightSplitChatWidth - WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH)}px`
               : `${panelTogglesWidth}px`,
           }}
         />

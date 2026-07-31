@@ -48,6 +48,8 @@ import { WindowFrameControls } from './WindowFrameControls'
 import { isTauriRuntime } from '@/lib/runtime-environment'
 import { getPlatform } from '@/lib/platform'
 import { useResizableSidebar } from './useResizableSidebar'
+import { TopnavFeedbackButton } from '@/components/topnav/TopnavFeedbackButton'
+import { WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH } from './DesktopTitlebarConstants'
 import { WORKBENCH_WINDOWS_TITLEBAR_MIDDLE_PORTAL_ID } from '@/components/topnav/TitlebarActionsPortal'
 
 type ImNotificationDialogMode = { type: 'global' } | { type: 'task'; address: RuntimeTaskAddress }
@@ -682,13 +684,15 @@ export function DesktopWorkbenchLayout() {
         )}
         style={{
           left: effectiveSidebarCollapsed ? 0 : sidebarWidth,
-          right: 138,
+          right: WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH,
         }}
       />
       <div
-        className="pointer-events-auto absolute right-0 top-0 z-chrome h-full w-[138px]"
+        className="pointer-events-auto absolute right-0 top-0 z-chrome flex h-full items-center justify-end gap-1"
         data-tauri-drag-region={false}
+        style={{ width: WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH }}
       >
+        <TopnavFeedbackButton />
         <WindowFrameControls className="h-full justify-end" />
       </div>
     </div>

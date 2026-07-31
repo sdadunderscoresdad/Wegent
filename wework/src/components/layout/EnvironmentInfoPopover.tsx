@@ -30,6 +30,7 @@ import { useTranslation } from '@/hooks/useTranslation'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { openExternalUrl } from '@/lib/external-links'
 import { cn } from '@/lib/utils'
+import { getPlatform } from '@/lib/platform'
 import {
   findWorkbenchDevice,
   getExecutorOfflineDeviceId,
@@ -37,6 +38,7 @@ import {
 } from '@/lib/workbench-device'
 import type { DeviceInfo } from '@/types/api'
 import type { EnvironmentInfo } from '@/types/environment'
+import { TitlebarTooltip } from '@/components/topnav/TitlebarTooltip'
 import { DESKTOP_TOP_BAR_BUTTON_CLASS } from './DesktopTopBar'
 
 interface EnvironmentInfoPopoverProps {
@@ -101,6 +103,7 @@ export function EnvironmentInfoPopover({
   const [floatingPopoverStyle, setFloatingPopoverStyle] = useState<CSSProperties>()
   const rootRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
+  const commitFormRef = useRef<HTMLFormElement>(null)
   const copiedWorkspacePathTimeoutRef = useRef<number | null>(null)
   const additions = info.additions || '+0'
   const deletions = info.deletions || '-0'
@@ -255,17 +258,31 @@ export function EnvironmentInfoPopover({
   }
 
   useEffect(() => {
-    if (!open || docked) return
+    if (!open || !docked || getPlatform() !== 'win') return
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node
-      if (!rootRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
+      if (
+        !rootRef.current?.contains(target) &&
+        !popoverRef.current?.contains(target) &&
+        !commitFormRef.current?.contains(target)
+      ) {
+        onOpenChange(false)
+      }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
         onOpenChange(false)
       }
     }
 
     document.addEventListener('pointerdown', handlePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
   }, [docked, onOpenChange, open])
 
   function getFloatingPopoverPosition(): CSSProperties | undefined {
@@ -288,17 +305,18 @@ export function EnvironmentInfoPopover({
 
   return (
     <div ref={rootRef}>
-      <button
-        type="button"
-        data-testid="environment-info-button"
-        onClick={handleToggleOpen}
-        className={cn(DESKTOP_TOP_BAR_BUTTON_CLASS, open && 'bg-muted text-text-primary')}
-        aria-expanded={open}
-        aria-label={taskSummaryToggleLabel}
-        title={taskSummaryToggleLabel}
-      >
-        <Info />
-      </button>
+      <TitlebarTooltip label={taskSummaryToggleLabel} align="end">
+        <button
+          type="button"
+          data-testid="environment-info-button"
+          onClick={handleToggleOpen}
+          className={cn(DESKTOP_TOP_BAR_BUTTON_CLASS, open && 'bg-muted text-text-primary')}
+          aria-expanded={open}
+          aria-label={taskSummaryToggleLabel}
+        >
+          <Info />
+        </button>
+      </TitlebarTooltip>
 
       {open &&
         popoverPortalContainer &&
@@ -553,6 +571,7 @@ export function EnvironmentInfoPopover({
         typeof document !== 'undefined' &&
         createPortal(
           <form
+            ref={commitFormRef}
             data-testid="environment-commit-form"
             className="fixed left-1/2 top-[36vh] z-system-popover w-[430px] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-background text-text-primary shadow-[0_18px_48px_rgba(0,0,0,0.20)]"
             onSubmit={handleSubmitCommit}

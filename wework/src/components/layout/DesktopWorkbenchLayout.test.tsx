@@ -18,6 +18,7 @@ import type {
   WorkbenchPaneContextValue,
 } from '@/features/workbench/workbenchContextTypes'
 import { openExternalUrl } from '@/lib/external-links'
+import { WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH } from './DesktopTitlebarConstants'
 import {
   closeLocalTerminal,
   getLocalPathKind,
@@ -2673,7 +2674,7 @@ describe('DesktopWorkbenchLayout', () => {
     )
     expect(screen.getByTestId('workbench-windows-titlebar-middle')).toHaveStyle({
       left: '240px',
-      right: '138px',
+      right: `${WINDOW_TITLEBAR_RIGHT_RESERVED_WIDTH}px`,
     })
     expect(screen.getByTestId('desktop-window-controls')).toBeInTheDocument()
     expect(screen.getByTestId('desktop-app-switcher')).toHaveTextContent('任务')

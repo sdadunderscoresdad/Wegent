@@ -3,13 +3,13 @@
     "home": "首页"
   },
   "common": {
-    "loading": "加载中...",
-    "window": {
-      "minimize": "最小化",
-      "maximize": "最大化",
-      "restore": "还原",
-      "close": "关闭"
-    }
+    "loading": "加载中..."
+  },
+  "window": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭"
   },
   "workbench": {
     "brand": "Wework",
@@ -1943,12 +1943,6 @@
     "uploading": "上传中…",
     "running": "运行中…",
     "executor_required": "请先选择员工或 AI 智能体作为执行者",
-    "window": {
-      "minimize": "最小化",
-      "maximize": "最大化",
-      "restore": "还原",
-      "close": "关闭"
-    },
     "project_visibility": "项目权限",
     "project_visibility_private": "私有",
     "project_visibility_public": "公开",
