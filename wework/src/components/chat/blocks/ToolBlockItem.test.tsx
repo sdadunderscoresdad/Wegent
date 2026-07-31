@@ -171,7 +171,88 @@ describe('ToolBlockItem', () => {
     expect(screen.queryByText(/"query"/)).not.toBeInTheDocument()
   })
 
-  test('renders shell command working directory in expanded details', async () => {
+
+
+  test('summarizes quoted pwsh -Command wrappers before expanding', () => {
+    render(
+      <ToolBlockItem
+        block={{
+          id: 'cmd-pwsh-quoted',
+          subtaskId: 1,
+          type: 'tool',
+          toolName: 'bash',
+          toolInput: {
+            command:
+              '$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "cd D:\\jiaqi62\\Projects\\Wegent && Get-ChildItem -Recurse -File -Path src | Select-String -Pattern \"pattern\" -CaseSensitive"',
+          },
+          status: 'streaming',
+          createdAt: 1770000000002,
+        }}
+      />
+    )
+
+    // Get-ChildItem | Select-String should be classified as code search.
+    expect(screen.getByText('正在搜索代码')).toBeInTheDocument()
+    expect(screen.queryByText(/PowerShell/)).not.toBeInTheDocument()
+  })
+  test('summarizes wrapped Windows PowerShell commands before expanding', () => {
+    render(
+      <ToolBlockItem
+        block={{
+          id: 'cmd-pwsh-wrap',
+          subtaskId: 1,
+          type: 'tool',
+          toolName: 'bash',
+          toolInput: {
+            command: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe -c "rg --files src"',
+          },
+          status: 'done',
+          createdAt: 1770000000002,
+        }}
+      />
+    )
+
+    expect(screen.getByText('搜索代码')).toBeInTheDocument()
+    expect(screen.queryByText(/PowerShell/)).not.toBeInTheDocument()
+  })
+
+  test('summarizes git status commands before expanding', () => {
+    render(
+      <ToolBlockItem
+        block={{
+          id: 'cmd-git-status',
+          subtaskId: 1,
+          type: 'tool',
+          toolName: 'bash',
+          toolInput: { command: 'git status --short' },
+          status: 'done',
+          createdAt: 1770000000002,
+        }}
+      />
+    )
+
+    expect(screen.getByText(/git status/)).toBeInTheDocument()
+  })
+
+  test('summarizes file read commands before expanding', () => {
+    render(
+      <ToolBlockItem
+        block={{
+          id: 'cmd-cat',
+          subtaskId: 1,
+          type: 'tool',
+          toolName: 'bash',
+          toolInput: { command: 'cat src/app.ts' },
+          status: 'done',
+          createdAt: 1770000000002,
+        }}
+      />
+    )
+
+    expect(screen.getByText('读取 app.ts')).toBeInTheDocument()
+  })
+
+    test('renders shell command working directory in expanded details', async () => {
     const user = userEvent.setup()
 
     render(

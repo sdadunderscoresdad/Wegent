@@ -3,8 +3,11 @@ import type { ProcessingBlock, ToolBlock } from '@/types/workbench'
 import {
   buildProcessingDisplayRows,
   getToolActivityFilePaths,
+  getToolActivityKind,
   getToolActivitySearchItem,
   summarizeToolBlocks,
+  stripShellPrefix,
+  unwrapShellCommand,
 } from './toolBlockActivity'
 
 function tool(
@@ -112,6 +115,108 @@ describe('toolBlockActivity', () => {
         },
       ])
     ).toBe('已搜索代码')
+  })
+
+  test('unwraps Windows PowerShell wrapper commands', () => {
+    expect(
+      getToolActivityFilePaths(
+        tool('pwsh-cat', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe -c "cat src/app.ts"')
+      )
+    ).toEqual(['src/app.ts'])
+
+    expect(
+      getToolActivityKind(
+        tool('pwsh-rg', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe -c "rg pattern src"')
+      )
+    ).toBe('search')
+  })
+
+
+  test('strips cd prefix before identifying command executable', () => {
+    expect(stripShellPrefix('cd D:\\Wegent && rg pattern .')).toBe('rg pattern .')
+    expect(stripShellPrefix('cd /tmp; cat file.txt')).toBe('cat file.txt')
+  })
+
+  test('classifies PowerShell Select-String as search activity', () => {
+    expect(
+      getToolActivityKind(
+        tool(
+          'pwsh-select-string',
+          '$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "cd D:\\Wegent && Select-String -Path src/cli.ts -Pattern \"foo\""'
+        )
+      )
+    ).toBe('search')
+  })
+
+  test('classifies PowerShell Get-Content as file read activity', () => {
+    expect(
+      getToolActivityFilePaths(
+        tool(
+          'pwsh-get-content',
+          '$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "cd D:\\Wegent && Get-Content -Path src/app.ts"'
+        )
+      )
+    ).toEqual(['src/app.ts'])
+  })
+
+  test('classifies PowerShell Get-ChildItem with -File as search activity', () => {
+    expect(
+      getToolActivityKind(
+        tool(
+          'pwsh-gci',
+          'pwsh -c "Get-ChildItem -Recurse -File -Path src | Select-String -Pattern foo"'
+        )
+      )
+    ).toBe('search')
+  })
+
+
+  test('falls back to extracting unbalanced PowerShell -Command contents', () => {
+    expect(
+      unwrapShellCommand(
+        "$ \"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'Get-ChildItem -Recurse -File -Force | Where-Object { $_.FullName -notmatch \"\\\\"
+      )
+    ).toBe('Get-ChildItem -Recurse -File -Force | Where-Object { $_.FullName -notmatch \"\\\\')
+
+    expect(
+      unwrapShellCommand(
+        'pwsh -c "rg -n pattern -g !.git -g !node_modules --no-ignore"'
+      )
+    ).toBe('rg -n pattern -g !.git -g !node_modules --no-ignore')
+  })
+
+  test('unwraps quoted pwsh.exe -Command wrappers', () => {
+    expect(
+      unwrapShellCommand(
+        '$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "rg -n \"pattern\" src"'
+      )
+    ).toBe('rg -n \"pattern\" src')
+
+    expect(
+      unwrapShellCommand(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Get-ChildItem src"'
+      )
+    ).toBe('Get-ChildItem src')
+
+    expect(
+      unwrapShellCommand(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "Select-String -Path src\\* -Recurse -Pattern foo"'
+      )
+    ).toBe('Select-String -Path src\\* -Recurse -Pattern foo')
+  })
+
+  test('preserves macOS zsh -lc unwrapping', () => {
+    expect(
+      getToolActivityFilePaths(
+        tool('pwsh-cat', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe -c "cat src/app.ts"')
+      )
+    ).toEqual(['src/app.ts'])
+
+    expect(
+      getToolActivityKind(
+        tool('pwsh-rg', 'C:\\Program Files\\PowerShell\\7\\pwsh.exe -c "rg pattern src"')
+      )
+    ).toBe('search')
   })
 
   test('extracts read file paths from shell read commands', () => {

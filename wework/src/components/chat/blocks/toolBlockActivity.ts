@@ -45,8 +45,16 @@ interface ActivityStats {
 }
 
 const SEARCH_TOOL_HINTS = ['search', 'grep', 'glob']
-const SEARCH_COMMANDS = new Set(['rg', 'grep', 'find', 'fd', 'ls', 'tree', 'ag', 'ack'])
-const FILE_COMMANDS = new Set(['cat', 'sed', 'head', 'tail', 'wc', 'nl', 'stat', 'file'])
+const SEARCH_COMMANDS = new Set([
+  'rg', 'grep', 'find', 'fd', 'ls', 'tree', 'ag', 'ack',
+  // PowerShell equivalents
+  'select-string', 'sls',
+])
+const FILE_COMMANDS = new Set([
+  'cat', 'sed', 'head', 'tail', 'wc', 'nl', 'stat', 'file',
+  // PowerShell equivalents
+  'get-content', 'gc',
+])
 const HIDDEN_ACTIVITY_TOOLS = new Set(['write_stdin', 'functions.write_stdin'])
 const RECONNECTING_TOOL_NAME = 'runtime_reconnecting'
 
@@ -320,18 +328,23 @@ export function getToolActivityGroupKind(blocks: ToolBlock[]): ToolActivityKind 
   return primaryKinds.every(kind => kind === firstKind) ? firstKind : 'tool'
 }
 
-function getCommandActivityKind(command?: string): ToolActivityKind {
+export function getCommandActivityKind(command?: string): ToolActivityKind {
   const executable = getCommandExecutable(command)
   if (!executable) return 'command'
   if (SEARCH_COMMANDS.has(executable)) return 'search'
   if (FILE_COMMANDS.has(executable)) return 'file'
   if (executable === 'git' && command?.includes(' grep ')) return 'search'
   if (executable === 'git' && command?.includes(' ls-files')) return 'search'
+  // PowerShell Get-ChildItem used with -File / -Recurse is commonly a file list/search.
+  if (executable === 'get-childitem' || executable === 'gci') {
+    const unwrapped = unwrapShellCommand(command ?? '').toLowerCase()
+    if (unwrapped.includes(' -file ') || unwrapped.includes(' -recurse ')) return 'search'
+  }
   return 'command'
 }
 
 function getReadCommandFilePaths(command?: string): string[] {
-  const words = splitShellWords(unwrapShellCommand(command ?? ''))
+  const words = splitShellWords(stripShellPrefix(unwrapShellCommand(command ?? '')))
   const executableIndex = getExecutableWordIndex(words)
   const executable = words[executableIndex]?.split('/').pop()?.toLowerCase()
   if (!executable || !FILE_COMMANDS.has(executable)) return []
@@ -345,7 +358,7 @@ function getSearchCommandSummary(
   command: string | undefined,
   cwd: string | undefined
 ): { query: string; scope?: string } | undefined {
-  const words = splitShellWords(unwrapShellCommand(command ?? ''))
+  const words = splitShellWords(stripShellPrefix(unwrapShellCommand(command ?? '')))
   const executableIndex = getExecutableWordIndex(words)
   const executable = words[executableIndex]?.split('/').pop()?.toLowerCase()
   if (!executable) return undefined
@@ -361,8 +374,12 @@ function getSearchCommandSummary(
   return undefined
 }
 
-const PATTERN_SEARCH_COMMANDS = new Set(['rg', 'grep', 'ag', 'ack', 'fd'])
-const SEARCH_PATTERN_OPTIONS = new Set(['-e', '--regexp', '--pattern'])
+const PATTERN_SEARCH_COMMANDS = new Set([
+  'rg', 'grep', 'ag', 'ack', 'fd',
+  // PowerShell equivalents
+  'select-string', 'sls',
+])
+const SEARCH_PATTERN_OPTIONS = new Set(['-e', '--regexp', '--pattern', '-Pattern'])
 const SEARCH_COMMAND_OPTIONS_WITH_VALUES = new Set([
   '-A',
   '--after-context',
@@ -421,6 +438,7 @@ function getPatternSearchArguments(args: string[]):
   let query: string | undefined
   let queryFromOption = false
   const positional: string[] = []
+  const scopes: string[] = []
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -439,6 +457,15 @@ function getPatternSearchArguments(args: string[]):
         if (!arg.includes('=')) index += 1
         continue
       }
+      // PowerShell Select-String uses -Path for files and -Pattern for the query.
+      if (optionName.toLowerCase() === '-path') {
+        const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1]
+        if (value) {
+          scopes.push(...value.split(',').map(p => p.trim()).filter(Boolean))
+        }
+        if (!arg.includes('=')) index += 1
+        continue
+      }
       if (!arg.includes('=') && SEARCH_COMMAND_OPTIONS_WITH_VALUES.has(optionName)) index += 1
       continue
     }
@@ -447,6 +474,9 @@ function getPatternSearchArguments(args: string[]):
 
   query = query ?? positional[0]
   if (!query) return undefined
+  if (scopes.length > 0) {
+    return { query, scopes }
+  }
   return { query, scopes: queryFromOption ? positional : positional.slice(1) }
 }
 
@@ -497,6 +527,11 @@ const READ_COMMAND_OPTIONS_WITH_VALUES = new Set([
   '--max-count',
   '-t',
   '--type',
+  // PowerShell Get-Content options
+  '-TotalCount',
+  '-Tail',
+  '-ReadCount',
+  '-Encoding',
 ])
 
 function getSedInputPaths(args: string[]): string[] {
@@ -517,6 +552,15 @@ function getPathArguments(args: string[], optionsWithValues: ReadonlySet<string>
     }
     if (arg.startsWith('-')) {
       const optionName = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg
+      // PowerShell Get-Content accepts -Path with comma-separated file paths.
+      if (optionName.toLowerCase() === '-path') {
+        const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1]
+        if (value) {
+          paths.push(...value.split(',').map(p => p.trim()).filter(isLikelyPathArgument))
+        }
+        if (!arg.includes('=')) index += 1
+        continue
+      }
       if (!arg.includes('=') && optionsWithValues.has(optionName)) index += 1
       continue
     }
@@ -551,7 +595,7 @@ function getExecutableWordIndex(words: string[]): number {
   return index
 }
 
-function splitShellWords(command: string): string[] {
+export function splitShellWords(command: string): string[] {
   const words: string[] = []
   let current = ''
   let quote: '"' | "'" | null = null
@@ -619,8 +663,8 @@ function splitShellWords(command: string): string[] {
   return words
 }
 
-function getCommandExecutable(command?: string): string {
-  const innerCommand = unwrapShellCommand(command ?? '')
+export function getCommandExecutable(command?: string): string {
+  const innerCommand = stripShellPrefix(unwrapShellCommand(command ?? ''))
   const match = innerCommand.match(
     /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:sudo\s+)?([^\s]+)/
   )
@@ -628,9 +672,33 @@ function getCommandExecutable(command?: string): string {
   return executable?.toLowerCase() ?? ''
 }
 
-function unwrapShellCommand(command: string): string {
-  const match = command.match(/(?:^|\s)-lc\s+(['"])([\s\S]*)\1/)
-  return (match?.[2] ?? command).trim()
+export function stripShellPrefix(command: string): string {
+  // Skip common leading wrappers like "cd <path> && " so the real
+  // executable (rg, Select-String, Get-Content, etc.) can be identified.
+  return command.replace(/^\s*cd\s+\S+\s*(?:&&|;|\r?\n)\s*/, '')
+}
+
+export function unwrapShellCommand(command: string): string {
+  // Strip an optional leading shell prompt such as "$ " shown in some UIs.
+  const stripped = command.replace(/^\$\s+/, '')
+  // Codex on macOS wraps shell commands as: /bin/zsh -lc "..."
+  const lcMatch = stripped.match(/(?:^|\s)-lc\s+(['"])([\s\S]*)\1\s*$/i)
+  if (lcMatch) return lcMatch[2].trim()
+  // Codex on Windows wraps shell commands as:
+  //   pwsh -c "..." or powershell /c "..."
+  //   "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "..."
+  const shellMatch = stripped.match(
+    /^(?:"(?:.*\\)?(?:pwsh|powershell|bash|zsh|sh)(?:\.exe)?"|(?:.*\\)?(?:pwsh|powershell|bash|zsh|sh)(?:\.exe)?)\s+(?:-lc|(?:-|\/)(?:[cC]ommand|[cC]))\s+(['"])([\s\S]*)\1\s*$/i
+  )
+  if (shellMatch) return shellMatch[2].trim()
+  // Some Windows wrappers quote the inner command with the opposite quote or
+  // the command is truncated before the closing quote. Try a best-effort
+  // extraction that returns everything after the -Command/-c flag.
+  const fallbackMatch = stripped.match(
+    /^(?:"(?:.*\\)?(?:pwsh|powershell|bash|zsh|sh)(?:\.exe)?"|(?:.*\\)?(?:pwsh|powershell|bash|zsh|sh)(?:\.exe)?)\s+(?:-lc|(?:-|\/)(?:[cC]ommand|[cC]))\s+(['"])(.*)$/i
+  )
+  if (fallbackMatch) return fallbackMatch[2].trim()
+  return stripped.trim()
 }
 
 function isCompletedToolBlock(block: ToolBlock): boolean {
