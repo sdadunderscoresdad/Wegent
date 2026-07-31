@@ -57,7 +57,7 @@ export const DEFAULT_LOCAL_WORKSPACE_OPENER_ID: LocalWorkspaceOpenerId = 'vscode
 
 export function getWorkspaceOpenersForPlatform(
   platform: 'mac' | 'win' | 'linux'
-): typeof LOCAL_WORKSPACE_OPENERS {
+): ReadonlyArray<{ id: LocalWorkspaceOpenerId; label: string }> {
   if (platform === 'mac') return MAC_LOCAL_WORKSPACE_OPENERS
   if (platform === 'win') return WINDOWS_LOCAL_WORKSPACE_OPENERS
   return []

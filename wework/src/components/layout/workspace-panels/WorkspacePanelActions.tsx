@@ -107,7 +107,7 @@ export const WorkspacePanelActions = memo(function WorkspacePanelActions({
   const [ideLoading, setIdeLoading] = useState(false)
   const [ideError, setIdeError] = useState<string | null>(null)
   const [openerAvailability, setOpenerAvailability] = useState<
-    Record<LocalWorkspaceOpenerId, boolean>
+    Partial<Record<LocalWorkspaceOpenerId, boolean>>
   >({})
   const showEnvironmentInfo = environmentInfoVisible && (mode === 'all' || mode === 'environment')
   const showPrimaryTarget = mode === 'all' || mode === 'primary-target'

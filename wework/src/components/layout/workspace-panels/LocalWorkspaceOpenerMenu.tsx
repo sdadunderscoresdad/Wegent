@@ -33,7 +33,7 @@ interface LocalWorkspaceOpenerPickerProps {
   buttonClassName: string
   preferredPlacement?: 'above' | 'below'
   align?: 'start' | 'end'
-  availability?: Record<LocalWorkspaceOpenerId, boolean>
+  availability?: Partial<Record<LocalWorkspaceOpenerId, boolean>>
   onSelect: (opener: LocalWorkspaceOpenerId) => void | Promise<void>
 }
 
