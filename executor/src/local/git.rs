@@ -16,9 +16,10 @@
 //! argv arguments and a PATH that has been pre-filled with common installation directories on
 //! Windows.
 
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::{
     collections::HashMap,
-    path::PathBuf,
     process::{Command, Stdio},
     time::Instant,
 };
@@ -29,6 +30,7 @@ use crate::local::command::build_env;
 /// Common installation directories for Git on Windows. These are appended to the process PATH
 /// so that `git` can be resolved even when the executor is started from an environment that
 /// does not include them.
+#[cfg(windows)]
 const WINDOWS_GIT_PATHS: &[&str] = &[
     "C:\\Program Files\\Git\\cmd",
     "C:\\Program Files (x86)\\Git\\cmd",
@@ -49,7 +51,10 @@ impl GitOutput {
         self.exit_code == Some(0)
     }
 
-    pub fn into_command_result(self, stdout_on_success: bool) -> crate::local::command::CommandResult {
+    pub fn into_command_result(
+        self,
+        stdout_on_success: bool,
+    ) -> crate::local::command::CommandResult {
         use crate::local::command::CommandResult;
         if self.success() {
             CommandResult::ok(if stdout_on_success {
@@ -123,14 +128,20 @@ pub async fn run_git_async(
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let extra_env = extra_env.clone();
 
-    tokio::task::spawn_blocking(move || run_git(&cwd, &args.iter().map(String::as_str).collect::<Vec<_>>(), &extra_env))
-        .await
-        .unwrap_or_else(|error| GitOutput {
-            stdout: String::new(),
-            stderr: format!("git task panicked: {error}"),
-            exit_code: None,
-            duration: 0.0,
-        })
+    tokio::task::spawn_blocking(move || {
+        run_git(
+            &cwd,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &extra_env,
+        )
+    })
+    .await
+    .unwrap_or_else(|error| GitOutput {
+        stdout: String::new(),
+        stderr: format!("git task panicked: {error}"),
+        exit_code: None,
+        duration: 0.0,
+    })
 }
 
 /// Run a Git subcommand and return its stdout if it succeeded and produced output.
@@ -164,11 +175,17 @@ pub fn resolve_merge_base(cwd: &str, extra_env: &HashMap<String, String>) -> Opt
     // Try the remote default branch symbolic ref first.
     if let Some(remote_default) = git_stdout(
         cwd,
-        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
         extra_env,
     ) {
         if git_rev_parse_verify(cwd, &format!("{remote_default}^{{commit}}"), extra_env) {
-            if let Some(base) = git_stdout(cwd, &["merge-base", &remote_default, "HEAD"], extra_env) {
+            if let Some(base) = git_stdout(cwd, &["merge-base", &remote_default, "HEAD"], extra_env)
+            {
                 return Some(base);
             }
         }
@@ -186,11 +203,17 @@ pub fn resolve_merge_base(cwd: &str, extra_env: &HashMap<String, String>) -> Opt
 }
 
 fn git_rev_parse_verify(cwd: &str, reference: &str, extra_env: &HashMap<String, String>) -> bool {
-    run_git(cwd, &["rev-parse", "--verify", "--quiet", reference], extra_env).success()
+    run_git(
+        cwd,
+        &["rev-parse", "--verify", "--quiet", reference],
+        extra_env,
+    )
+    .success()
 }
 
 #[cfg(windows)]
 fn prepend_windows_git_paths(command: &mut Command) {
+    use std::path::PathBuf;
     let current_path = std::env::var("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
 
@@ -212,9 +235,6 @@ fn prepend_windows_git_paths(command: &mut Command) {
         command.env("PATH", joined);
     }
 }
-
-#[cfg(not(windows))]
-fn prepend_windows_git_paths(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
