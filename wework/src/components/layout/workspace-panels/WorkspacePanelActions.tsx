@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AlertCircle, Loader2, Maximize2, Minimize2, PanelBottom, PanelRight } from 'lucide-react'
 import type { WorkspaceSessionApi } from '@/features/workbench/workbenchServices'
@@ -12,7 +12,11 @@ import {
   DEFAULT_LOCAL_WORKSPACE_OPENER_ID,
   type LocalWorkspaceOpenerId,
 } from '@/lib/local-workspace-openers'
-import { isLocalTerminalAvailable, openLocalWorkspace } from '@/lib/local-terminal'
+import {
+  checkLocalWorkspaceOpenerAvailability,
+  isLocalTerminalAvailable,
+  openLocalWorkspace,
+} from '@/lib/local-terminal'
 import { configuredWorkspacePath } from '@/lib/project-workspace'
 import { findWorkbenchDevice, getProjectDeviceId } from '@/lib/workbench-device'
 import { EnvironmentInfoPopover } from '../EnvironmentInfoPopover'
@@ -102,6 +106,9 @@ export const WorkspacePanelActions = memo(function WorkspacePanelActions({
   const { t } = useTranslation('common')
   const [ideLoading, setIdeLoading] = useState(false)
   const [ideError, setIdeError] = useState<string | null>(null)
+  const [openerAvailability, setOpenerAvailability] = useState<
+    Record<LocalWorkspaceOpenerId, boolean>
+  >({})
   const showEnvironmentInfo = environmentInfoVisible && (mode === 'all' || mode === 'environment')
   const showPrimaryTarget = mode === 'all' || mode === 'primary-target'
   const showBottomPanelToggle =
@@ -142,6 +149,47 @@ export const WorkspacePanelActions = memo(function WorkspacePanelActions({
     (projectUsesLocalWorkspace ||
       (codeServerDevice && supportsLocalTerminalLaunch(codeServerDevice)))
   )
+
+  useEffect(() => {
+    if (!localWorkspaceEnabled) return
+
+    const openers = [
+      DEFAULT_LOCAL_WORKSPACE_OPENER_ID,
+      'vscode-insiders',
+      'cursor',
+      'sublime-text',
+      'windsurf',
+      'finder',
+      'terminal',
+      'iterm2',
+      'ghostty',
+      'warp',
+      'xcode',
+      'android-studio',
+      'intellij-idea',
+      'powershell',
+      'cmd',
+      'windows-terminal',
+    ] as const
+
+    let cancelled = false
+    void Promise.all(
+      openers.map(async opener => {
+        try {
+          const available = await checkLocalWorkspaceOpenerAvailability(opener)
+          if (cancelled) return
+          setOpenerAvailability(prev => ({ ...prev, [opener]: available }))
+        } catch (error) {
+          console.error(`Failed to check availability of ${opener}:`, error)
+        }
+      })
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [localWorkspaceEnabled])
+
   const ideTitle = localWorkspaceEnabled
     ? t('workbench.open_project_ide_with', {
         opener: 'VS Code',
@@ -275,6 +323,7 @@ export const WorkspacePanelActions = memo(function WorkspacePanelActions({
             menuTestId="open-local-workspace-picker-menu"
             optionTestIdPrefix="open-local-workspace-option"
             disabled={ideLoading}
+            availability={openerAvailability}
             buttonClassName={cn(
               'flex h-8 w-7 shrink-0 items-center justify-center border-0 bg-transparent p-0 text-[#6b7280] transition-colors hover:bg-black/[0.06] hover:text-[#374151] active:bg-black/[0.10] focus-visible:outline-none disabled:cursor-wait [&_svg]:h-4 [&_svg]:w-4 [&_svg]:stroke-[2]',
               ideLoading && 'cursor-wait opacity-70'

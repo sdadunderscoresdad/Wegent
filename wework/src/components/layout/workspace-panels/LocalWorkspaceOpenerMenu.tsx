@@ -8,7 +8,11 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react'
-import { LOCAL_WORKSPACE_OPENERS, type LocalWorkspaceOpenerId } from '@/lib/local-workspace-openers'
+import {
+  getWorkspaceOpenersForPlatform,
+  type LocalWorkspaceOpenerId,
+} from '@/lib/local-workspace-openers'
+import { getPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
 const MENU_GAP = 8
@@ -29,6 +33,7 @@ interface LocalWorkspaceOpenerPickerProps {
   buttonClassName: string
   preferredPlacement?: 'above' | 'below'
   align?: 'start' | 'end'
+  availability?: Record<LocalWorkspaceOpenerId, boolean>
   onSelect: (opener: LocalWorkspaceOpenerId) => void | Promise<void>
 }
 
@@ -41,6 +46,7 @@ export function LocalWorkspaceOpenerPicker({
   buttonClassName,
   preferredPlacement = 'below',
   align = 'end',
+  availability = {},
   onSelect,
 }: LocalWorkspaceOpenerPickerProps) {
   const [open, setOpen] = useState(false)
@@ -130,6 +136,8 @@ export function LocalWorkspaceOpenerPicker({
     await onSelect(opener)
   }
 
+  const openers = getWorkspaceOpenersForPlatform(getPlatform())
+
   return (
     <>
       <button
@@ -158,19 +166,32 @@ export function LocalWorkspaceOpenerPicker({
             }}
             className="fixed z-system-popover max-h-[520px] w-[280px] overflow-y-auto rounded-2xl border border-border bg-popover p-2 text-text-primary shadow-[0_18px_54px_rgba(0,0,0,0.16)] ring-1 ring-black/5"
           >
-            {LOCAL_WORKSPACE_OPENERS.map(opener => (
-              <button
-                key={opener.id}
-                type="button"
-                role="menuitem"
-                data-testid={optionTestIdPrefix ? `${optionTestIdPrefix}-${opener.id}` : undefined}
-                onClick={() => void selectOpener(opener.id)}
-                className="flex h-10 w-full items-center gap-3 rounded-xl px-2.5 text-left text-base font-normal leading-5 text-text-primary transition-colors hover:bg-muted"
-              >
-                <LocalWorkspaceOpenerIcon opener={opener.id} className="h-5 w-5 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{opener.label}</span>
-              </button>
-            ))}
+            {openers.map(opener => {
+              const available = availability[opener.id] ?? true
+              return (
+                <button
+                  key={opener.id}
+                  type="button"
+                  role="menuitem"
+                  data-testid={
+                    optionTestIdPrefix ? `${optionTestIdPrefix}-${opener.id}` : undefined
+                  }
+                  onClick={() => {
+                    if (!available) return
+                    void selectOpener(opener.id)
+                  }}
+                  disabled={!available}
+                  aria-disabled={!available}
+                  className={cn(
+                    'flex h-10 w-full items-center gap-3 rounded-xl px-2.5 text-left text-base font-normal leading-5 text-text-primary transition-colors',
+                    available ? 'hover:bg-muted' : 'cursor-not-allowed opacity-45'
+                  )}
+                >
+                  <LocalWorkspaceOpenerIcon opener={opener.id} className="h-5 w-5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{opener.label}</span>
+                </button>
+              )
+            })}
           </div>,
           document.body
         )}
@@ -252,6 +273,10 @@ function openerIconContent(opener: LocalWorkspaceOpenerId): ReactNode {
     case 'iterm2':
     case 'ghostty':
     case 'warp':
+      return <SquareTerminal className="h-3.5 w-3.5" />
+    case 'powershell':
+    case 'cmd':
+    case 'windows-terminal':
       return <SquareTerminal className="h-3.5 w-3.5" />
     case 'xcode':
     case 'android-studio':

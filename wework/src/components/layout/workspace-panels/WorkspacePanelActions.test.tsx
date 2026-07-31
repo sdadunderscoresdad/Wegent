@@ -4,12 +4,17 @@ import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { WorkspaceSessionApi } from '@/features/workbench/workbenchServices'
 import { openExternalUrl } from '@/lib/external-links'
-import { isLocalTerminalAvailable, openLocalWorkspace } from '@/lib/local-terminal'
+import {
+  checkLocalWorkspaceOpenerAvailability,
+  isLocalTerminalAvailable,
+  openLocalWorkspace,
+} from '@/lib/local-terminal'
 import { WorkspacePanelActions } from './WorkspacePanelActions'
 
 vi.mock('@/lib/local-terminal', () => ({
   isLocalTerminalAvailable: vi.fn(),
   openLocalWorkspace: vi.fn(),
+  checkLocalWorkspaceOpenerAvailability: vi.fn(),
 }))
 
 vi.mock('@/lib/external-links', () => ({
@@ -19,6 +24,7 @@ vi.mock('@/lib/external-links', () => ({
 const openExternalUrlMock = vi.mocked(openExternalUrl)
 const isLocalTerminalAvailableMock = vi.mocked(isLocalTerminalAvailable)
 const openLocalWorkspaceMock = vi.mocked(openLocalWorkspace)
+const checkLocalWorkspaceOpenerAvailabilityMock = vi.mocked(checkLocalWorkspaceOpenerAvailability)
 const startProjectCodeServerMock = vi.fn()
 const startDeviceCodeServerMock = vi.fn()
 const workspaceSessionApi: WorkspaceSessionApi = {
@@ -70,6 +76,7 @@ describe('WorkspacePanelActions', () => {
     setWindowWidth(originalInnerWidth)
     isLocalTerminalAvailableMock.mockReturnValue(false)
     openLocalWorkspaceMock.mockResolvedValue(undefined)
+    checkLocalWorkspaceOpenerAvailabilityMock.mockResolvedValue(true)
     startProjectCodeServerMock.mockResolvedValue({
       session_id: 'ide-1',
       project_id: 7,
@@ -413,6 +420,9 @@ describe('WorkspacePanelActions', () => {
       'IntelliJ IDEA'
     )
 
+    expect(screen.getByTestId('open-local-workspace-option-finder')).toBeInTheDocument()
+    expect(screen.queryByTestId('open-local-workspace-option-powershell')).not.toBeInTheDocument()
+
     await userEvent.click(screen.getByTestId('open-local-workspace-option-intellij-idea'))
 
     await waitFor(() =>
@@ -421,6 +431,59 @@ describe('WorkspacePanelActions', () => {
         path: '/Users/me/project38',
       })
     )
+  })
+
+  test('grays out unavailable local workspace openers', async () => {
+    isLocalTerminalAvailableMock.mockReturnValue(true)
+    checkLocalWorkspaceOpenerAvailabilityMock.mockImplementation(async opener =>
+      opener === 'vscode' ? true : false
+    )
+
+    render(
+      <WorkspacePanelActions
+        {...baseProps}
+        currentProject={{
+          id: 7,
+          name: 'project38',
+          config: {
+            execution: {
+              targetType: 'local',
+              deviceId: 'device-1',
+            },
+            workspace: {
+              source: 'local_path',
+              localPath: '/Users/me/project38',
+            },
+          },
+          tasks: [],
+        }}
+        devices={[
+          {
+            id: 1,
+            device_id: 'device-1',
+            name: 'Local Device',
+            status: 'online',
+            is_default: false,
+            device_type: 'local',
+            bind_shell: 'claudecode',
+          },
+        ]}
+      />
+    )
+
+    await userEvent.click(screen.getByTestId('open-local-workspace-picker-button'))
+
+    await waitFor(
+      () => expect(checkLocalWorkspaceOpenerAvailabilityMock).toHaveBeenCalledWith('vscode'),
+      { timeout: 3000 }
+    )
+
+    const vscodeOption = await screen.findByTestId('open-local-workspace-option-vscode')
+    const cursorOption = screen.getByTestId('open-local-workspace-option-cursor')
+
+    expect(vscodeOption).not.toBeDisabled()
+    expect(cursorOption).toBeDisabled()
+    expect(cursorOption).toHaveClass('opacity-45')
   })
 
   test('opens cloud IDE sessions through the external URL helper', async () => {

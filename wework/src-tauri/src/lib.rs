@@ -1947,6 +1947,163 @@ fn local_workspace_opener_app_name(opener: &str) -> Option<&'static str> {
     }
 }
 
+fn local_workspace_opener_command_name(opener: &str) -> Option<&'static str> {
+    match opener {
+        "vscode" => Some("code.exe"),
+        "vscode-insiders" => Some("code-insiders.exe"),
+        "cursor" => Some("cursor.exe"),
+        "sublime-text" => Some("subl.exe"),
+        "windsurf" => Some("windsurf.exe"),
+        "powershell" => Some("powershell.exe"),
+        "cmd" => Some("cmd.exe"),
+        "windows-terminal" => Some("wt.exe"),
+        "android-studio" => Some("studio64.exe"),
+        "intellij-idea" => Some("idea64.exe"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn command_exists_in_path(name: &str) -> bool {
+    std::process::Command::new("/usr/bin/which")
+        .arg(name)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn command_exists_in_path(name: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    std::process::Command::new("where")
+        .arg(name)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn command_exists_in_path(_name: &str) -> bool {
+    false
+}
+
+fn local_workspace_opener_available(opener: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        match opener {
+            "vscode" | "vscode-insiders" | "cursor" | "sublime-text" | "windsurf" => {
+                let app_name = local_workspace_opener_app_name(opener).unwrap_or(opener);
+                let applications = std::path::PathBuf::from("/Applications");
+                let user_applications = dirs::home_dir()
+                    .map(|home| home.join("Applications"))
+                    .unwrap_or_else(|| applications.clone());
+                for dir in [&applications, &user_applications] {
+                    let mut entries = match std::fs::read_dir(dir) {
+                        Ok(entries) => entries,
+                        Err(_) => continue,
+                    };
+                    let found = entries.any(|entry| {
+                        entry
+                            .ok()
+                            .and_then(|entry| entry.file_name().into_string().ok())
+                            .is_some_and(|name| {
+                                name.starts_with(app_name) && name.ends_with(".app")
+                            })
+                    });
+                    if found {
+                        return true;
+                    }
+                }
+                false
+            }
+            "finder" | "terminal" => true,
+            "iterm2" => {
+                let app_name = local_workspace_opener_app_name(opener).unwrap_or(opener);
+                let applications = std::path::PathBuf::from("/Applications");
+                let user_applications = dirs::home_dir()
+                    .map(|home| home.join("Applications"))
+                    .unwrap_or_else(|| applications.clone());
+                for dir in [&applications, &user_applications] {
+                    let mut entries = match std::fs::read_dir(dir) {
+                        Ok(entries) => entries,
+                        Err(_) => continue,
+                    };
+                    let found = entries.any(|entry| {
+                        entry
+                            .ok()
+                            .and_then(|entry| entry.file_name().into_string().ok())
+                            .is_some_and(|name| {
+                                name.starts_with(app_name) && name.ends_with(".app")
+                            })
+                    });
+                    if found {
+                        return true;
+                    }
+                }
+                false
+            }
+            "ghostty" => command_exists_in_path("ghostty"),
+            "warp" => command_exists_in_path("warp"),
+            "xcode" => {
+                let applications = std::path::PathBuf::from("/Applications");
+                applications.join("Xcode.app").is_dir()
+            }
+            "android-studio" | "intellij-idea" => {
+                let app_name = local_workspace_opener_app_name(opener).unwrap_or(opener);
+                let applications = std::path::PathBuf::from("/Applications");
+                let user_applications = dirs::home_dir()
+                    .map(|home| home.join("Applications"))
+                    .unwrap_or_else(|| applications.clone());
+                for dir in [&applications, &user_applications] {
+                    let mut entries = match std::fs::read_dir(dir) {
+                        Ok(entries) => entries,
+                        Err(_) => continue,
+                    };
+                    let found = entries.any(|entry| {
+                        entry
+                            .ok()
+                            .and_then(|entry| entry.file_name().into_string().ok())
+                            .is_some_and(|name| {
+                                name.starts_with(app_name) && name.ends_with(".app")
+                            })
+                    });
+                    if found {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        local_workspace_opener_command_name(opener)
+            .map(command_exists_in_path)
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = opener;
+        false
+    }
+}
+
+#[tauri::command]
+fn check_local_workspace_opener_availability(opener: String) -> bool {
+    let opener = normalized_non_empty(opener).unwrap_or_default();
+    if opener.is_empty() {
+        return false;
+    }
+    local_workspace_opener_available(&opener)
+}
+
 #[cfg(target_os = "macos")]
 fn open_local_workspace_with_app(app_name: &str, path: &str) -> Result<(), String> {
     let output = std::process::Command::new("open")
@@ -1968,7 +2125,62 @@ fn open_local_workspace_with_app(app_name: &str, path: &str) -> Result<(), Strin
 
 #[cfg(not(target_os = "macos"))]
 fn open_local_workspace_with_app(_app_name: &str, _path: &str) -> Result<(), String> {
-    Err("Opening a local workspace is only supported on macOS".to_string())
+    Err("Opening a local workspace is only supported on macOS and Windows".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn open_local_workspace_with_app_windows(opener: &str, path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let exe = local_workspace_opener_command_name(opener)
+        .ok_or_else(|| format!("Unsupported workspace opener: {opener}"))?;
+
+    if !command_exists_in_path(exe) {
+        return Err(format!("{exe} was not found on this system"));
+    }
+
+    let path = std::path::Path::new(path);
+    let path_str = path.to_string_lossy();
+
+    let status = match opener {
+        "powershell" => std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "start",
+                "",
+                "powershell.exe",
+                "-NoExit",
+                "-Command",
+                "Set-Location",
+                &path_str,
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|error| format!("Failed to run PowerShell command: {error}")),
+        "cmd" => std::process::Command::new("cmd")
+            .args(["/c", "start", "", "cmd.exe", "/k", "cd", "/d", &path_str])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|error| format!("Failed to run Command Prompt command: {error}")),
+        "windows-terminal" => std::process::Command::new("cmd")
+            .args(["/c", "start", "", "wt.exe", "-d", &path_str])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|error| format!("Failed to run Windows Terminal command: {error}")),
+        _ => std::process::Command::new("cmd")
+            .args(["/c", "start", "", exe, &path_str])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|error| format!("Failed to run {exe}: {error}")),
+    }?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Failed to open workspace with {exe}"))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2000,14 +2212,28 @@ fn open_local_workspace(opener: String, path: String) -> Result<(), String> {
     let opener =
         normalized_non_empty(opener).ok_or_else(|| "Workspace opener is empty".to_string())?;
     let path = normalized_non_empty(path).ok_or_else(|| "Workspace path is empty".to_string())?;
-    let app_name = local_workspace_opener_app_name(&opener)
-        .ok_or_else(|| format!("Unsupported workspace opener: {opener}"))?;
 
     if !std::path::Path::new(&path).exists() {
         return Err("Workspace path does not exist".to_string());
     }
 
-    open_local_workspace_with_app(app_name, &path)
+    #[cfg(target_os = "macos")]
+    {
+        let app_name = local_workspace_opener_app_name(&opener)
+            .ok_or_else(|| format!("Unsupported workspace opener: {opener}"))?;
+        open_local_workspace_with_app(app_name, &path)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        open_local_workspace_with_app_windows(&opener, &path)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = opener;
+        Err("Opening a local workspace is only supported on macOS and Windows".to_string())
+    }
 }
 
 #[tauri::command]
@@ -4594,6 +4820,7 @@ pub fn run() {
             open_local_file_with_application,
             get_local_file_opener_icon,
             open_local_workspace,
+            check_local_workspace_opener_availability,
             read_dropped_files,
             save_local_attachment_file,
             todo_store::ensure_todo_work_directory,

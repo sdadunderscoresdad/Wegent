@@ -114,6 +114,14 @@ export interface OpenLocalWorkspaceOptions {
   path?: string
 }
 
+export async function checkLocalWorkspaceOpenerAvailability(
+  opener: LocalWorkspaceOpenerId
+): Promise<boolean> {
+  if (!isLocalTerminalAvailable()) return false
+
+  return invoke<boolean>('check_local_workspace_opener_availability', { opener })
+}
+
 export async function openLocalWorkspace({
   opener,
   path,
