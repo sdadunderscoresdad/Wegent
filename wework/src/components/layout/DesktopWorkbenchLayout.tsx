@@ -37,7 +37,6 @@ import { CloudTodoWorkspace } from '@/features/todo/CloudTodoWorkspace'
 import { resolveLocalTodoProjects } from '@/features/todo/localTodoProjects'
 import { projectSpaceApis } from '@/features/todo/projectSpaceSelection'
 import { WorkbenchBackground } from '@/features/appearance'
-import { isTauriRuntime } from '@/lib/runtime-environment'
 import { useResizableSidebar } from './useResizableSidebar'
 import { useOptionalWorkspaceTabs } from '@/features/workspace-tabs/workspaceTabsContextValue'
 
@@ -210,8 +209,6 @@ export function DesktopWorkbenchLayout({ routeActive = true }: DesktopWorkbenchL
   } | null>(null)
   const imSessionsRequestSequence = useRef(0)
   const effectiveSidebarCollapsed = sidebarCollapsed || sidebarAutoCollapsed
-  const isTauri = isTauriRuntime()
-  const usesLayeredViewSurface = isTauri
 
   useEffect(() => {
     const handlePopState = () => {
@@ -555,12 +552,14 @@ export function DesktopWorkbenchLayout({ routeActive = true }: DesktopWorkbenchL
     hideResizeHandle = false,
     onPointerEnter,
     onPointerLeave,
+    onToggleSidebar,
   }: {
     collapsed: boolean
     containerTestId?: string
     hideResizeHandle?: boolean
     onPointerEnter?: PointerEventHandler<HTMLElement>
     onPointerLeave?: PointerEventHandler<HTMLElement>
+    onToggleSidebar?: () => void
   }) => (
     <DesktopSidebar
       user={state.user}
@@ -587,7 +586,7 @@ export function DesktopWorkbenchLayout({ routeActive = true }: DesktopWorkbenchL
       onResizeStateChange={setSidebarResizing}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      onToggleSidebar={() => updateSidebarCollapsed(!collapsed)}
+      onToggleSidebar={onToggleSidebar ?? (() => updateSidebarCollapsed(!collapsed))}
       onNewChat={onNewChat}
       onStartStandaloneChat={onStartStandaloneChat}
       onOpenSearch={() => setSearchOpen(true)}
@@ -641,14 +640,7 @@ export function DesktopWorkbenchLayout({ routeActive = true }: DesktopWorkbenchL
   )
 
   return (
-    <div
-      className={cn(
-        'relative h-full overflow-hidden bg-transparent text-text-primary',
-        'flex',
-        usesLayeredViewSurface &&
-          'app-view-surface rounded-xl border border-border/60 bg-background shadow-[0_3px_16px_rgba(0,0,0,0.04)]'
-      )}
-    >
+    <div className="relative flex h-full overflow-hidden bg-transparent text-text-primary">
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {!todoOpen && <WorkbenchBackground />}
         {!settingsOpen &&
@@ -680,6 +672,7 @@ export function DesktopWorkbenchLayout({ routeActive = true }: DesktopWorkbenchL
                 hideResizeHandle: true,
                 onPointerEnter: openSidebarPreview,
                 onPointerLeave: closeSidebarPreview,
+                onToggleSidebar: () => updateSidebarCollapsed(false),
               })}
             </div>
           </>
