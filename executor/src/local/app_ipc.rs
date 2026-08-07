@@ -37,7 +37,7 @@ use crate::{
 
 const DEFAULT_DEVICE_ID: &str = "local-device";
 #[cfg(windows)]
-const DEV_NULL: &str = "NUL";
+const DEV_NULL: &str = "/dev/null";
 const DEFAULT_TIMEOUT_SECONDS: f64 = 60.0;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const APP_IPC_REQUEST_TIMEOUT_SECONDS: u64 = 75;
@@ -1597,10 +1597,10 @@ async fn handle_builtin_device_command(
             output.push_str(&tracked);
 
             let untracked =
-                run_git_async(&path, &["ls-files", "--others", "--exclude-standard"], &env)
+                run_git_async(&path, &["ls-files", "--others", "--exclude-standard", "-z"], &env)
                     .await
                     .stdout;
-            for file in untracked.lines() {
+            for file in untracked.split('\0') {
                 if file.is_empty() {
                     continue;
                 }
@@ -1610,7 +1610,10 @@ async fn handle_builtin_device_command(
                     &env,
                 )
                 .await;
-                if file_diff.success() {
+                // `git diff --no-index` exits 1 when a diff exists and 2 on error, so
+                // include the diff whenever git produced output rather than checking
+                // success (which would drop every untracked file's diff).
+                if !file_diff.stdout.is_empty() {
                     output.push_str(&file_diff.stdout);
                 }
             }
@@ -1636,10 +1639,10 @@ async fn handle_builtin_device_command(
             output.push_str(&tracked);
 
             let untracked =
-                run_git_async(&path, &["ls-files", "--others", "--exclude-standard"], &env)
+                run_git_async(&path, &["ls-files", "--others", "--exclude-standard", "-z"], &env)
                     .await
                     .stdout;
-            for file in untracked.lines() {
+            for file in untracked.split('\0') {
                 if file.is_empty() {
                     continue;
                 }
@@ -1649,7 +1652,10 @@ async fn handle_builtin_device_command(
                     &env,
                 )
                 .await;
-                if file_diff.success() {
+                // `git diff --no-index` exits 1 when a diff exists and 2 on error, so
+                // include the diff whenever git produced output rather than checking
+                // success (which would drop every untracked file's diff).
+                if !file_diff.stdout.is_empty() {
                     output.push_str(&file_diff.stdout);
                 }
             }

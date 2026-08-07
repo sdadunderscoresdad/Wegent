@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::{
     collections::HashMap,
     process::{Command, Stdio},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::local::command::build_env;
@@ -43,6 +43,7 @@ pub struct GitOutput {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub duration: f64,
+    pub timed_out: bool,
 }
 
 impl GitOutput {
@@ -69,18 +70,41 @@ impl GitOutput {
                     self.stderr
                 },
                 self.duration,
-                false,
+                self.timed_out,
             )
         }
     }
+}
+
+/// Maximum time a single Git invocation may run before the child is killed.
+///
+/// Mirrors `DEFAULT_TIMEOUT_SECONDS` for shell commands so native Git calls cannot hang
+/// the blocking pool indefinitely (e.g. network stalls on `push`).
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Read a child's pipe to the end on a dedicated thread so the child can never block on a
+/// full pipe buffer while we poll its exit status.
+fn read_pipe_to_end(
+    mut reader: impl std::io::Read + Send + 'static,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    })
 }
 
 /// Run a Git subcommand in `cwd` with the given argv arguments.
 ///
 /// The first argument is the Git subcommand (e.g. `"branch"`, `"status"`); remaining entries
 /// are passed verbatim. The working directory is resolved from the caller-provided `path`.
+/// The child process is killed if it does not exit within [`GIT_COMMAND_TIMEOUT`].
 pub fn run_git(cwd: &str, args: &[&str], extra_env: &HashMap<String, String>) -> GitOutput {
     let started_at = Instant::now();
+
+    let environment = build_env(extra_env);
+    #[cfg(windows)]
+    let environment = prepend_windows_git_paths(environment);
 
     let mut command = Command::new("git");
     command
@@ -88,31 +112,91 @@ pub fn run_git(cwd: &str, args: &[&str], extra_env: &HashMap<String, String>) ->
         .arg(cwd)
         .args(args)
         .env_clear()
-        .envs(build_env(extra_env))
+        .envs(&environment)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    #[cfg(windows)]
-    prepend_windows_git_paths(&mut command);
-
-    let output = match command.output() {
-        Ok(output) => output,
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) => {
             return GitOutput {
                 stdout: String::new(),
                 stderr: error.to_string(),
                 exit_code: None,
                 duration: started_at.elapsed().as_secs_f64(),
+                timed_out: false,
             };
         }
     };
 
+    let stdout_reader = child.stdout.take().map(read_pipe_to_end);
+    let stderr_reader = child.stderr.take().map(read_pipe_to_end);
+
+    let deadline = started_at + GIT_COMMAND_TIMEOUT;
+    let mut timed_out = false;
+    let mut wait_error = None;
+    let mut status = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(exit_status)) => {
+                status = Some(exit_status);
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                wait_error = Some(error);
+                break;
+            }
+        }
+    }
+
+    if let Some(error) = wait_error {
+        let _ = child.kill();
+        let _ = child.wait();
+        let stdout = stdout_reader.and_then(|handle| handle.join().ok());
+        let _ = stderr_reader.and_then(|handle| handle.join().ok());
+        return GitOutput {
+            stdout: String::from_utf8_lossy(stdout.as_deref().unwrap_or_default()).to_string(),
+            stderr: format!("failed to poll git process: {error}"),
+            exit_code: None,
+            duration: started_at.elapsed().as_secs_f64(),
+            timed_out: false,
+        };
+    }
+
+    let stdout = stdout_reader.and_then(|handle| handle.join().ok());
+    let stderr = stderr_reader.and_then(|handle| handle.join().ok());
+    let stdout = String::from_utf8_lossy(stdout.as_deref().unwrap_or_default()).to_string();
+    let stderr = String::from_utf8_lossy(stderr.as_deref().unwrap_or_default()).to_string();
+
+    if timed_out {
+        return GitOutput {
+            stdout,
+            stderr: format!(
+                "git command timed out after {}s: {stderr}",
+                GIT_COMMAND_TIMEOUT.as_secs()
+            ),
+            exit_code: None,
+            duration: started_at.elapsed().as_secs_f64(),
+            timed_out: true,
+        };
+    }
+
     GitOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code(),
+        stdout,
+        stderr,
+        exit_code: status.and_then(|exit_status| exit_status.code()),
         duration: started_at.elapsed().as_secs_f64(),
+        timed_out: false,
     }
 }
 
@@ -192,6 +276,7 @@ pub async fn run_git_async(
         stderr: format!("git task panicked: {error}"),
         exit_code: None,
         duration: 0.0,
+        timed_out: false,
     })
 }
 
@@ -287,8 +372,11 @@ fn git_rev_parse_verify(cwd: &str, reference: &str, extra_env: &HashMap<String, 
 }
 
 #[cfg(windows)]
-fn prepend_windows_git_paths(command: &mut Command) {
-    let current_path = std::env::var("PATH").unwrap_or_default();
+fn prepend_windows_git_paths(mut environment: HashMap<String, String>) -> HashMap<String, String> {
+    // Extend the PATH already computed by `build_env` (which carries standard developer
+    // paths and any caller-provided entries) instead of replacing it with the raw
+    // process PATH, so WEGENT_EXTRA_PATHS and frontend-supplied PATH are not dropped.
+    let current_path = environment.get("PATH").cloned().unwrap_or_default();
     let mut entries: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
 
     // Add user-level Git installations as well.
@@ -306,8 +394,9 @@ fn prepend_windows_git_paths(command: &mut Command) {
     }
 
     if let Ok(joined) = std::env::join_paths(entries) {
-        command.env("PATH", joined);
+        environment.insert("PATH".to_owned(), joined.to_string_lossy().to_string());
     }
+    environment
 }
 
 #[cfg(test)]
@@ -344,5 +433,22 @@ mod tests {
         run_git_or_panic(cwd, &["checkout", "-b", "feature/test"]);
         let output = run_git_or_panic(cwd, &["branch", "--show-current"]);
         assert_eq!(output.trim(), "feature/test");
+    }
+
+    #[test]
+    fn diff_no_index_reports_differences() {
+        let tmp = TempDir::new().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "one").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "two").unwrap();
+        let output = run_git(
+            cwd,
+            &["diff", "--no-index", "--", "a.txt", "b.txt"],
+            &HashMap::new(),
+        );
+        // `git diff --no-index` exits 1 when the files differ and emits the patch on
+        // stdout; the spawn/poll runner must capture both even though exit code != 0.
+        assert_eq!(output.exit_code, Some(1));
+        assert!(!output.stdout.is_empty());
     }
 }
