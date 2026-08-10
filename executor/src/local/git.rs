@@ -347,12 +347,8 @@ fn run_git_raw<S: AsRef<std::ffi::OsStr>>(
         .as_ref()
         .map(|(_, truncated)| *truncated)
         .unwrap_or(false);
-    let stdout = stdout
-        .map(|(bytes, _)| bytes)
-        .unwrap_or_default();
-    let stderr = stderr
-        .map(|(bytes, _)| bytes)
-        .unwrap_or_default();
+    let stdout = stdout.map(|(bytes, _)| bytes).unwrap_or_default();
+    let stderr = stderr.map(|(bytes, _)| bytes).unwrap_or_default();
 
     if timed_out {
         let full_stderr = if stderr.is_empty() {
@@ -432,10 +428,8 @@ pub async fn run_git_raw_async<S: AsRef<std::ffi::OsStr>>(
     max_output_bytes: Option<usize>,
 ) -> RawGitOutput {
     let cwd = cwd.to_owned();
-    let args: Vec<std::ffi::OsString> = args
-        .iter()
-        .map(|arg| arg.as_ref().to_os_string())
-        .collect();
+    let args: Vec<std::ffi::OsString> =
+        args.iter().map(|arg| arg.as_ref().to_os_string()).collect();
     let extra_env = extra_env.clone();
     tokio::task::spawn_blocking(move || {
         run_git_raw(&cwd, &args, &extra_env, timeout, max_output_bytes)
@@ -516,8 +510,7 @@ pub async fn resolve_merge_base_async(
     )
     .await
     {
-        if git_rev_parse_verify_async(cwd, &format!("{remote_default}^{{commit}}"), extra_env)
-            .await
+        if git_rev_parse_verify_async(cwd, &format!("{remote_default}^{{commit}}"), extra_env).await
         {
             if let Some(base) =
                 git_stdout_async(cwd, &["merge-base", &remote_default, "HEAD"], extra_env).await
@@ -690,10 +683,7 @@ mod tests {
             // credential helper? We simulate by running a command that waits via a hook?
             // Simpler: run `git rev-parse` in a non-repo; it fails fast. To test timeout
             // we need a slow command. Use `git ls-remote` against a non-routable address.
-            &[
-                "ls-remote",
-                "https://192.0.2.1/example/repo.git",
-            ],
+            &["ls-remote", "https://192.0.2.1/example/repo.git"],
             &HashMap::new(),
             Some(Duration::from_millis(200)),
             None,

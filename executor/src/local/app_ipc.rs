@@ -1705,39 +1705,38 @@ async fn handle_builtin_device_command(
             let mut error_message: Option<String> = None;
             let mut truncated = false;
 
-            let tracked =
-                if run_git_async(
+            let tracked = if run_git_async(
+                &path,
+                &["rev-parse", "--verify", "--quiet", "HEAD"],
+                &env,
+                remaining_timeout(timeout, arm_started),
+                max_output_bytes,
+            )
+            .await
+            .success()
+            {
+                let args: Vec<&str> = match base.as_deref() {
+                    Some(base) => vec!["diff", "--binary", base, "--"],
+                    None => vec!["diff", "--binary", "HEAD", "--"],
+                };
+                run_git_async(
                     &path,
-                    &["rev-parse", "--verify", "--quiet", "HEAD"],
+                    &args,
                     &env,
                     remaining_timeout(timeout, arm_started),
                     max_output_bytes,
                 )
                 .await
-                .success()
-                {
-                    let args: Vec<&str> = match base.as_deref() {
-                        Some(base) => vec!["diff", "--binary", base, "--"],
-                        None => vec!["diff", "--binary", "HEAD", "--"],
-                    };
-                    run_git_async(
-                        &path,
-                        &args,
-                        &env,
-                        remaining_timeout(timeout, arm_started),
-                        max_output_bytes,
-                    )
-                    .await
-                } else {
-                    run_git_async(
-                        &path,
-                        &["diff", "--binary", "--"],
-                        &env,
-                        remaining_timeout(timeout, arm_started),
-                        max_output_bytes,
-                    )
-                    .await
-                };
+            } else {
+                run_git_async(
+                    &path,
+                    &["diff", "--binary", "--"],
+                    &env,
+                    remaining_timeout(timeout, arm_started),
+                    max_output_bytes,
+                )
+                .await
+            };
             if tracked.timed_out || !tracked.success() {
                 timed_out = tracked.timed_out;
                 error_message = Some(tracked.stderr.clone());
@@ -1768,9 +1767,8 @@ async fn handle_builtin_device_command(
                     let step_timeout = remaining_timeout(timeout, arm_started);
                     if step_timeout.is_some_and(Duration::is_zero) {
                         timed_out = true;
-                        error_message = Some(
-                            "git diff timed out while diffing untracked files".to_owned(),
-                        );
+                        error_message =
+                            Some("git diff timed out while diffing untracked files".to_owned());
                         break;
                     }
                     let diff_args: Vec<std::ffi::OsString> = vec![
@@ -1847,35 +1845,34 @@ async fn handle_builtin_device_command(
             let mut error_message: Option<String> = None;
             let mut truncated = false;
 
-            let tracked =
-                if run_git_async(
+            let tracked = if run_git_async(
+                &path,
+                &["rev-parse", "--verify", "--quiet", "HEAD"],
+                &env,
+                remaining_timeout(timeout, arm_started),
+                max_output_bytes,
+            )
+            .await
+            .success()
+            {
+                run_git_async(
                     &path,
-                    &["rev-parse", "--verify", "--quiet", "HEAD"],
+                    &["diff", "--binary", "HEAD", "--"],
                     &env,
                     remaining_timeout(timeout, arm_started),
                     max_output_bytes,
                 )
                 .await
-                .success()
-                {
-                    run_git_async(
-                        &path,
-                        &["diff", "--binary", "HEAD", "--"],
-                        &env,
-                        remaining_timeout(timeout, arm_started),
-                        max_output_bytes,
-                    )
-                    .await
-                } else {
-                    run_git_async(
-                        &path,
-                        &["diff", "--binary", "--"],
-                        &env,
-                        remaining_timeout(timeout, arm_started),
-                        max_output_bytes,
-                    )
-                    .await
-                };
+            } else {
+                run_git_async(
+                    &path,
+                    &["diff", "--binary", "--"],
+                    &env,
+                    remaining_timeout(timeout, arm_started),
+                    max_output_bytes,
+                )
+                .await
+            };
             if tracked.timed_out || !tracked.success() {
                 timed_out = tracked.timed_out;
                 error_message = Some(tracked.stderr.clone());
@@ -1906,9 +1903,8 @@ async fn handle_builtin_device_command(
                     let step_timeout = remaining_timeout(timeout, arm_started);
                     if step_timeout.is_some_and(Duration::is_zero) {
                         timed_out = true;
-                        error_message = Some(
-                            "git diff timed out while diffing untracked files".to_owned(),
-                        );
+                        error_message =
+                            Some("git diff timed out while diffing untracked files".to_owned());
                         break;
                     }
                     let diff_args: Vec<std::ffi::OsString> = vec![
@@ -2431,9 +2427,11 @@ fn git_command_limits(params: &Value) -> (Option<Duration>, Option<usize>) {
     } else {
         None
     };
-    let max_output_bytes =
-        positive_number(params.get("max_output_bytes"), DEFAULT_MAX_OUTPUT_BYTES as f64)
-            .round() as usize;
+    let max_output_bytes = positive_number(
+        params.get("max_output_bytes"),
+        DEFAULT_MAX_OUTPUT_BYTES as f64,
+    )
+    .round() as usize;
     (timeout, Some(max_output_bytes))
 }
 
