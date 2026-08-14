@@ -1887,7 +1887,8 @@ function renderUserTextWithLinks(text: string, baseOffset: number): ReactNode[] 
   for (const match of text.matchAll(COMPOSER_LINK_PATTERN)) {
     const start = match.index ?? 0
     const url = match[2] ?? ''
-    if (!getRecognizedLink(url)) continue
+    const recognized = getRecognizedLink(url)
+    if (!recognized) continue
     const before = text.slice(localOffset, start)
     if (before) {
       nodes.push(<span key={`text-${baseOffset}-${localOffset}`}>{before}</span>)
@@ -1896,7 +1897,7 @@ function renderUserTextWithLinks(text: string, baseOffset: number): ReactNode[] 
     nodes.push(
       <ComposerLinkChip
         key={`link-${baseOffset}-${start}`}
-        payload={{ url, label: label || url }}
+        payload={{ url, label: label || recognized.label }}
       />
     )
     localOffset = start + match[0].length
