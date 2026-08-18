@@ -50,7 +50,7 @@ export function ProjectAutomationView({
         </header>
         <ProjectAutomationRulesSection
           projectId={project.id}
-          api={project.task_provider === 'local' ? projectAutomationApi : undefined}
+          api={projectAutomationApi}
           agentApi={projectChatAgentApi}
           canManage={canManageAgents}
           deviceApi={deviceApi}
@@ -66,6 +66,7 @@ export function ProjectAutomationView({
           projectChatAgentApi={projectChatAgentApi}
           deviceApi={deviceApi}
           modelApi={modelApi}
+          teamApi={teamApi}
           localProjects={localProjects}
           runtimeWork={runtimeWork}
           canManage={canManageAgents}

@@ -8,6 +8,7 @@ from app.api.endpoints import (
     attachments_open,
     auth,
     cloud_projects,
+    cloud_projects_gitlab_mr,
     connector_app_projection,
     connector_apps,
     connector_runtime,
@@ -18,6 +19,7 @@ from app.api.endpoints import (
     dingtalk_docs,
     external_tasks,
     feedback,
+    gitlab_webhook,
     groups,
     health,
     im_sessions,
@@ -35,6 +37,7 @@ from app.api.endpoints import (
     openapi_responses,
     pet,
     project_automations,
+    project_incoming_hooks,
     projects,
     prompt_optimization,
     quota,
@@ -155,6 +158,19 @@ api_router.include_router(
     tags=["project-automations"],
 )
 api_router.include_router(
+    cloud_projects_gitlab_mr.router, tags=["cloud-projects-gitlab-mr"]
+)
+api_router.include_router(
+    project_incoming_hooks.router,
+    prefix="/v1/cloud-projects",
+    tags=["project-incoming-hooks"],
+)
+api_router.include_router(
+    project_incoming_hooks.public_router,
+    prefix="/v1/incoming-hooks",
+    tags=["project-incoming-hooks"],
+)
+api_router.include_router(
     loop_item_executions.router,
     prefix="/v1/cloud-projects",
     tags=["cloud-projects"],
@@ -209,6 +225,7 @@ api_router.include_router(
     attachments.router, prefix="/attachments", tags=["attachments"]
 )
 api_router.include_router(repository.router, prefix="/git", tags=["repository"])
+api_router.include_router(gitlab_webhook.router, tags=["gitlab-webhook"])
 api_router.include_router(quota.router, prefix="/quota", tags=["quota"])
 api_router.include_router(dify.router, prefix="/dify", tags=["dify"])
 api_router.include_router(

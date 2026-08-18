@@ -1,5 +1,16 @@
-import { Check, GitBranch, LockKeyhole, Pencil, Search, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import {
+  Check,
+  Copy,
+  GitBranch,
+  LockKeyhole,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  Webhook,
+  X,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AITableApi } from '@/api/aitable'
 import type { DwsApi, DwsAuthStatus } from '@/api/dws'
 import type {
@@ -7,7 +18,9 @@ import type {
   CloudProject,
   CloudProjectMember,
   CloudUserSearchItem,
+  GitLabMrIntegration,
 } from '@/api/deliveries'
+import type { createProjectIncomingHookApi, ProjectIncomingHook } from '@/api/projectIncomingHooks'
 import { ActionMenu } from '@/components/common/ActionMenu'
 import { Tooltip } from '@/components/ui/tooltip'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
@@ -49,6 +62,7 @@ export function CloudProjectManageView({
   api,
   aitableApi,
   dwsApi,
+  incomingHookApi,
   project,
   boardCardDisplay,
   onProjectUpdated,
@@ -56,6 +70,7 @@ export function CloudProjectManageView({
   api: DeliveryApi
   aitableApi?: AITableApi
   dwsApi?: DwsApi
+  incomingHookApi?: ReturnType<typeof createProjectIncomingHookApi>
   project: CloudProject
   boardCardDisplay?: BoardCardDisplaySettings
   onProjectUpdated?: (project: CloudProject) => void
@@ -84,6 +99,9 @@ export function CloudProjectManageView({
   const [displayBusy, setDisplayBusy] = useState(false)
   const [statusBusy, setStatusBusy] = useState(false)
   const [visibilityBusy, setVisibilityBusy] = useState(false)
+  const [incomingHooks, setIncomingHooks] = useState<ProjectIncomingHook[]>([])
+  const [incomingHookBusy, setIncomingHookBusy] = useState(false)
+  const [copiedHookId, setCopiedHookId] = useState<string | null>(null)
 
   const externalProvider =
     project.task_provider === 'github' || project.task_provider === 'gitlab'
@@ -93,6 +111,14 @@ export function CloudProjectManageView({
   const [providerToken, setProviderToken] = useState('')
   const [providerBusy, setProviderBusy] = useState(false)
   const [providerSaved, setProviderSaved] = useState(false)
+
+  const [mrStatus, setMrStatus] = useState<GitLabMrIntegration | null>(null)
+  const [mrBusy, setMrBusy] = useState(false)
+  const [mrError, setMrError] = useState<string | null>(null)
+  const [mrUrlCopied, setMrUrlCopied] = useState(false)
+  const [mrRetryCount, setMrRetryCount] = useState(project.ai_automation?.max_retry_count ?? 10)
+  const [mrRetryBusy, setMrRetryBusy] = useState(false)
+  const [mrRetrySaved, setMrRetrySaved] = useState(false)
 
   const isAITable = project.task_provider === 'dingtalk_aitable'
   const [aitableUrl, setAITableUrl] = useState(() => configText(project, 'source_url'))
@@ -116,11 +142,120 @@ export function CloudProjectManageView({
   }, [api, project.id])
 
   useEffect(() => {
+    if (!incomingHookApi || project.task_provider !== 'local') return
+    let active = true
+    void incomingHookApi
+      .list(project.id)
+      .then(hooks => active && setIncomingHooks(hooks))
+      .catch(
+        cause =>
+          active &&
+          setError(cause instanceof Error ? cause.message : t('todo.incoming_hook_load_failed'))
+      )
+    return () => {
+      active = false
+    }
+  }, [incomingHookApi, project.id, project.task_provider, t])
+
+  useEffect(() => {
     if (!isAITable || !aitableApi) return
     void aitableApi
       .configureProject(project)
       .catch(cause => setError(cause instanceof Error ? cause.message : '加载字段失败'))
   }, [aitableApi, isAITable, project])
+
+  const refreshMrStatus = useCallback(async (): Promise<GitLabMrIntegration | null> => {
+    if (externalProvider !== 'gitlab') return null
+    try {
+      const status = await api.getGitLabMrIntegration(project.id)
+      setMrStatus(status)
+      setMrError(null)
+      return status
+    } catch (cause) {
+      setMrError(cause instanceof Error ? cause.message : t('todo.mr_integration_error'))
+      return null
+    }
+  }, [api, externalProvider, project.id, t])
+
+  useEffect(() => {
+    if (externalProvider !== 'gitlab') return
+    let active = true
+    void api
+      .getGitLabMrIntegration(project.id)
+      .then(status => {
+        if (!active) return
+        setMrStatus(status)
+        setMrError(null)
+      })
+      .catch(cause => {
+        if (!active) return
+        setMrError(cause instanceof Error ? cause.message : t('todo.mr_integration_error'))
+      })
+    return () => {
+      active = false
+    }
+  }, [api, externalProvider, project.id, t])
+
+  const toggleMrIntegration = async (): Promise<void> => {
+    if (mrBusy) return
+    let status = mrStatus
+    if (!status) {
+      // The initial status fetch failed earlier; retry so the toggle is not a
+      // silent dead-end.
+      status = await refreshMrStatus()
+      if (!status) return
+    }
+    setMrBusy(true)
+    try {
+      if (status.enabled) {
+        await api.disableGitLabMrIntegration(project.id)
+      } else {
+        await api.enableGitLabMrIntegration(project.id)
+      }
+      await refreshMrStatus()
+    } catch (cause) {
+      setMrError(cause instanceof Error ? cause.message : t('todo.mr_integration_error'))
+    } finally {
+      setMrBusy(false)
+    }
+  }
+
+  const copyWebhookUrl = async (): Promise<void> => {
+    if (!mrStatus?.webhook_url) return
+    try {
+      await navigator.clipboard.writeText(mrStatus.webhook_url)
+      setMrUrlCopied(true)
+      window.setTimeout(() => setMrUrlCopied(false), 2000)
+    } catch {
+      setMrError(t('todo.mr_integration_error'))
+    }
+  }
+
+  const saveMrRetryCount = async (): Promise<void> => {
+    if (mrRetryBusy) return
+    const previous = mrRetryCount
+    setMrRetryBusy(true)
+    setMrRetrySaved(false)
+    try {
+      const updated = await updateProject({
+        version,
+        ai_automation: {
+          auto_retry_on_failure: project.ai_automation?.auto_retry_on_failure ?? false,
+          max_retry_count: mrRetryCount,
+        },
+      })
+      setMrRetryCount(updated.ai_automation?.max_retry_count ?? mrRetryCount)
+      setMrRetrySaved(true)
+      window.setTimeout(() => setMrRetrySaved(false), 2000)
+      track('feature_action_completed', { domain: 'project_space', action: 'update' })
+    } catch (cause) {
+      track('operation_failed', { operation: 'project_space_action' })
+      setMrRetryCount(previous)
+      setMrError(cause instanceof Error ? cause.message : t('todo.mr_integration_retry_error'))
+    } finally {
+      setMrRetryBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (!isAITable || !dwsApi) return
@@ -229,6 +364,62 @@ export function CloudProjectManageView({
       setError(cause instanceof Error ? cause.message : '保存状态设置失败')
     } finally {
       setStatusBusy(false)
+    }
+  }
+
+  async function createIncomingHook() {
+    if (!incomingHookApi || incomingHookBusy) return
+    setIncomingHookBusy(true)
+    try {
+      const hook = await incomingHookApi.create(project.id, '外部系统')
+      setIncomingHooks(current => [...current, hook])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('todo.incoming_hook_create_failed'))
+    } finally {
+      setIncomingHookBusy(false)
+    }
+  }
+
+  async function toggleIncomingHook(hook: ProjectIncomingHook) {
+    if (!incomingHookApi || incomingHookBusy) return
+    setIncomingHookBusy(true)
+    try {
+      const updated = await incomingHookApi.update(project.id, hook.id, {
+        version: hook.version,
+        status: hook.status === 'active' ? 'disabled' : 'active',
+      })
+      setIncomingHooks(current => current.map(item => (item.id === hook.id ? updated : item)))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('todo.incoming_hook_update_failed'))
+    } finally {
+      setIncomingHookBusy(false)
+    }
+  }
+
+  async function rotateIncomingHook(hook: ProjectIncomingHook) {
+    if (!incomingHookApi || incomingHookBusy) return
+    if (!window.confirm(t('todo.incoming_hook_rotate_confirm'))) return
+    setIncomingHookBusy(true)
+    try {
+      const updated = await incomingHookApi.rotate(project.id, hook.id)
+      setIncomingHooks(current => current.map(item => (item.id === hook.id ? updated : item)))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('todo.incoming_hook_rotate_failed'))
+    } finally {
+      setIncomingHookBusy(false)
+    }
+  }
+
+  async function copyIncomingHook(hook: ProjectIncomingHook) {
+    try {
+      await navigator.clipboard.writeText(hook.webhookUrl)
+      setCopiedHookId(hook.id)
+      window.setTimeout(
+        () => setCopiedHookId(current => (current === hook.id ? null : current)),
+        1500
+      )
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('todo.incoming_hook_copy_failed'))
     }
   }
 
@@ -784,6 +975,212 @@ export function CloudProjectManageView({
             </div>
             {!project.provider_config.credential_configured && (
               <p className="mt-2 text-xs text-text-muted">需要配置令牌</p>
+            )}
+          </section>
+        )}
+
+        {externalProvider === 'gitlab' && (
+          <section className="border-t border-border py-6">
+            <h2 className="text-heading-md font-semibold">
+              {t('todo.mr_integration_section_title')}
+            </h2>
+            <p className="mt-1 text-sm text-text-muted">{t('todo.mr_integration_section_desc')}</p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                data-testid="gitlab-mr-integration-toggle"
+                disabled={mrBusy}
+                onClick={() => void toggleMrIntegration()}
+                className="h-9 rounded-lg bg-black px-3.5 text-sm text-white disabled:opacity-60"
+              >
+                {mrStatus?.enabled
+                  ? t('todo.mr_integration_disable')
+                  : t('todo.mr_integration_enable')}
+              </button>
+              <span data-testid="gitlab-mr-integration-status" className="text-sm text-text-muted">
+                {mrStatus === null
+                  ? t('todo.mr_integration_loading')
+                  : mrStatus.enabled
+                    ? mrStatus.status === 'hook_missing'
+                      ? t('todo.mr_integration_hook_missing')
+                      : t('todo.mr_integration_enabled')
+                    : t('todo.mr_integration_disabled')}
+              </span>
+            </div>
+            {mrStatus?.enabled && mrStatus.webhook_url && (
+              <div className="mt-3 flex items-center gap-2">
+                <label className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-muted px-3">
+                  <input
+                    readOnly
+                    value={mrStatus.webhook_url}
+                    className="min-w-0 flex-1 bg-transparent text-xs outline-none"
+                    aria-label={t('todo.mr_integration_webhook_url')}
+                  />
+                </label>
+                <button
+                  type="button"
+                  data-testid="gitlab-mr-webhook-url-copy"
+                  onClick={() => void copyWebhookUrl()}
+                  className="h-9 rounded-lg border border-border px-3 text-sm"
+                >
+                  {mrUrlCopied
+                    ? t('todo.mr_integration_url_copied')
+                    : t('todo.mr_integration_copy_url')}
+                </button>
+              </div>
+            )}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <label className="text-sm text-text-muted">
+                {t('todo.mr_integration_retry_label')}
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={mrRetryCount}
+                onChange={e => setMrRetryCount(Number(e.target.value))}
+                data-testid="gitlab-mr-retry-count"
+                className="h-9 w-20 rounded-lg border border-border bg-muted px-3 text-sm outline-none"
+              />
+              <button
+                type="button"
+                data-testid="gitlab-mr-retry-save"
+                disabled={mrRetryBusy}
+                onClick={() => void saveMrRetryCount()}
+                className="h-9 rounded-lg border border-border px-3 text-sm disabled:opacity-60"
+              >
+                {mrRetrySaved
+                  ? t('todo.mr_integration_retry_saved')
+                  : t('todo.mr_integration_retry_save')}
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-text-muted">{t('todo.mr_integration_retry_desc')}</p>
+            {mrError && <p className="mt-2 text-xs text-destructive">{mrError}</p>}
+          </section>
+        )}
+
+        {incomingHookApi && project.task_provider === 'local' && (
+          <section className="border-t border-border py-6" data-testid="incoming-hook-settings">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-heading-md font-semibold">{t('todo.incoming_hook_title')}</h2>
+                <p className="mt-1 text-sm text-text-muted">
+                  {t('todo.incoming_hook_description')}
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="incoming-hook-create"
+                disabled={incomingHookBusy}
+                onClick={() => void createIncomingHook()}
+                className="h-8 rounded-lg px-2.5 text-sm text-text-secondary hover:bg-muted disabled:opacity-40"
+              >
+                ＋ {t('todo.incoming_hook_generate')}
+              </button>
+            </div>
+            {incomingHooks.length === 0 ? (
+              <button
+                type="button"
+                data-testid="incoming-hook-empty-create"
+                disabled={incomingHookBusy}
+                onClick={() => void createIncomingHook()}
+                className="mt-4 flex w-full items-center gap-3 rounded-xl bg-muted px-4 py-4 text-left hover:bg-muted/80 disabled:opacity-40"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-background">
+                  <Webhook className="h-4 w-4 text-text-secondary" />
+                </span>
+                <span>
+                  <span className="block text-sm font-medium">
+                    {t('todo.incoming_hook_empty_title')}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-text-muted">
+                    {t('todo.incoming_hook_supported')}
+                  </span>
+                </span>
+              </button>
+            ) : (
+              <div className="mt-4 space-y-2">
+                {incomingHooks.map(hook => (
+                  <div
+                    key={hook.id}
+                    data-testid={`incoming-hook-${hook.id}`}
+                    className="rounded-xl bg-muted p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          'h-2 w-2 rounded-full',
+                          hook.status === 'active' ? 'bg-green-500' : 'bg-text-tertiary'
+                        )}
+                      />
+                      <span className="text-sm font-medium">{hook.name}</span>
+                      <span className="text-xs text-text-muted">
+                        {hook.status === 'active'
+                          ? t('todo.incoming_hook_receiving')
+                          : t('todo.incoming_hook_disabled')}
+                      </span>
+                      <div className="ml-auto flex gap-1">
+                        <Tooltip
+                          label={
+                            copiedHookId === hook.id
+                              ? t('todo.incoming_hook_copied')
+                              : t('todo.incoming_hook_copy')
+                          }
+                        >
+                          <button
+                            type="button"
+                            data-testid={`incoming-hook-copy-${hook.id}`}
+                            onClick={() => void copyIncomingHook(hook)}
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted hover:bg-background hover:text-text-primary"
+                            aria-label={
+                              copiedHookId === hook.id
+                                ? t('todo.incoming_hook_copied')
+                                : t('todo.incoming_hook_copy')
+                            }
+                          >
+                            {copiedHookId === hook.id ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </Tooltip>
+                        <Tooltip label={t('todo.incoming_hook_rotate')}>
+                          <button
+                            type="button"
+                            data-testid={`incoming-hook-rotate-${hook.id}`}
+                            disabled={incomingHookBusy}
+                            onClick={() => void rotateIncomingHook(hook)}
+                            className="flex h-7 w-7 items-center justify-center rounded-md text-text-muted hover:bg-background hover:text-text-primary disabled:opacity-40"
+                            aria-label={t('todo.incoming_hook_rotate')}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </button>
+                        </Tooltip>
+                        <button
+                          type="button"
+                          data-testid={`incoming-hook-toggle-${hook.id}`}
+                          disabled={incomingHookBusy}
+                          onClick={() => void toggleIncomingHook(hook)}
+                          className="h-7 rounded-md px-2 text-xs text-text-secondary hover:bg-background disabled:opacity-40"
+                        >
+                          {hook.status === 'active'
+                            ? t('todo.incoming_hook_disable')
+                            : t('todo.incoming_hook_enable')}
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyIncomingHook(hook)}
+                      className="mt-2 block w-full truncate rounded-lg border border-border bg-background px-3 py-2 text-left text-code text-text-secondary hover:border-text-tertiary"
+                      title={hook.webhookUrl}
+                    >
+                      {hook.webhookUrl}
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
           </section>
         )}

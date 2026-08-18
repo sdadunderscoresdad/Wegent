@@ -44,6 +44,7 @@ import {
   verifyCloudProjectFlow,
   verifyConnectedModelsOnLocalExecution,
   verifyModelProtocolMatrix,
+  verifyRemoteDockerCommandFlow,
   verifyRetryFailureRestoration,
   writeCodexConfig,
 } from './desktop-build-flows.mjs'
@@ -249,9 +250,10 @@ import {
 
 import {
   captureVerificationScreenshot,
-  configureDefaultProjectSpaceAssociation,
+  verifyDefaultTaskBoardAssociation,
   verifyExplicitlyTrackedTask,
   verifyDefaultWorkspaceStartupTab,
+  verifyWorkspaceIssueCreation,
   verifyWorkspaceDocumentTabs,
   verifyWorkspaceTabIsolation,
   waitForControlSelectionOffset,
@@ -515,6 +517,7 @@ async function main() {
       CLOUD_ONLY ||
       CLOUD_FEATURES_ONLY ||
       CLOUD_VISION_ONLY ||
+      DESKTOP_SEGMENT === 'remote-device-onboarding' ||
       scenarioRequiresCloudEnvironment
     ) {
       cloudEnvironment = new RealCloudEnvironment({
@@ -774,6 +777,15 @@ last_updated = "2026-07-30T00:00:00Z"`
         'utf8'
       )
       console.log(`Wework desktop project-automation checkpoint passed. Evidence: ${resultDir}`)
+      return
+    }
+
+    if (DESKTOP_SEGMENT === 'remote-device-onboarding') {
+      phase = 'remote-device-onboarding'
+      await verifyRemoteDockerCommandFlow(control, cloudEnvironment)
+      console.log(
+        `Wework desktop remote-device onboarding checkpoint passed. Evidence: ${resultDir}`
+      )
       return
     }
 
@@ -1248,6 +1260,8 @@ last_updated = "2026-07-30T00:00:00Z"`
     if (shouldRunDesktopCheckpoint('workspace-tabs')) {
       phase = 'workspace-startup-tab'
       await verifyDefaultWorkspaceStartupTab(control)
+      phase = 'workspace-issue-creation'
+      await verifyWorkspaceIssueCreation(control)
       phase = 'workspace-tab-isolation'
       await verifyWorkspaceTabIsolation(control)
       if (shouldStopAfterDesktopCheckpoint('workspace-tabs')) {
@@ -1601,7 +1615,7 @@ last_updated = "2026-07-30T00:00:00Z"`
     let associatedTaskTabTestId = null
     if (shouldRunDesktopCheckpoint('core-task-flow')) {
       phase = 'project-space-default-association-setup'
-      associatedTaskTabTestId = await configureDefaultProjectSpaceAssociation(control, projectId)
+      associatedTaskTabTestId = await verifyDefaultTaskBoardAssociation(control, projectRowSelector)
     }
 
     if (MIXED_TOOL_TURNS_ONLY) {

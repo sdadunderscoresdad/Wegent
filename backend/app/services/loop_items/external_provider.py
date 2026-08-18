@@ -14,13 +14,17 @@ from datetime import datetime, timezone
 from typing import Any, BinaryIO
 from urllib.parse import quote
 
-import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.provider_credentials import decrypt_provider_token
 from app.models.cloud_project import CloudProject
-from app.models.delivery import LoopItem, ProjectChatAgent, loop_datetime_value_is_unset
+from app.models.delivery import (
+    LoopItem,
+    ProjectChatAgent,
+    loop_datetime_is_unset,
+    loop_datetime_value_is_unset,
+)
+from app.models.kind import Kind
 from app.models.loop_item_execution import LoopItemExecution
 from app.models.resource_member import MemberStatus, ResourceMember
 from app.models.share_link import ResourceType
@@ -33,9 +37,17 @@ from app.services.cloud_projects.access import (
     require_cloud_project_role,
 )
 from app.services.delivery.storage import delivery_storage
+from app.services.gitlab.client import (
+    request_project_api,
+    resolve_provider_config,
+    resolve_repository,
+)
 from app.services.loop_item_executions.service import (
+    execution_ai_state,
+    execution_display_state,
     loop_item_execution_service,
 )
+from app.services.project_automation_domain import runnable_wegent_team
 
 PRIORITY_PREFIX = "wegent:priority:"
 STATUS_PREFIX = "wegent:status:"
@@ -56,7 +68,16 @@ LEGACY_WEGENT_ATTACHMENT_PATTERN = re.compile(
 
 class ExternalLoopItemProvider:
     def is_external_item(self, db: Session, item_id: str) -> bool:
-        return self._find_project(db, item_id) is not None
+        if self._find_project(db, item_id) is None:
+            return False
+        item = db.get(LoopItem, item_id)
+        if item is not None and str(item.source_task_binding_id or "").startswith(
+            "gitlab:mr:"
+        ):
+            # MR fix-task cards share the <project_key>-<number> id shape but are
+            # internal board cards, not mirrored GitLab issues.
+            return False
+        return True
 
     def list(
         self,
@@ -73,12 +94,59 @@ class ExternalLoopItemProvider:
         project = access.project
         self._require_external(project)
         issues = self._list_issues(project)
-        if assignee_type in {"user", "agent"} and assignee_id:
+        if assignee_type in {"user", "agent", "team"} and assignee_id:
             assignee_label = f"{ASSIGNEE_PREFIX}{assignee_type}:{assignee_id}"
             issues = [
                 issue for issue in issues if assignee_label in self._labels(issue)
             ]
-        return [self._response(db, project, issue, access, user_id) for issue in issues]
+        responses = [
+            self._response(db, project, issue, access, user_id) for issue in issues
+        ]
+        if project.task_provider == "gitlab":
+            responses.extend(
+                self._list_local_cards(
+                    db, project, access, user_id, assignee_type, assignee_id
+                )
+            )
+        return responses
+
+    def _list_local_cards(
+        self,
+        db: Session,
+        project: CloudProject,
+        access: CloudProjectAccess,
+        user_id: int,
+        assignee_type: str | None,
+        assignee_id: str | None,
+    ) -> list[dict[str, object]]:
+        """Merge locally-created GitLab MR fix-task cards into the board list.
+
+        The external provider lists issues from the GitLab API; MR fix-task
+        cards are local LoopItem rows (``source='gitlab'``), so they need to be
+        appended here to appear on the board alongside issues.
+        """
+        from app.services.loop_items.service import loop_item_service
+
+        if assignee_type == "agent":
+            # MR fix cards are user-assigned (assignee_agent_id="" always), so an
+            # agent filter must not dump every MR card into the board.
+            return []
+
+        query = db.query(LoopItem).filter(
+            LoopItem.cloud_project_id == str(project.id),
+            LoopItem.source == "gitlab",
+            loop_datetime_is_unset(LoopItem.deleted_at),
+        )
+        if assignee_type == "user" and assignee_id:
+            try:
+                query = query.filter(LoopItem.assignee_user_id == int(assignee_id))
+            except (TypeError, ValueError):
+                pass
+        items = query.order_by(LoopItem.sequence_number.asc()).all()
+        return [
+            loop_item_service.response_values(db, item, user_id, access=access)
+            for item in items
+        ]
 
     def get(self, db: Session, item_id: str, user_id: int) -> dict[str, object]:
         project, number = self._resolve_project(db, item_id)
@@ -111,10 +179,14 @@ class ExternalLoopItemProvider:
             access.role, BaseRole.Reporter
         ):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permission")
+        assignee_label = self._assignee_label_for_values(
+            db, project, values, user_id=user_id
+        )
         labels = self._labels_for_write(
             values.tags + [f"{CREATOR_PREFIX}{user_id}:{self._safe_name(user_name)}"],
             values.priority,
             values.status,
+            assignee=assignee_label,
         )
         issue = self._create_issue(
             project,
@@ -126,6 +198,51 @@ class ExternalLoopItemProvider:
             issue = self._update_issue(
                 project, self._number(issue), {"state": "closed"}
             )
+        item_id = f"{project.project_key}-{self._number(issue)}"
+        if values.assignee_agent_id:
+            agent = db.get(ProjectChatAgent, values.assignee_agent_id)
+            if agent is None:  # Already validated while building the label.
+                raise RuntimeError("Validated project robot is unavailable")
+            self._ensure_index_row(
+                db,
+                item_id=item_id,
+                project=project,
+                assignee_type="agent",
+                assignee_id=agent.id,
+                assignee_name=agent.title or agent.name,
+                user_id=user_id,
+            )
+            self._create_execution_for_agent(
+                db,
+                item_id=item_id,
+                project=project,
+                agent=agent,
+                user_id=user_id,
+                priority=values.priority,
+                automation_context=automation_context,
+                instruction=instruction,
+            )
+            db.commit()
+        elif values.assignee_team_id:
+            team = runnable_wegent_team(db, user_id, values.assignee_team_id)
+            self._ensure_index_row(
+                db,
+                item_id=item_id,
+                project=project,
+                assignee_type="team",
+                assignee_id=str(team.id),
+                assignee_name=team.name,
+                user_id=user_id,
+            )
+            loop_item_execution_service.create_for_team_assignment(
+                db,
+                loop_item_id=item_id,
+                cloud_project_id=str(project.id),
+                team=team,
+                assigner_user_id=user_id,
+                priority=values.priority,
+            )
+            db.commit()
         return self._response(db, project, issue, access, user_id)
 
     def attach_gitlab_upload(
@@ -455,7 +572,11 @@ class ExternalLoopItemProvider:
             payload[self._body_key(project)] = self._with_parent(
                 description or "", parent_id
             )
-        assignee_change = {"assignee_user_id", "assignee_agent_id"} & dumped.keys()
+        assignee_change = {
+            "assignee_user_id",
+            "assignee_agent_id",
+            "assignee_team_id",
+        } & dumped.keys()
         label_change = {"tags", "priority", "status"} & dumped.keys()
         if label_change or assignee_change:
             tags = (
@@ -467,7 +588,9 @@ class ExternalLoopItemProvider:
             if creator:
                 tags.append(creator)
             if assignee_change:
-                assignee_label = self._assignee_label_for_values(db, project, values)
+                assignee_label = self._assignee_label_for_values(
+                    db, project, values, user_id=user_id
+                )
             else:
                 current_assignee = self._assignee_from_labels(self._labels(current))
                 assignee_label = (
@@ -506,6 +629,8 @@ class ExternalLoopItemProvider:
         db: Session,
         project: CloudProject,
         values: LoopItemUpdate,
+        *,
+        user_id: int,
     ) -> str | None:
         """Build the assignee label requested by a task update (None = unassign)."""
 
@@ -521,6 +646,9 @@ class ExternalLoopItemProvider:
                     "Robot is not active in this project",
                 )
             return self._assignee_label("agent", agent.id, agent.title or agent.name)
+        if values.assignee_team_id:
+            team = runnable_wegent_team(db, user_id, values.assignee_team_id)
+            return self._assignee_label("team", str(team.id), team.name)
         if values.assignee_user_id:
             target = db.get(User, values.assignee_user_id)
             return self._assignee_label(
@@ -543,20 +671,23 @@ class ExternalLoopItemProvider:
         callers can ask the executor to stop them after the change commits.
         """
 
-        from app.services.loop_item_executions.service import utcnow
-
         cancelled_runs = []
         active = (
             db.query(LoopItemExecution)
             .filter(
                 LoopItemExecution.loop_item_id == item_id,
                 LoopItemExecution.status.in_(
-                    {"pending_approval", "queued", "claimed", "running"}
+                    {
+                        "pending_approval",
+                        "queued",
+                        "claimed",
+                        "running",
+                        "cancel_requested",
+                    }
                 ),
             )
             .all()
         )
-        now = utcnow()
         for execution in active:
             if (
                 preserve_automation_run_id
@@ -564,13 +695,18 @@ class ExternalLoopItemProvider:
                 and str(execution.automation_run_id or "") == preserve_automation_run_id
             ):
                 continue
-            execution.status = "cancelled"
-            execution.completed_at = now
-            execution.execution_note = (
-                execution.execution_note or "Assignee changed before the run finished"
+            cancelled = loop_item_execution_service.cancel(
+                db,
+                execution_id=execution.id,
+                note="Assignee changed before the run finished",
+                commit=False,
             )
-            if execution.runtime_device_id and execution.runtime_task_id:
-                cancelled_runs.append(execution)
+            if (
+                cancelled.status == "cancel_requested"
+                and cancelled.runtime_device_id
+                and cancelled.runtime_task_id
+            ) or (cancelled.team_id and cancelled.backend_task_id):
+                cancelled_runs.append(cancelled)
         return cancelled_runs
 
     def _apply_assignee_executions(
@@ -606,6 +742,25 @@ class ExternalLoopItemProvider:
                     user_id=user_id,
                     priority=priority,
                 )
+        elif values.assignee_team_id:
+            team = runnable_wegent_team(db, user_id, values.assignee_team_id)
+            self._ensure_index_row(
+                db,
+                item_id=item_id,
+                project=project,
+                assignee_type="team",
+                assignee_id=str(team.id),
+                assignee_name=team.name,
+                user_id=user_id,
+            )
+            loop_item_execution_service.create_for_team_assignment(
+                db,
+                loop_item_id=item_id,
+                cloud_project_id=str(project.id),
+                team=team,
+                assigner_user_id=user_id,
+                priority=priority,
+            )
         elif values.assignee_user_id:
             target = db.get(User, values.assignee_user_id)
             self._ensure_index_row(
@@ -621,9 +776,11 @@ class ExternalLoopItemProvider:
             self._soft_delete_index_row(db, item_id)
         db.commit()
         if cancelled_runs:
-            from app.tasks.robot_queue_tasks import emit_runtime_cancels
+            from app.services.board_team_execution import (
+                request_execution_cancellations,
+            )
 
-            emit_runtime_cancels(cancelled_runs)
+            request_execution_cancellations(cancelled_runs)
 
     def _create_execution_for_agent(
         self,
@@ -687,6 +844,7 @@ class ExternalLoopItemProvider:
         current = self._get_issue(project, number)
         current_labels = self._labels(current)
         agent: ProjectChatAgent | None = None
+        team: Kind | None = None
         if values.assignee_type == "agent":
             agent = db.get(ProjectChatAgent, values.assignee_id)
             if (
@@ -722,6 +880,17 @@ class ExternalLoopItemProvider:
                 target.user_name if target else None,
             )
             assignee_name = target.user_name if target else None
+        elif values.assignee_type == "team":
+            try:
+                target_team_id = int(values.assignee_id)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "Team assignee id must be numeric",
+                ) from exc
+            team = runnable_wegent_team(db, user_id, target_team_id)
+            assignee_label = self._assignee_label("team", str(team.id), team.name)
+            assignee_name = team.name
         else:  # pragma: no cover - pydantic constrains assignee_type
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown assignee type"
@@ -744,7 +913,13 @@ class ExternalLoopItemProvider:
             project=project,
             assignee_type=values.assignee_type,
             assignee_id=(
-                agent.id if values.assignee_type == "agent" else str(target_user_id)
+                agent.id
+                if values.assignee_type == "agent"
+                else (
+                    str(team.id)
+                    if values.assignee_type == "team" and team is not None
+                    else str(target_user_id)
+                )
             ),
             assignee_name=assignee_name,
             user_id=user_id,
@@ -767,11 +942,22 @@ class ExternalLoopItemProvider:
                 automation_context=automation_context,
                 instruction=instruction,
             )
+        elif team is not None:
+            loop_item_execution_service.create_for_team_assignment(
+                db,
+                loop_item_id=item_id,
+                cloud_project_id=str(project.id),
+                team=team,
+                assigner_user_id=user_id,
+                priority=self._priority(current_labels),
+            )
         db.commit()
         if cancelled_runs:
-            from app.tasks.robot_queue_tasks import emit_runtime_cancels
+            from app.services.board_team_execution import (
+                request_execution_cancellations,
+            )
 
-            emit_runtime_cancels(cancelled_runs)
+            request_execution_cancellations(cancelled_runs)
         return self._response(db, project, issue, access, user_id)
 
     def _ensure_index_row(
@@ -806,14 +992,23 @@ class ExternalLoopItemProvider:
         metadata["external_index"] = True
         if assignee_type == "agent":
             row.assignee_agent_id = assignee_id
+            row.assignee_team_id = None
             # Production MySQL stores unset user assignees as 0, not NULL.
             row.assignee_user_id = 0
             loop_item_service._write_assignment_change(
                 metadata, user_id, "agent", assignee_id, assignee_name
             )
+        elif assignee_type == "team":
+            row.assignee_user_id = 0
+            row.assignee_agent_id = ""
+            row.assignee_team_id = int(assignee_id)
+            loop_item_service._write_assignment_change(
+                metadata, user_id, "team", assignee_id, assignee_name
+            )
         else:
             row.assignee_user_id = int(assignee_id) if assignee_id else 0
             row.assignee_agent_id = ""
+            row.assignee_team_id = None
             loop_item_service._write_assignment_change(
                 metadata, user_id, "user", assignee_id or None, assignee_name
             )
@@ -922,6 +1117,7 @@ class ExternalLoopItemProvider:
         assignee = self._assignee_from_labels(labels)
         assignee_user_id = None
         assignee_agent_id = None
+        assignee_team_id = None
         if assignee is not None and assignee["type"] == "user":
             try:
                 assignee_user_id = int(assignee["id"])
@@ -929,6 +1125,11 @@ class ExternalLoopItemProvider:
                 pass
         elif assignee is not None and assignee["type"] == "agent":
             assignee_agent_id = assignee["id"]
+        elif assignee is not None and assignee["type"] == "team":
+            try:
+                assignee_team_id = int(assignee["id"])
+            except ValueError:
+                pass
         return {
             "id": item_id,
             "cloud_project_id": str(project.id),
@@ -940,6 +1141,7 @@ class ExternalLoopItemProvider:
             "tags": self._public_tags(labels),
             "assignee_user_id": assignee_user_id,
             "assignee_agent_id": assignee_agent_id,
+            "assignee_team_id": assignee_team_id,
         }
 
     def normalize_issue_payload(self, issue: dict[str, Any]) -> dict[str, Any]:
@@ -1053,6 +1255,8 @@ class ExternalLoopItemProvider:
         assignee_name: str | None = None
         assignee_agent_id: str | None = None
         assignee_agent_name: str | None = None
+        assignee_team_id: int | None = None
+        assignee_team_name: str | None = None
         assignee = self._assignee_from_labels(labels)
         if assignee is not None:
             if assignee["type"] == "user":
@@ -1064,7 +1268,7 @@ class ExternalLoopItemProvider:
                 if assignee_name is None and assignee_user_id is not None:
                     target = db.get(User, assignee_user_id)
                     assignee_name = target.user_name if target else None
-            else:
+            elif assignee["type"] == "agent":
                 assignee_agent_id = assignee["id"]
                 assignee_agent_name = assignee["name"] or None
                 if assignee_agent_name is None and assignee_agent_id:
@@ -1072,6 +1276,15 @@ class ExternalLoopItemProvider:
                     assignee_agent_name = (
                         agent.title or agent.name if agent is not None else None
                     )
+            elif assignee["type"] == "team":
+                try:
+                    assignee_team_id = int(assignee["id"])
+                except ValueError:
+                    assignee_team_id = None
+                assignee_team_name = assignee["name"] or None
+                if assignee_team_name is None and assignee_team_id is not None:
+                    team = db.get(Kind, assignee_team_id)
+                    assignee_team_name = team.name if team is not None else None
         return {
             "id": f"{project.project_key}-{number}",
             "cloud_project_id": str(project.id),
@@ -1084,6 +1297,8 @@ class ExternalLoopItemProvider:
             "assignee_name": assignee_name,
             "assignee_agent_id": assignee_agent_id,
             "assignee_agent_name": assignee_agent_name,
+            "assignee_team_id": assignee_team_id,
+            "assignee_team_name": assignee_team_name,
             "priority": self._priority(labels),
             "due_at": None,
             "sort_order": number,
@@ -1092,6 +1307,9 @@ class ExternalLoopItemProvider:
             "created_by_user_name": creator_name,
             "can_view_detail": can_view,
             "can_edit": can_edit,
+            # True: this card mirrors an external provider issue; wework does not
+            # own its lifecycle (archiving it would only delete a local pointer).
+            "is_external": True,
             "current_delivery_id": None,
             "version": self._derived_version(updated_at),
             "created_at": created_at,
@@ -1118,14 +1336,19 @@ class ExternalLoopItemProvider:
             return values
         merged = {**values}
         merged["execution_id"] = execution.id
-        merged["execution_state"] = execution.status
+        merged["execution_state"] = execution_display_state(execution)
+        merged["execution_control_state"] = execution.status
+        merged["execution_observed_state"] = execution.observed_state
+        merged["execution_sync_state"] = execution.sync_state
+        merged["execution_attempt_no"] = execution.attempt_no
+        merged["execution_last_event_seq"] = execution.last_event_seq
         merged["queued_at"] = self._optional_dt(execution.queued_at)
         merged["execution_note"] = execution.execution_note or None
         merged["can_approve"] = self._execution_can_approve(
             db, execution=execution, user_id=user_id
         )
         merged["approval"] = self._execution_approval_view(execution)
-        merged["ai_state"] = self._execution_ai_state(db, execution)
+        merged["ai_state"] = execution_ai_state(db, execution)
         merged["version"] = int(merged["version"]) + int(execution.id)
         return merged
 
@@ -1172,53 +1395,6 @@ class ExternalLoopItemProvider:
         return view
 
     @staticmethod
-    def _execution_ai_state(db: Session, execution: object) -> dict | None:
-        """Synthesize the task AI state projection from the active run row."""
-
-        ai_status = {
-            "queued": "running",
-            "claimed": "running",
-            "running": "running",
-            "completed": "completed",
-            "failed": "failed",
-            "cancelled": "cancelled",
-        }.get(getattr(execution, "status", None))
-        if ai_status is None:
-            return None
-        agent = db.get(ProjectChatAgent, getattr(execution, "agent_id", None))
-        executor_type = getattr(execution, "executor_type", "project_robot")
-        return {
-            "run_id": f"exec-{getattr(execution, 'id', '')}",
-            "status": ai_status,
-            "agent_id": getattr(execution, "agent_id", None),
-            "agent_name": (
-                "AI 托管"
-                if executor_type == "automation_manager"
-                else (agent.title or agent.name if agent is not None else None)
-            ),
-            "runtime_device_id": (
-                getattr(execution, "runtime_device_id", None) or None
-            ),
-            "runtime_task_id": getattr(execution, "runtime_task_id", None) or None,
-            "started_at": ExternalLoopItemProvider._optional_dt(
-                getattr(execution, "started_at", None)
-            ),
-            "heartbeat_at": ExternalLoopItemProvider._optional_dt(
-                getattr(execution, "heartbeat_at", None)
-            ),
-            "lease_expires_at": ExternalLoopItemProvider._optional_dt(
-                getattr(execution, "lease_expires_at", None)
-            ),
-            "completed_at": ExternalLoopItemProvider._optional_dt(
-                getattr(execution, "completed_at", None)
-            ),
-            "updated_at": ExternalLoopItemProvider._optional_dt(
-                getattr(execution, "updated_at", None)
-            ),
-            "last_error": getattr(execution, "error_message", None) or None,
-        }
-
-    @staticmethod
     def _permissions(
         access: CloudProjectAccess, creator_id: int, user_id: int
     ) -> tuple[bool, bool]:
@@ -1249,20 +1425,7 @@ class ExternalLoopItemProvider:
             raise HTTPException(status.HTTP_409_CONFLICT, "Project is not external")
 
     def _config(self, project: CloudProject) -> tuple[dict[str, object], str]:
-        metadata = (
-            project.metadata_json if isinstance(project.metadata_json, dict) else {}
-        )
-        config = metadata.get("provider_config")
-        config = config if isinstance(config, dict) else {}
-        try:
-            token = decrypt_provider_token(project.task_provider, config)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-        if not token:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "Provider credential is not configured"
-            )
-        return config, token
+        return resolve_provider_config(project)
 
     def _request(
         self,
@@ -1274,60 +1437,17 @@ class ExternalLoopItemProvider:
         params: dict[str, object] | None = None,
         files: dict[str, object] | None = None,
     ) -> Any:
-        config, token = self._config(project)
-        domain = str(
-            config.get("domain")
-            or ("github.com" if project.task_provider == "github" else "gitlab.com")
+        return request_project_api(
+            project,
+            method,
+            path,
+            json=json,
+            params=params,
+            files=files,
         )
-        api_base = str(
-            config.get("api_base")
-            or (
-                "https://api.github.com"
-                if project.task_provider == "github"
-                else f"https://{domain}/api/v4"
-            )
-        ).rstrip("/")
-        headers = (
-            {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-            }
-            if project.task_provider == "github"
-            else {"PRIVATE-TOKEN": token}
-        )
-        try:
-            response = httpx.request(
-                method,
-                f"{api_base}{path}",
-                headers=headers,
-                json=json,
-                params=params,
-                files=files,
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json() if response.content else {}
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == status.HTTP_404_NOT_FOUND:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND, "TODO not found"
-                ) from exc
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"Provider request failed: {exc}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"Provider request failed: {exc}"
-            ) from exc
 
     def _repository(self, project: CloudProject) -> str:
-        config, _ = self._config(project)
-        repository = str(config.get("repository") or "").strip().strip("/")
-        if not repository:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, "Provider repository is required"
-            )
-        return repository
+        return resolve_repository(project)
 
     def _list_issues(self, project: CloudProject) -> list[dict[str, Any]]:
         repository = self._repository(project)
@@ -1489,7 +1609,7 @@ class ExternalLoopItemProvider:
         if label is None:
             return None
         parts = label.removeprefix(ASSIGNEE_PREFIX).split(":", 2)
-        if len(parts) < 2 or parts[0] not in {"user", "agent"} or not parts[1]:
+        if len(parts) < 2 or parts[0] not in {"user", "agent", "team"} or not parts[1]:
             return None
         return {
             "type": parts[0],
