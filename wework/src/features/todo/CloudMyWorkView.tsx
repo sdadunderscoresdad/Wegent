@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { CalendarDays, Clock, LayoutGrid, List } from 'lucide-react'
+import { CalendarDays, ChevronDown, Clock, LayoutGrid, List } from 'lucide-react'
 import type { CloudMyWorkItem } from '@/api/deliveries'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
 import { CloudMyWorkCalendar } from './CloudMyWorkCalendar'
@@ -367,26 +368,30 @@ export function CloudMyWorkView({ items, onSelectItem, onApproveItem }: CloudMyW
         <div className="mx-auto max-w-[960px]">
           <div className="flex items-center gap-3">
             <h1 className="text-heading-md font-semibold">{t('todo.my_work', '我的工作')}</h1>
-            <label className="relative ml-auto inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs text-text-secondary hover:bg-muted">
-              <span className="sr-only">{t('todo.my_work_project_filter', '按项目过滤任务')}</span>
-              <select
-                data-testid="my-work-project-filter"
-                value={activeProjectFilter}
-                onChange={event => setProjectFilter(event.target.value)}
-                className="cursor-pointer appearance-none bg-transparent pr-5 outline-none"
-                aria-label={t('todo.my_work_project_filter', '按项目过滤任务')}
-              >
-                <option value="all">{t('todo.all_projects', '全部项目')}</option>
-                {projects.map(([key, name]) => (
-                  <option key={key} value={key}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-              <span className="pointer-events-none absolute right-2 text-xs text-text-muted">
-                ⌄
-              </span>
-            </label>
+            <MenuSelect
+              testId="my-work-project-filter"
+              ariaLabel={t('todo.my_work_project_filter', '按项目过滤任务')}
+              value={activeProjectFilter}
+              options={[
+                { value: 'all', label: t('todo.all_projects', '全部项目') },
+                ...projects.map(([key, name]) => ({ value: key, label: name })),
+              ]}
+              onChange={setProjectFilter}
+              menuWidth={220}
+              rootClassName="ml-auto"
+              triggerClassName="h-8 rounded-lg border border-border bg-background px-3"
+              trigger={
+                <span className="inline-flex h-8 items-center gap-2 rounded-lg px-3 text-xs text-text-secondary">
+                  <span className="truncate">
+                    {activeProjectFilter === 'all'
+                      ? t('todo.all_projects', '全部项目')
+                      : (projects.find(([key]) => key === activeProjectFilter)?.[1] ??
+                        activeProjectFilter)}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                </span>
+              }
+            />
           </div>
           <p className="mt-1 text-sm text-text-muted">
             {t('todo.my_work_subtitle', '自动汇总本机上的全部任务，无需关联项目空间。')}

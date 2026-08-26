@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   Bot,
   CalendarDays,
+  ChevronDown,
   Circle,
   CircleDot,
   CircleCheck,
@@ -32,6 +33,7 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { track } from '@/telemetry/client'
 import { buildRuntimeTaskRoute, toBrowserPath } from '@/lib/navigation'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
+import { MenuSelect, type MenuOption } from '@/components/common/MenuSelect'
 import type { Delivery } from '@/api/deliveries'
 import type { Attachment, RuntimeGoal, RuntimeTaskAddress, RuntimeTaskSummary } from '@/types/api'
 import {
@@ -717,18 +719,32 @@ export function TodoDetailPanel({
             <PropertyRow>
               {onUpdateItem ? (
                 <EditableProperty icon={CircleDot} label={t('todo.status', '状态')}>
-                  <select
-                    data-testid="todo-detail-state-select"
+                  <MenuSelect
+                    testId="todo-detail-state-select"
                     value={item.state}
-                    onChange={event => onUpdateItem({ state: event.target.value as TodoViewState })}
-                    className="h-7 w-full bg-transparent text-xs text-text-primary outline-none"
-                  >
-                    {Object.entries(STATE_DETAILS).map(([key, detail]) => (
-                      <option key={key} value={key}>
-                        {t(detail.labelKey, detail.fallback)}
-                      </option>
-                    ))}
-                  </select>
+                    options={(
+                      Object.entries(STATE_DETAILS) as Array<
+                        [TodoViewState, (typeof STATE_DETAILS)[TodoViewState]]
+                      >
+                    ).map(([key, detail]) => ({
+                      value: key,
+                      label: t(detail.labelKey, detail.fallback),
+                    }))}
+                    onChange={next => onUpdateItem({ state: next as TodoViewState })}
+                    menuWidth={200}
+                    triggerClassName="w-full rounded-md p-0"
+                    trigger={
+                      <span className="flex h-7 w-full items-center justify-between gap-1 rounded-md px-1 text-xs text-text-primary">
+                        <span className="truncate">
+                          {t(
+                            STATE_DETAILS[item.state].labelKey,
+                            STATE_DETAILS[item.state].fallback
+                          )}
+                        </span>
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                      </span>
+                    }
+                  />
                   {item.waitingFor && item.waitingFor.length > 0 && (
                     <span
                       data-testid="todo-detail-dependency-warning"
@@ -755,22 +771,37 @@ export function TodoDetailPanel({
             <PropertyRow>
               {onUpdateItem ? (
                 <EditableProperty icon={Bot} label={t('todo.assignee', '负责人')}>
-                  <select
-                    data-testid="todo-detail-assignee-select"
+                  <MenuSelect
+                    testId="todo-detail-assignee-select"
                     value={item.assigneeType ?? 'unassigned'}
-                    onChange={event =>
-                      onUpdateItem({
-                        assigneeType: event.target.value as 'unassigned' | 'ai' | 'human',
-                      })
+                    options={
+                      [
+                        {
+                          value: 'unassigned',
+                          label: t('todo.assignee_unassigned_short', '未指定'),
+                        },
+                        { value: 'human', label: t('todo.assignee_human', '员工') },
+                        { value: 'ai', label: t('todo.assignee_ai', 'AI 智能体') },
+                      ] satisfies MenuOption[]
                     }
-                    className="h-7 w-full bg-transparent text-xs text-text-primary outline-none"
-                  >
-                    <option value="unassigned">
-                      {t('todo.assignee_unassigned_short', '未指定')}
-                    </option>
-                    <option value="human">{t('todo.assignee_human', '员工')}</option>
-                    <option value="ai">{t('todo.assignee_ai', 'AI 智能体')}</option>
-                  </select>
+                    onChange={next =>
+                      onUpdateItem({ assigneeType: next as 'unassigned' | 'ai' | 'human' })
+                    }
+                    menuWidth={200}
+                    triggerClassName="w-full rounded-md p-0"
+                    trigger={
+                      <span className="flex h-7 w-full items-center justify-between gap-1 rounded-md px-1 text-xs text-text-primary">
+                        <span className="truncate">
+                          {item.assigneeType === 'human'
+                            ? t('todo.assignee_human', '员工')
+                            : item.assigneeType === 'ai'
+                              ? t('todo.assignee_ai', 'AI 智能体')
+                              : t('todo.assignee_unassigned_short', '未指定')}
+                        </span>
+                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                      </span>
+                    }
+                  />
                 </EditableProperty>
               ) : (
                 <Property
@@ -1005,13 +1036,13 @@ function EditableProperty({
   children: ReactNode
 }) {
   return (
-    <label className="flex min-w-0 items-center gap-2 rounded-md bg-muted px-2.5">
+    <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted px-2.5">
       <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted">
         <Icon className="h-3.5 w-3.5" />
         {label}
       </span>
       <span className="min-w-0 flex-1">{children}</span>
-    </label>
+    </div>
   )
 }
 

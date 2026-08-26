@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useTranslation } from '@/hooks/useTranslation'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import type { ProjectWithTasks } from '@/types/api'
 import type { TodoViewState } from './TodoDetailPanel'
 
@@ -134,29 +135,30 @@ export function TodoCreateDialog({
             >
               {t('todo.create_action', '新建任务')}
             </h2>
-            <label className="relative flex h-[30px] min-w-0 max-w-[230px] items-center gap-2 rounded-md border border-border bg-muted pl-2.5 pr-7">
-              <span
-                className="h-[18px] w-[18px] shrink-0 rounded-[4px]"
-                style={{ backgroundColor: selectedProject?.color || '#14B8A6' }}
-              />
-              <span className="truncate text-xs font-semibold text-text-primary">
-                {selectedProject?.name ?? t('todo.no_project', '未选择项目')}
-              </span>
-              <select
-                data-testid="todo-create-project"
-                value={projectId}
-                onChange={event => setProjectId(Number(event.target.value))}
-                className="absolute inset-0 cursor-pointer appearance-none opacity-0"
-                aria-label={t('todo.switch_project', '切换项目')}
-              >
-                {projects.map(project => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 text-text-muted" />
-            </label>
+            <MenuSelect
+              testId="todo-create-project"
+              ariaLabel={t('todo.switch_project', '切换项目')}
+              value={String(projectId)}
+              options={projects.map(project => ({
+                value: String(project.id),
+                label: project.name,
+              }))}
+              onChange={next => setProjectId(Number(next))}
+              menuWidth={220}
+              triggerClassName="h-[30px] min-w-0 max-w-[230px] rounded-md border border-border bg-muted"
+              trigger={
+                <span className="flex h-[30px] min-w-0 max-w-[230px] items-center gap-2 rounded-md pl-2.5 pr-7">
+                  <span
+                    className="h-[18px] w-[18px] shrink-0 rounded-[4px]"
+                    style={{ backgroundColor: selectedProject?.color || '#14B8A6' }}
+                  />
+                  <span className="truncate text-xs font-semibold text-text-primary">
+                    {selectedProject?.name ?? t('todo.no_project', '未选择项目')}
+                  </span>
+                  <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-text-muted" />
+                </span>
+              }
+            />
           </div>
           <div className="flex items-center gap-3">
             <span className="font-mono text-xs text-text-muted">
@@ -467,26 +469,24 @@ function PropertySelect({
   onChange: (value: string) => void
 }) {
   return (
-    <label className="relative flex h-[30px] min-w-0 items-center gap-1.5 rounded-md border border-border bg-muted px-2">
-      <Icon className="h-3 w-3 shrink-0 text-text-muted" />
-      <span className="truncate text-xs text-text-secondary">
-        {options.find(option => option.value === value)?.label}
-      </span>
-      <ChevronDown className="ml-auto h-2.5 w-2.5 shrink-0 text-text-muted" />
-      <select
-        data-testid={testId}
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        className="absolute inset-0 cursor-pointer appearance-none opacity-0"
-        aria-label={options.find(option => option.value === value)?.label}
-      >
-        {options.map(option => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <MenuSelect
+      testId={testId}
+      ariaLabel={options.find(option => option.value === value)?.label}
+      value={value}
+      options={options}
+      onChange={onChange}
+      menuWidth={200}
+      triggerClassName="h-[30px] min-w-0 rounded-md border border-border bg-muted"
+      trigger={
+        <span className="flex h-[30px] min-w-0 items-center gap-1.5 rounded-md px-2">
+          <Icon className="h-3 w-3 shrink-0 text-text-muted" />
+          <span className="truncate text-xs text-text-secondary">
+            {options.find(option => option.value === value)?.label}
+          </span>
+          <ChevronDown className="ml-auto h-2.5 w-2.5 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
   )
 }
 

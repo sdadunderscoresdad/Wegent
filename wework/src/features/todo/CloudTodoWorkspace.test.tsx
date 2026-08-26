@@ -2108,7 +2108,8 @@ describe('CloudTodoWorkspace', () => {
 
     await userEvent.click((await screen.findAllByText('Wegent V4'))[0])
     await userEvent.click(await screen.findByTestId('cloud-todo-card-WEG-1'))
-    await userEvent.selectOptions(screen.getByTestId('cloud-todo-detail-parent'), 'WEG-2')
+    await userEvent.click(screen.getByTestId('cloud-todo-detail-parent'))
+    await userEvent.click(screen.getByTestId('cloud-todo-detail-parent-option-WEG-2'))
     await userEvent.click(screen.getByTestId('cloud-todo-save'))
 
     await waitFor(() =>
@@ -2242,7 +2243,8 @@ describe('CloudTodoWorkspace', () => {
     await userEvent.click(await screen.findByTestId('cloud-todo-card-WEG-1'))
     expect((await screen.findAllByText(/参与者/)).length).toBeGreaterThan(0)
     await userEvent.click(screen.getByTestId('cloud-todo-add-collaborator'))
-    await userEvent.selectOptions(screen.getByTestId('cloud-todo-collaborator-select'), '2')
+    await userEvent.click(screen.getByTestId('cloud-todo-collaborator-select'))
+    await userEvent.click(screen.getByTestId('cloud-todo-collaborator-select-option-2'))
     await userEvent.click(screen.getByTestId('cloud-todo-confirm-collaborator'))
 
     await waitFor(() =>
@@ -2251,7 +2253,7 @@ describe('CloudTodoWorkspace', () => {
         2
       )
     )
-    expect((await screen.findAllByText('alice')).length).toBeGreaterThan(0)
+    expect(await screen.findByTitle('alice')).toBeInTheDocument()
   })
 
   it('shows child tasks in the unified execution task list without a duplicate child section', async () => {
@@ -3674,11 +3676,12 @@ describe('CloudTodoWorkspace', () => {
     await userEvent.click((await screen.findAllByText('Wegent V4'))[0])
     await userEvent.click(await screen.findByTestId('cloud-todo-card-WEG-1'))
     const status = screen.getByTestId('cloud-todo-detail-status')
-    expect(status).toHaveValue('completed')
-    expect(status.querySelectorAll('option')).toHaveLength(5)
-    expect(status).toHaveTextContent('已完成')
-    expect(status).toHaveTextContent('进行中')
-    expect(status).toHaveTextContent('收集箱')
+    await userEvent.click(status)
+    const statusMenu = screen.getByTestId('cloud-todo-detail-status-menu')
+    expect(statusMenu.querySelectorAll('button')).toHaveLength(5)
+    expect(statusMenu).toHaveTextContent('已完成')
+    expect(statusMenu).toHaveTextContent('进行中')
+    expect(statusMenu).toHaveTextContent('收集箱')
   })
 
   it('uses the DingTalk-style grouping, filtering, and search toolbar', async () => {
@@ -3709,7 +3712,8 @@ describe('CloudTodoWorkspace', () => {
       'shrink-0',
       'whitespace-nowrap'
     )
-    await userEvent.selectOptions(screen.getByTestId('cloud-board-group-filter'), 'in_progress')
+    await userEvent.click(screen.getByTestId('cloud-board-group-filter'))
+    await userEvent.click(screen.getByTestId('cloud-board-group-filter-option-in_progress'))
     expect(screen.getByTestId('cloud-board-group-filter-label')).toHaveTextContent('进行中')
     await userEvent.click(screen.getByTestId('cloud-board-group-by'))
     await userEvent.click(screen.getByTestId('cloud-board-group-option-priority'))
@@ -4242,7 +4246,7 @@ describe('CloudTodoWorkspace', () => {
       />
     )
 
-    expect(await screen.findByTestId('cloud-local-project-filter')).toHaveValue('all')
+    expect(await screen.findByTestId('cloud-local-project-filter')).toHaveTextContent('全部项目')
     expect(workbenchServices.deliveryApi!.listMyWork).not.toHaveBeenCalled()
     expect(await screen.findByTestId('cloud-todo-column-in_review')).toHaveTextContent(
       'Stopped task Issue'

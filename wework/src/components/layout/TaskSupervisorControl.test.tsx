@@ -108,9 +108,8 @@ describe('TaskSupervisorControl', () => {
     expect(screen.getByTestId('task-supervisor-model')).toHaveTextContent('Review Model')
     selectSupervisorModel('gpt-5.6-luna')
     expect(screen.getByTestId('task-supervisor-model')).toHaveTextContent('GPT 5.6 Luna')
-    fireEvent.change(screen.getByTestId('task-supervisor-frequency'), {
-      target: { value: '60' },
-    })
+    fireEvent.click(screen.getByTestId('task-supervisor-frequency'))
+    fireEvent.click(screen.getByTestId('task-supervisor-frequency-option-60'))
     fireEvent.click(screen.getByTestId('task-supervisor-save-button'))
 
     await waitFor(() =>
@@ -357,7 +356,7 @@ describe('TaskSupervisorControl', () => {
       />
     )
 
-    expect(screen.getByTestId('task-supervisor-frequency')).toHaveValue('300')
+    expect(screen.getByTestId('task-supervisor-frequency')).toHaveTextContent(/5 分钟|5 minutes/)
   })
 
   test('reopens supervision configured before the task starts', () => {
@@ -398,7 +397,7 @@ describe('TaskSupervisorControl', () => {
       'Review from the first turn'
     )
     expectSelectedSupervisorModel('public:gpt-5.6-luna:default:0')
-    expect(screen.getByTestId('task-supervisor-frequency')).toHaveValue('60')
+    expect(screen.getByTestId('task-supervisor-frequency')).toHaveTextContent(/1 分钟|1 minute/)
     expect(screen.getByTestId('task-supervisor-disable-button')).toBeInTheDocument()
   })
 

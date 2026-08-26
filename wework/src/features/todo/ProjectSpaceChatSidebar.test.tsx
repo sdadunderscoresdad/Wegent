@@ -170,7 +170,7 @@ describe('ProjectSpaceChatSidebar', () => {
 
     expect(screen.getByText('新会话')).toBeInTheDocument()
     expect(screen.getByTestId('project-space-chat-header')).toHaveClass('h-[52px]')
-    expect(screen.getByTestId('project-space-chat-runtime-project')).toHaveValue('91')
+    expect(screen.getByTestId('project-space-chat-runtime-project')).toHaveTextContent('运营工作区')
     expect(screen.getByTestId('project-space-chat-resize-handle')).toHaveAccessibleName(
       '调整私信 AI 宽度'
     )

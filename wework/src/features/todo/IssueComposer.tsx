@@ -31,6 +31,7 @@ import { ConnectedIssueProjectWork } from './ConnectedIssueProjectWork'
 import { WorkItemComposerGuide } from './WorkItemComposerGuide'
 import { issueDraftFromText } from './issueComposerDraft'
 import { TaskDescriptionEditor } from './TaskDescriptionEditor'
+import { MenuSelect, type MenuOption } from '@/components/common/MenuSelect'
 
 interface IssueComposerProps {
   projects: CloudProject[]
@@ -561,43 +562,7 @@ export function IssueComposer({
         showProjectWorkBar={creationMode === 'task' && runtimeTaskProjects.length > 0}
         showExecutionTools={creationMode === 'task'}
         showWorkspaceMenu={false}
-        toolbarLeadingContext={
-          creationMode === 'issue' ? (
-            <label className="relative flex h-8 min-w-0 max-w-48 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-sm font-normal leading-[18px] text-text-secondary transition-colors hover:bg-muted hover:text-text-primary focus-within:bg-muted focus-within:text-text-primary">
-              <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span className="min-w-0 truncate">
-                {selectedWorkItemProject?.name ??
-                  t('workbench.default_work_item_board', '我的任务')}
-              </span>
-              <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <select
-                data-testid="workspace-issue-project-compact"
-                aria-label={t('todo.issue_project_label', '项目空间')}
-                value={boardKey}
-                disabled={busy || projects.length === 0}
-                onChange={event => selectBoard(event.target.value)}
-                className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
-              >
-                {!projects.some(
-                  project => `${project.project_store}:${String(project.id)}` === boardKey
-                ) && boardKey ? (
-                  <option value={boardKey}>
-                    {selectedWorkItemProject?.name ??
-                      t('workbench.default_work_item_board', '我的任务')}
-                  </option>
-                ) : null}
-                {projects.map(project => (
-                  <option
-                    key={`${project.project_store}:${String(project.id)}`}
-                    value={`${project.project_store}:${String(project.id)}`}
-                  >
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : undefined
-        }
+        toolbarLeadingContext={creationMode === 'issue' ? projectCompactSelect : undefined}
         projectWorkBarMiddleContext={
           creationMode === 'task' && selectedWorkItemProject ? (
             <WorkItemComposerGuide
@@ -643,6 +608,149 @@ export function IssueComposer({
         </Tooltip>
       ) : null}
     </div>
+  )
+
+  const projectMenuOptions: MenuOption[] = projects.map(project => ({
+    value: `${project.project_store}:${String(project.id)}`,
+    label: project.name,
+  }))
+  if (
+    !projects.some(project => `${project.project_store}:${String(project.id)}` === boardKey) &&
+    boardKey
+  ) {
+    projectMenuOptions.unshift({
+      value: boardKey,
+      label: selectedWorkItemProject?.name ?? t('workbench.default_work_item_board', '我的任务'),
+    })
+  }
+  const statusMenuOptions: MenuOption[] = statusOptions.map(option => ({
+    value: option.id,
+    label: option.name,
+  }))
+  const priorityMenuOptions: MenuOption[] = [
+    { value: 'none', label: t('todo.priority_none', '无优先级') },
+    { value: 'low', label: t('todo.priority_low', '低') },
+    { value: 'medium', label: t('todo.priority_medium', '普通') },
+    { value: 'high', label: t('todo.priority_high', '高') },
+    { value: 'urgent', label: t('todo.priority_urgent', '紧急') },
+  ]
+  const assigneeMenuOptions: MenuOption[] = [
+    { value: '', label: t('todo.unassigned', '未指派') },
+    ...selectedProjectMembers.map(member => ({
+      value: String(member.user_id),
+      label: member.user_name,
+    })),
+  ]
+  const issueChipClassName =
+    'inline-flex h-8 items-center gap-1.5 rounded-full border border-border px-3 text-sm font-normal text-text-secondary transition hover:bg-muted hover:text-text-primary'
+  const chipTriggerClassName = 'rounded-none p-0'
+  const projectCompactSelect = (
+    <MenuSelect
+      testId="workspace-issue-project-compact"
+      value={boardKey}
+      options={projectMenuOptions}
+      onChange={selectBoard}
+      disabled={busy || projects.length === 0}
+      menuWidth={240}
+      triggerClassName="h-8 min-w-0 max-w-48 rounded-lg px-2"
+      trigger={
+        <span className="flex h-8 min-w-0 max-w-48 items-center gap-1.5 rounded-lg px-2 text-sm font-normal leading-[18px] text-text-secondary transition-colors hover:bg-muted hover:text-text-primary">
+          <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate">
+            {selectedWorkItemProject?.name ?? t('workbench.default_work_item_board', '我的任务')}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0" aria-hidden="true" />
+        </span>
+      }
+    />
+  )
+  const projectSelect = (
+    <MenuSelect
+      testId="workspace-issue-project"
+      value={boardKey}
+      options={projectMenuOptions}
+      onChange={selectBoard}
+      disabled={busy || projects.length === 0}
+      menuWidth={240}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={issueChipClassName}>
+          <Folder className="h-4 w-4 shrink-0 text-text-muted" />
+          <span className="max-w-48 truncate font-medium text-text-primary">
+            {selectedWorkItemProject?.name ?? t('workbench.default_work_item_board', '我的任务')}
+          </span>
+          <ChevronDown className="h-3 w-3 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const statusChipSelect = (
+    <MenuSelect
+      testId="workspace-issue-status"
+      value={status}
+      options={statusMenuOptions}
+      onChange={next => setStatus(next as CloudLoopItem['status'])}
+      disabled={busy}
+      menuWidth={220}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={issueChipClassName}>
+          <span className="h-2 w-2 rounded-full bg-zinc-400" />
+          <span className="font-medium text-text-primary">
+            {statusOptions.find(option => option.id === status)?.name ?? status}
+          </span>
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const priorityChipSelect = (
+    <MenuSelect
+      testId="workspace-issue-priority"
+      value={priority}
+      options={priorityMenuOptions}
+      onChange={next => setPriority(next as CloudLoopItem['priority'])}
+      disabled={busy}
+      menuWidth={200}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={issueChipClassName}>
+          <Flag className="h-3.5 w-3.5 text-text-muted" />
+          <span className="font-medium text-text-primary">
+            {priority === 'none'
+              ? t('todo.priority_none', '无优先级')
+              : priority === 'low'
+                ? t('todo.priority_low', '低')
+                : priority === 'medium'
+                  ? t('todo.priority_medium', '普通')
+                  : priority === 'high'
+                    ? t('todo.priority_high', '高')
+                    : t('todo.priority_urgent', '紧急')}
+          </span>
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const assigneeChipSelect = (
+    <MenuSelect
+      testId="workspace-issue-assignee"
+      value={assigneeUserId ? String(assigneeUserId) : ''}
+      options={assigneeMenuOptions}
+      onChange={next => setAssigneeUserId(Number(next) || null)}
+      disabled={busy || selectedProjectMembers.length === 0}
+      menuWidth={240}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={issueChipClassName}>
+          <CircleUserRound className="h-3.5 w-3.5 text-text-muted" />
+          <span className="max-w-32 truncate font-medium text-text-primary">
+            {selectedAssigneeName ?? t('todo.unassigned', '未指派')}
+          </span>
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
   )
 
   return (
@@ -775,113 +883,10 @@ export function IssueComposer({
                   />
 
                   <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <label className="relative inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm font-normal text-text-secondary transition hover:bg-muted hover:text-text-primary">
-                      <Folder className="h-4 w-4 shrink-0 text-text-muted" />
-                      <span className="max-w-48 truncate font-medium text-text-primary">
-                        {selectedWorkItemProject?.name ??
-                          t('workbench.default_work_item_board', '我的任务')}
-                      </span>
-                      <ChevronDown className="h-3 w-3 shrink-0 text-text-muted" />
-                      <select
-                        data-testid="workspace-issue-project"
-                        aria-label={t('todo.issue_project_label', '项目空间')}
-                        value={boardKey}
-                        disabled={busy || projects.length === 0}
-                        onChange={event => selectBoard(event.target.value)}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                      >
-                        {!projects.some(
-                          project => `${project.project_store}:${String(project.id)}` === boardKey
-                        ) && boardKey ? (
-                          <option value={boardKey}>
-                            {selectedWorkItemProject?.name ??
-                              t('workbench.default_work_item_board', '我的任务')}
-                          </option>
-                        ) : null}
-                        {projects.map(project => (
-                          <option
-                            key={`${project.project_store}:${String(project.id)}`}
-                            value={`${project.project_store}:${String(project.id)}`}
-                          >
-                            {project.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="relative inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm font-normal text-text-secondary transition hover:bg-muted hover:text-text-primary">
-                      <span className="h-2 w-2 rounded-full bg-zinc-400" />
-                      <span className="font-medium text-text-primary">
-                        {statusOptions.find(option => option.id === status)?.name ?? status}
-                      </span>
-                      <ChevronDown className="h-3 w-3 text-text-muted" />
-                      <select
-                        data-testid="workspace-issue-status"
-                        aria-label={t('todo.status', '状态')}
-                        value={status}
-                        disabled={busy}
-                        onChange={event => setStatus(event.target.value as CloudLoopItem['status'])}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                      >
-                        {statusOptions.map(option => (
-                          <option key={option.id} value={option.id}>
-                            {option.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="relative inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm font-normal text-text-secondary transition hover:bg-muted hover:text-text-primary">
-                      <Flag className="h-3.5 w-3.5 text-text-muted" />
-                      <span className="font-medium text-text-primary">
-                        {priority === 'none'
-                          ? t('todo.priority_none', '无优先级')
-                          : priority === 'low'
-                            ? t('todo.priority_low', '低')
-                            : priority === 'medium'
-                              ? t('todo.priority_medium', '普通')
-                              : priority === 'high'
-                                ? t('todo.priority_high', '高')
-                                : t('todo.priority_urgent', '紧急')}
-                      </span>
-                      <ChevronDown className="h-3 w-3 text-text-muted" />
-                      <select
-                        data-testid="workspace-issue-priority"
-                        aria-label={t('todo.priority', '优先级')}
-                        value={priority}
-                        disabled={busy}
-                        onChange={event =>
-                          setPriority(event.target.value as CloudLoopItem['priority'])
-                        }
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                      >
-                        <option value="none">{t('todo.priority_none', '无优先级')}</option>
-                        <option value="low">{t('todo.priority_low', '低')}</option>
-                        <option value="medium">{t('todo.priority_medium', '普通')}</option>
-                        <option value="high">{t('todo.priority_high', '高')}</option>
-                        <option value="urgent">{t('todo.priority_urgent', '紧急')}</option>
-                      </select>
-                    </label>
-                    <label className="relative inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border border-border px-3 text-sm font-normal text-text-secondary transition hover:bg-muted hover:text-text-primary">
-                      <CircleUserRound className="h-3.5 w-3.5 text-text-muted" />
-                      <span className="max-w-32 truncate font-medium text-text-primary">
-                        {selectedAssigneeName ?? t('todo.unassigned', '未指派')}
-                      </span>
-                      <ChevronDown className="h-3 w-3 text-text-muted" />
-                      <select
-                        data-testid="workspace-issue-assignee"
-                        aria-label={t('todo.assignee', '负责人')}
-                        value={assigneeUserId ?? ''}
-                        disabled={busy || selectedProjectMembers.length === 0}
-                        onChange={event => setAssigneeUserId(Number(event.target.value) || null)}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
-                      >
-                        <option value="">{t('todo.unassigned', '未指派')}</option>
-                        {selectedProjectMembers.map(member => (
-                          <option key={member.user_id} value={member.user_id}>
-                            {member.user_name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    {projectSelect}
+                    {statusChipSelect}
+                    {priorityChipSelect}
+                    {assigneeChipSelect}
                     {tags.map(tag => (
                       <span
                         key={tag}

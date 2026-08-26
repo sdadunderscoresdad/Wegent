@@ -12,6 +12,11 @@ export interface MenuOption {
   disabled?: boolean
 }
 
+export interface MenuSection {
+  label: string
+  options: MenuOption[]
+}
+
 interface MenuAction {
   label: string
   testId: string
@@ -31,6 +36,12 @@ export function MenuSelect({
   invalid = false,
   field = false,
   fullWidth = false,
+  trigger,
+  triggerClassName,
+  sections,
+  menuWidth,
+  rootClassName,
+  ariaLabel,
 }: {
   testId: string
   value: string
@@ -43,6 +54,12 @@ export function MenuSelect({
   invalid?: boolean
   field?: boolean
   fullWidth?: boolean
+  trigger?: ReactNode
+  triggerClassName?: string
+  sections?: MenuSection[]
+  menuWidth?: number
+  rootClassName?: string
+  ariaLabel?: string
 }) {
   const selected = options.find(option => option.value === value)
   const selectionState = value ? 'selected' : 'unselected'
@@ -52,31 +69,61 @@ export function MenuSelect({
       disabled={disabled}
       invalid={invalid}
       fullWidth={fullWidth}
+      triggerClassName={triggerClassName}
+      menuWidth={menuWidth}
+      rootClassName={rootClassName}
+      ariaLabel={ariaLabel}
       trigger={
-        <span
-          data-selection-state={selectionState}
-          data-value={value}
-          data-invalid={invalid || undefined}
-          className={cn(
-            'inline-flex h-8 max-w-64 items-center justify-end gap-1.5 rounded-full px-2 text-sm font-medium',
-            field &&
-              'h-9 w-full max-w-none justify-between rounded-lg border border-border bg-background',
-            pill && 'bg-surface',
-            selectionState === 'selected' && 'text-text-primary',
-            selectionState === 'unselected' && 'text-text-muted',
-            invalid && 'text-destructive ring-1 ring-destructive/40'
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            {selected?.icon}
-            <span className="truncate">{selected?.label ?? placeholder ?? value}</span>
+        trigger ?? (
+          <span
+            data-selection-state={selectionState}
+            data-value={value}
+            data-invalid={invalid || undefined}
+            className={cn(
+              'inline-flex h-8 max-w-64 items-center justify-end gap-1.5 rounded-full px-2 text-sm font-medium',
+              field &&
+                'h-9 w-full max-w-none justify-between rounded-lg border border-border bg-background',
+              pill && 'bg-surface',
+              selectionState === 'selected' && 'text-text-primary',
+              selectionState === 'unselected' && 'text-text-muted',
+              invalid && 'text-destructive ring-1 ring-destructive/40'
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {selected?.icon}
+              <span className="truncate">{selected?.label ?? placeholder ?? value}</span>
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-text-secondary" />
           </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-text-secondary" />
-        </span>
+        )
       }
     >
       {close => (
         <>
+          {sections?.map(section => (
+            <div key={section.label}>
+              <div className="px-3 pb-1 pt-2 text-xs font-medium text-text-muted">
+                {section.label}
+              </div>
+              {section.options.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  data-testid={`${testId}-option-${option.value}`}
+                  disabled={option.disabled}
+                  onClick={() => {
+                    if (option.disabled) return
+                    onChange(option.value)
+                    close()
+                  }}
+                  className="flex h-10 w-full items-center rounded-xl px-3 text-left text-sm font-medium hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                >
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  {option.value === value ? <Check className="h-4 w-4 shrink-0" /> : null}
+                </button>
+              ))}
+            </div>
+          ))}
           {options.map(option => (
             <button
               key={option.value}
@@ -222,6 +269,8 @@ export function PopupMenu({
   menuWidth,
   fullWidth = false,
   triggerClassName,
+  rootClassName,
+  ariaLabel,
   onOpen,
 }: {
   testId: string
@@ -233,6 +282,8 @@ export function PopupMenu({
   menuWidth?: number
   fullWidth?: boolean
   triggerClassName?: string
+  rootClassName?: string
+  ariaLabel?: string
   onOpen?: () => void
 }) {
   const rootRef = useRef<HTMLSpanElement>(null)
@@ -242,6 +293,35 @@ export function PopupMenu({
     null
   )
   const close = useCallback(() => setOpen(false), [])
+
+  const handleMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'Home' &&
+      event.key !== 'End'
+    ) {
+      return
+    }
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? []
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    let nextIndex: number
+    if (event.key === 'ArrowDown') {
+      nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % items.length
+    } else if (event.key === 'ArrowUp') {
+      nextIndex =
+        currentIndex === -1 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else {
+      nextIndex = items.length - 1
+    }
+    items[nextIndex]?.focus()
+  }, [])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -279,10 +359,11 @@ export function PopupMenu({
   }, [close, open])
 
   return (
-    <span ref={rootRef} className={cn('inline-flex', fullWidth && 'w-full')}>
+    <span ref={rootRef} className={cn('inline-flex', fullWidth && 'w-full', rootClassName)}>
       <button
         type="button"
         data-testid={testId}
+        aria-label={ariaLabel}
         disabled={disabled}
         aria-invalid={invalid || undefined}
         onClick={() => {
@@ -296,6 +377,12 @@ export function PopupMenu({
         )}
         aria-haspopup="menu"
         aria-expanded={open}
+        onKeyDown={event => {
+          if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault()
+            setOpen(true)
+          }
+        }}
       >
         {trigger}
       </button>
@@ -314,6 +401,7 @@ export function PopupMenu({
               onClick={() => {
                 if (!keepOpen) close()
               }}
+              onKeyDown={handleMenuKeyDown}
               className="fixed z-[11000] max-h-[360px] overflow-y-auto rounded-2xl border border-border bg-background p-1.5 shadow-[0_16px_44px_rgba(0,0,0,0.16)]"
               role="menu"
             >

@@ -1,5 +1,6 @@
 import {
   Check,
+  ChevronDown,
   Copy,
   GitBranch,
   LockKeyhole,
@@ -21,6 +22,7 @@ import type {
 } from '@/api/deliveries'
 import type { createProjectIncomingHookApi, ProjectIncomingHook } from '@/api/projectIncomingHooks'
 import { ActionMenu } from '@/components/common/ActionMenu'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { Tooltip } from '@/components/ui/tooltip'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
 import { useTranslation } from '@/hooks/useTranslation'
@@ -580,21 +582,29 @@ export function CloudProjectManageView({
                     <span className="text-xs text-text-secondary">Owner</span>
                   ) : (
                     <>
-                      <select
-                        data-testid={`cloud-project-member-role-${member.user_id}`}
+                      <MenuSelect
+                        testId={`cloud-project-member-role-${member.user_id}`}
                         value={member.role}
-                        onChange={event =>
+                        options={[
+                          { value: 'Maintainer', label: 'Maintainer' },
+                          { value: 'Developer', label: 'Developer' },
+                          { value: 'Reporter', label: 'Reporter' },
+                        ]}
+                        onChange={next =>
                           void updateMember(
                             member,
-                            event.target.value as Exclude<CloudProjectMember['role'], 'Owner'>
+                            next as Exclude<CloudProjectMember['role'], 'Owner'>
                           )
                         }
-                        className="h-8 rounded-lg border border-border bg-background px-2 text-xs outline-none"
-                      >
-                        <option value="Maintainer">Maintainer</option>
-                        <option value="Developer">Developer</option>
-                        <option value="Reporter">Reporter</option>
-                      </select>
+                        menuWidth={160}
+                        triggerClassName="h-8 rounded-lg border border-border bg-background px-2"
+                        trigger={
+                          <span className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-text-secondary">
+                            <span className="truncate">{member.role}</span>
+                            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                          </span>
+                        }
+                      />
                       <Tooltip
                         label={t('todo.remove_member', '移除 {{name}}', {
                           name: member.user_name,
@@ -628,18 +638,24 @@ export function CloudProjectManageView({
                     placeholder="添加成员：搜索用户名或邮箱"
                   />
                 </label>
-                <select
-                  data-testid="cloud-member-role"
+                <MenuSelect
+                  testId="cloud-member-role"
                   value={memberRole}
-                  onChange={event =>
-                    setMemberRole(event.target.value as CloudProjectMember['role'])
+                  options={[
+                    { value: 'Maintainer', label: 'Maintainer' },
+                    { value: 'Developer', label: 'Developer' },
+                    { value: 'Reporter', label: 'Reporter' },
+                  ]}
+                  onChange={next => setMemberRole(next as CloudProjectMember['role'])}
+                  menuWidth={160}
+                  triggerClassName="h-9 rounded-lg border border-border bg-background px-2"
+                  trigger={
+                    <span className="inline-flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm text-text-secondary">
+                      <span className="truncate">{memberRole}</span>
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                    </span>
                   }
-                  className="h-9 rounded-lg border border-border bg-background px-2 text-sm outline-none"
-                >
-                  <option value="Maintainer">Maintainer</option>
-                  <option value="Developer">Developer</option>
-                  <option value="Reporter">Reporter</option>
-                </select>
+                />
               </div>
               {visibleMemberResults.map(user => (
                 <button

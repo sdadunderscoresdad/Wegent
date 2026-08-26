@@ -153,7 +153,6 @@ describe('IssueComposer', () => {
     expect(screen.queryByTestId('model-selector-button')).not.toBeInTheDocument()
     const compactProjectSelect = screen.getByTestId('workspace-issue-project-compact')
     expect(screen.getByTestId('composer-toolbar')).toContainElement(compactProjectSelect)
-    expect(compactProjectSelect.closest('label')).toHaveClass('text-sm', 'font-normal')
     expect(screen.getByTestId('workspace-issue-composer-input-shell')).toHaveClass('font-normal')
     await userEvent.type(screen.getByTestId('workspace-issue-input'), '修复工作空间创建入口')
     await userEvent.keyboard('{Shift>}{Enter}{/Shift}只创建 Issue')
@@ -328,10 +327,8 @@ describe('IssueComposer', () => {
       />
     )
 
-    await userEvent.selectOptions(
-      screen.getByTestId('workspace-issue-project-compact'),
-      'backend:22'
-    )
+    await userEvent.click(screen.getByTestId('workspace-issue-project-compact'))
+    await userEvent.click(screen.getByTestId('workspace-issue-project-compact-option-backend:22'))
     await userEvent.type(screen.getByTestId('workspace-issue-input'), '发布产品需求')
     await userEvent.click(screen.getByTestId('workspace-issue-submit'))
 
@@ -475,7 +472,7 @@ describe('IssueComposer', () => {
       'text-heading-md',
       'font-medium'
     )
-    expect(screen.getByTestId('workspace-issue-project')).toHaveValue('backend:1')
+    expect(screen.getByTestId('workspace-issue-project')).toHaveTextContent('我的任务')
     await waitFor(() =>
       expect(screen.getByTestId('workspace-issue-description')).toHaveTextContent('自动生成的标题')
     )
@@ -666,9 +663,12 @@ describe('IssueComposer', () => {
     await userEvent.click(screen.getByTestId('workspace-issue-expand'))
     await userEvent.type(screen.getByTestId('workspace-issue-title'), '第一个 Issue')
     await replaceIssueDescription('第一条描述')
-    await userEvent.selectOptions(screen.getByTestId('workspace-issue-status'), 'in_progress')
-    await userEvent.selectOptions(screen.getByTestId('workspace-issue-priority'), 'high')
-    await userEvent.selectOptions(screen.getByTestId('workspace-issue-assignee'), '7')
+    await userEvent.click(screen.getByTestId('workspace-issue-status'))
+    await userEvent.click(screen.getByTestId('workspace-issue-status-option-in_progress'))
+    await userEvent.click(screen.getByTestId('workspace-issue-priority'))
+    await userEvent.click(screen.getByTestId('workspace-issue-priority-option-high'))
+    await userEvent.click(screen.getByTestId('workspace-issue-assignee'))
+    await userEvent.click(screen.getByTestId('workspace-issue-assignee-option-7'))
     await userEvent.type(screen.getByTestId('workspace-issue-tag-input'), '体验{Enter}')
     await userEvent.click(screen.getByTestId('workspace-issue-continue-creating'))
     await userEvent.click(screen.getByTestId('workspace-issue-fullscreen-submit'))

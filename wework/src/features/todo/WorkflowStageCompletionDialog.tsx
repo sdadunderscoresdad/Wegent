@@ -1,7 +1,8 @@
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { ChevronDown, X } from 'lucide-react'
 import type { DeliverableRequirement, DeliverableValueType } from '@/api/deliveries'
 import { useTranslation } from '@/hooks/useTranslation'
+import { MenuSelect } from '@/components/common/MenuSelect'
 
 export interface WorkflowDeliverableDraft {
   requirement: DeliverableRequirement
@@ -203,18 +204,27 @@ export function WorkflowStageCompletionDialog({
                 ) : (
                   <div className="grid gap-2">
                     <div className="grid grid-cols-[110px_1fr] gap-2">
-                      <select
+                      <MenuSelect
+                        testId={`workflow-stage-provider-${requirement.id}`}
                         value={value.provider ?? 'github'}
-                        onChange={event =>
+                        options={[
+                          { value: 'github', label: 'GitHub' },
+                          { value: 'gitlab', label: 'GitLab' },
+                        ]}
+                        onChange={next =>
                           updateValue(requirement, {
-                            provider: event.target.value as 'github' | 'gitlab',
+                            provider: next as 'github' | 'gitlab',
                           })
                         }
-                        className="h-9 rounded-lg border border-border bg-background px-2 text-sm"
-                      >
-                        <option value="github">GitHub</option>
-                        <option value="gitlab">GitLab</option>
-                      </select>
+                        menuWidth={140}
+                        triggerClassName="h-9 rounded-lg border border-border bg-background px-2"
+                        trigger={
+                          <span className="inline-flex h-9 items-center justify-between gap-1.5 rounded-lg px-2 text-sm text-text-primary">
+                            <span>{value.provider === 'gitlab' ? 'GitLab' : 'GitHub'}</span>
+                            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                          </span>
+                        }
+                      />
                       <input
                         value={value.url ?? ''}
                         onChange={event => updateValue(requirement, { url: event.target.value })}

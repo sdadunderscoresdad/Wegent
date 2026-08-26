@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, Sparkles, X }
 
 import type { AITableApi, AITableField, AITableRecord } from '@/api/aitable'
 import type { CloudLoopItem, CloudProject } from '@/api/deliveries'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { cn } from '@/lib/utils'
 import { track } from '@/telemetry/client'
 
@@ -130,20 +131,23 @@ function FieldEditor({
   return (
     <div className="space-y-2">
       {field.type === 'singleSelect' && options.length > 0 ? (
-        <select
-          autoFocus
-          data-testid={`aitable-detail-edit-${field.id}`}
+        <MenuSelect
+          testId={`aitable-detail-edit-${field.id}`}
           value={draft}
-          onChange={event => setDraft(event.target.value)}
-          className="h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none focus:border-focus"
-        >
-          <option value="">—</option>
-          {options.map(option => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: '', label: '—' },
+            ...options.map(option => ({ value: option, label: option })),
+          ]}
+          onChange={setDraft}
+          menuWidth={220}
+          triggerClassName="h-9 w-full rounded-lg border border-border bg-background px-2"
+          trigger={
+            <span className="flex h-9 w-full items-center justify-between gap-2 rounded-lg px-2 text-sm text-text-primary">
+              <span className="truncate">{draft || '—'}</span>
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            </span>
+          }
+        />
       ) : field.type === 'checkbox' ? (
         <label className="flex h-9 items-center gap-2 text-sm">
           <input

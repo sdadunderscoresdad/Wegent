@@ -12,6 +12,7 @@ import { TemporaryChatPanel } from '@/components/layout/workspace-panels/Tempora
 import { formatRelativeSidebarTime } from '@/components/layout/runtimeSidebarTime'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useTranslation } from '@/hooks/useTranslation'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useWorkbenchPaneContext } from '@/features/workbench/useWorkbench'
 import type { CloudProject } from '@/api/deliveries'
 import type {
@@ -287,27 +288,36 @@ export function ProjectSpaceChatSidebar({
               <span className="shrink-0 pl-2 text-sm font-medium text-text-primary">
                 {t('workbench.project_space_chat.new_conversation_option')}
               </span>
-              <label className="relative ml-1.5 flex h-[26px] max-w-[180px] shrink-0 items-center rounded-full bg-muted/60 transition-colors hover:bg-muted">
-                <span className="sr-only">{t('workbench.project_space_chat.runtime_project')}</span>
-                <select
-                  data-testid="project-space-chat-runtime-project"
-                  value={selectedLocalProject?.id ?? ''}
-                  onChange={event =>
-                    setLocalProjectId(event.target.value ? Number(event.target.value) : null)
-                  }
-                  className="h-full w-full appearance-none truncate rounded-full bg-transparent pl-2.5 pr-[22px] text-xs text-text-primary outline-none"
-                >
-                  <option value="">{t('workbench.project_space_chat.no_runtime_project')}</option>
-                  {localProjects.map(localProject => (
-                    <option key={localProject.id} value={localProject.id}>
-                      {t('workbench.project_space_chat.runtime_project_prefix', {
-                        name: localProject.name,
-                      })}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-[7px] h-[11px] w-[11px] text-text-muted" />
-              </label>
+              <MenuSelect
+                testId="project-space-chat-runtime-project"
+                ariaLabel={t('workbench.project_space_chat.runtime_project')}
+                value={selectedLocalProject?.id ? String(selectedLocalProject.id) : ''}
+                options={[
+                  { value: '', label: t('workbench.project_space_chat.no_runtime_project') },
+                  ...localProjects.map(localProject => ({
+                    value: String(localProject.id),
+                    label: t('workbench.project_space_chat.runtime_project_prefix', {
+                      name: localProject.name,
+                    }),
+                  })),
+                ]}
+                onChange={next => setLocalProjectId(next ? Number(next) : null)}
+                menuWidth={220}
+                rootClassName="ml-1.5 max-w-[180px] shrink-0"
+                triggerClassName="h-[26px] rounded-full bg-muted/60 px-2.5"
+                trigger={
+                  <span className="flex h-[26px] max-w-[180px] items-center gap-1.5 rounded-full bg-muted/60 pl-2.5 pr-2 text-xs text-text-primary transition-colors hover:bg-muted">
+                    <span className="truncate">
+                      {selectedLocalProject
+                        ? t('workbench.project_space_chat.runtime_project_prefix', {
+                            name: selectedLocalProject.name,
+                          })
+                        : t('workbench.project_space_chat.no_runtime_project')}
+                    </span>
+                    <ChevronDown className="h-[11px] w-[11px] shrink-0 text-text-muted" />
+                  </span>
+                }
+              />
             </>
           ) : (
             <button

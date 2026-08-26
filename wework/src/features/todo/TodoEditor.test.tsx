@@ -191,11 +191,11 @@ describe('TodoEditor external item sync', () => {
 
   it('adopts an external version update in place instead of remounting', () => {
     const view = render(editorElement(baseItem))
-    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveValue('in_progress')
+    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveTextContent('进行中')
 
     view.rerender(editorElement({ ...baseItem, version: 2, status: 'in_review' }))
 
-    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveValue('in_review')
+    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveTextContent('待确认')
     expect(screen.getByTestId('cloud-todo-detail-title')).toHaveValue('Inspect changes')
   })
 
@@ -207,7 +207,7 @@ describe('TodoEditor external item sync', () => {
     view.rerender(editorElement({ ...baseItem, version: 2, status: 'completed' }))
 
     expect(screen.getByTestId('cloud-todo-detail-title')).toHaveValue('Inspect changes 手工补充')
-    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveValue('completed')
+    expect(screen.getByTestId('cloud-todo-detail-status')).toHaveTextContent('已完成')
   })
 
   it('assigns a member through the assign route with a string user id', async () => {
@@ -249,8 +249,8 @@ describe('TodoEditor external item sync', () => {
       />
     )
 
-    await screen.findByRole('option', { name: '张三' })
-    await user.selectOptions(screen.getByTestId('cloud-todo-detail-assignee'), 'user:5')
+    await user.click(screen.getByTestId('cloud-todo-detail-assignee'))
+    await user.click(await screen.findByTestId('cloud-todo-detail-assignee-option-user:5'))
     await user.click(screen.getByTestId('cloud-todo-save'))
 
     await vi.waitFor(() => {
@@ -306,8 +306,8 @@ describe('TodoEditor external item sync', () => {
       />
     )
 
-    await screen.findByRole('option', { name: '张三' })
-    await user.selectOptions(screen.getByTestId('cloud-todo-detail-assignee'), '')
+    await user.click(screen.getByTestId('cloud-todo-detail-assignee'))
+    await user.click(await screen.findByTestId('cloud-todo-detail-assignee-option-'))
     await user.click(screen.getByTestId('cloud-todo-save'))
 
     await vi.waitFor(() => {
@@ -365,8 +365,8 @@ describe('TodoEditor external item sync', () => {
       />
     )
 
-    await screen.findByRole('option', { name: '评审智能体' })
-    await user.selectOptions(screen.getByTestId('cloud-todo-detail-assignee'), 'team:42')
+    await user.click(screen.getByTestId('cloud-todo-detail-assignee'))
+    await user.click(await screen.findByTestId('cloud-todo-detail-assignee-option-team:42'))
     await user.click(screen.getByTestId('cloud-todo-save'))
 
     await vi.waitFor(() => {
@@ -750,6 +750,7 @@ describe('TodoEditor status history', () => {
 
 describe('TodoEditor create parent resolution', () => {
   it('keeps Wegent Teams available when the member directory fails', async () => {
+    const user = userEvent.setup()
     const createApi = {
       listCloudProjectMembers: vi.fn(async () => {
         throw new Error('member directory unavailable')
@@ -766,11 +767,12 @@ describe('TodoEditor create parent resolution', () => {
         },
       ]),
     } as never
+    const ownerProject = { ...project, access_role: 'Owner' } as unknown as CloudProject
 
     render(
       <TodoEditor
         mode="create"
-        project={project}
+        project={ownerProject}
         initialParent={null}
         initialStatus="inbox"
         allItems={[]}
@@ -782,7 +784,10 @@ describe('TodoEditor create parent resolution', () => {
       />
     )
 
-    expect(await screen.findByRole('option', { name: '评审智能体' })).toHaveValue('team:42')
+    await user.click(screen.getByTestId('cloud-todo-create-assignee'))
+    expect(
+      await screen.findByTestId('cloud-todo-create-assignee-option-team:42')
+    ).toBeInTheDocument()
   })
 
   it('drops a parent that no longer exists and creates a top-level task', async () => {

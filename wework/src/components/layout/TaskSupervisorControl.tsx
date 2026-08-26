@@ -1,7 +1,17 @@
-import { AlertCircle, Check, Loader2, MessageSquareText, Play, ShieldCheck, X } from 'lucide-react'
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  Loader2,
+  MessageSquareText,
+  Play,
+  ShieldCheck,
+  X,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ModelSelector } from '@/components/chat/composer/ModelSelector'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { Button } from '@/components/ui/button'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useTranslation } from '@/hooks/useTranslation'
@@ -451,18 +461,44 @@ function TaskSupervisorDialogContent({
             </label>
             <label className="block text-xs font-medium text-text-secondary">
               {t('workbench.supervisor_frequency')}
-              <select
-                data-testid="task-supervisor-frequency"
-                value={intervalSeconds}
-                onChange={event => setIntervalSeconds(Number(event.target.value))}
-                className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-text-primary outline-none focus:border-primary"
-              >
-                {[10, 30, 60, 300].map(seconds => (
-                  <option key={seconds} value={seconds}>
-                    {t(`workbench.supervisor_frequency_${seconds}`)}
-                  </option>
-                ))}
-              </select>
+              <MenuSelect
+                testId="task-supervisor-frequency"
+                value={String(intervalSeconds)}
+                options={[10, 30, 60, 300].map(seconds => ({
+                  value: String(seconds),
+                  label: t(
+                    `workbench.supervisor_frequency_${seconds}`,
+                    seconds === 10
+                      ? '每 10 秒'
+                      : seconds === 30
+                        ? '每 30 秒'
+                        : seconds === 60
+                          ? '每 1 分钟'
+                          : '每 5 分钟'
+                  ),
+                }))}
+                onChange={next => setIntervalSeconds(Number(next))}
+                menuWidth={200}
+                rootClassName="mt-1 block"
+                triggerClassName="h-8 w-full rounded-md border border-border bg-background px-2"
+                trigger={
+                  <span className="flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-sm text-text-primary">
+                    <span className="truncate">
+                      {t(
+                        `workbench.supervisor_frequency_${intervalSeconds}`,
+                        intervalSeconds === 10
+                          ? '每 10 秒'
+                          : intervalSeconds === 30
+                            ? '每 30 秒'
+                            : intervalSeconds === 60
+                              ? '每 1 分钟'
+                              : '每 5 分钟'
+                      )}
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                  </span>
+                }
+              />
             </label>
           </div>
 

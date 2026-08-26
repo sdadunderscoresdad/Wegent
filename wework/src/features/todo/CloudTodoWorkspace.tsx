@@ -67,6 +67,7 @@ import {
 } from '@/components/layout/DesktopSidebarPrimitives'
 import { MacOSTitleBarDragRegion } from '@/components/layout/MacOSTitleBarDragRegion'
 import { ActionMenu } from '@/components/common/ActionMenu'
+import { MenuSelect, type MenuOption } from '@/components/common/MenuSelect'
 import { Tooltip } from '@/components/ui/tooltip'
 import type {
   ArchiveRuntimeTaskOptions,
@@ -1971,6 +1972,19 @@ export function CloudTodoWorkspace({
                 'bg-zinc-400',
             }))
   const aitableApi = isAITableProject ? services.aitableApi : undefined
+  const viewMenuOptions: MenuOption[] = [
+    { value: 'board', label: '看板' },
+    ...(isAITableProject && aitableApi ? [{ value: 'table', label: '数据视图' }] : []),
+    ...(selectedProject?.access_role !== 'RestrictedAnalyst'
+      ? [
+          { value: 'files', label: '文件' },
+          ...(selectedProjectAutomationSupported ? [{ value: 'automation', label: '自动化' }] : []),
+        ]
+      : []),
+    ...(['Owner', 'Maintainer'].includes(selectedProject?.access_role ?? 'Owner')
+      ? [{ value: 'manage', label: '管理' }]
+      : []),
+  ]
 
   useEffect(() => {
     if (!isAITableProject || !selectedProject || !aitableApi) return
@@ -3960,30 +3974,26 @@ export function CloudTodoWorkspace({
                 ) : (
                   <span
                     ref={projectHeaderTabsRef}
-                    className="electron-titlebar-interactive-region relative z-10 ml-2 inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-border bg-background px-2.5 text-xs text-text-secondary"
+                    className="electron-titlebar-interactive-region relative z-10 ml-2"
                   >
-                    <select
-                      aria-label="视图切换"
+                    <MenuSelect
+                      testId="cloud-workspace-view-switch"
+                      ariaLabel="视图切换"
                       value={projectView}
-                      onChange={event => setProjectView(event.target.value as ProjectView)}
-                      className="h-8 cursor-pointer bg-transparent text-xs outline-none"
-                    >
-                      <option value="board">看板</option>
-                      {isAITableProject && aitableApi ? (
-                        <option value="table">数据视图</option>
-                      ) : null}
-                      {selectedProject.access_role !== 'RestrictedAnalyst' ? (
-                        <option value="files">文件</option>
-                      ) : null}
-                      {selectedProject.access_role !== 'RestrictedAnalyst' &&
-                      selectedProjectAutomationSupported ? (
-                        <option value="automation">自动化</option>
-                      ) : null}
-                      {['Owner', 'Maintainer'].includes(selectedProject.access_role ?? 'Owner') ? (
-                        <option value="manage">管理</option>
-                      ) : null}
-                    </select>
-                    <ChevronDown className="h-3 w-3" />
+                      options={viewMenuOptions}
+                      onChange={next => setProjectView(next as ProjectView)}
+                      menuWidth={180}
+                      triggerClassName="h-8 rounded-lg border border-border bg-background px-2.5"
+                      trigger={
+                        <span className="inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-xs text-text-secondary">
+                          <span className="truncate">
+                            {viewMenuOptions.find(option => option.value === projectView)?.label ??
+                              projectView}
+                          </span>
+                          <ChevronDown className="h-3 w-3" />
+                        </span>
+                      }
+                    />
                   </span>
                 )}
                 <span className="flex-1" />
@@ -4210,24 +4220,26 @@ export function CloudTodoWorkspace({
                           setAitableGroupFilter('')
                         }}
                       />
-                      <span className="relative inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-xs text-text-secondary">
-                        {aitableGroupFilter || `全部${selectedGroupField?.name ?? '记录'}`}
-                        <ChevronDown className="ml-2 h-3 w-3" />
-                        <select
-                          data-testid="dingtalk-board-assignee-filter"
-                          value={aitableGroupFilter}
-                          onChange={event => setAitableGroupFilter(event.target.value)}
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          aria-label="分组值筛选"
-                        >
-                          <option value="">全部</option>
-                          {aitableGroupValues.map(name => (
-                            <option key={name} value={name}>
-                              {name}
-                            </option>
-                          ))}
-                        </select>
-                      </span>
+                      <MenuSelect
+                        testId="dingtalk-board-assignee-filter"
+                        ariaLabel="分组值筛选"
+                        value={aitableGroupFilter}
+                        options={[
+                          { value: '', label: '全部' },
+                          ...aitableGroupValues.map(name => ({ value: name, label: name })),
+                        ]}
+                        onChange={setAitableGroupFilter}
+                        menuWidth={220}
+                        triggerClassName="h-8 rounded-lg border border-border bg-background px-3"
+                        trigger={
+                          <span className="inline-flex h-8 items-center gap-2 rounded-lg px-3 text-xs text-text-secondary">
+                            <span className="truncate">
+                              {aitableGroupFilter || `全部${selectedGroupField?.name ?? '记录'}`}
+                            </span>
+                            <ChevronDown className="h-3 w-3" />
+                          </span>
+                        }
+                      />
                       <label className="flex h-8 min-w-52 items-center gap-2 rounded-lg border border-border px-2.5 text-xs text-text-muted focus-within:border-focus">
                         <Search className="h-3.5 w-3.5" />
                         <input
@@ -4248,38 +4260,38 @@ export function CloudTodoWorkspace({
                       className="scrollbar-none flex shrink-0 items-center gap-2 overflow-x-auto overscroll-x-contain px-6 pb-3"
                     >
                       {isMyTasksBoard && localProjectOptions.length > 0 ? (
-                        <label className="relative inline-flex h-8 min-w-40 shrink-0 cursor-pointer items-center rounded-lg border border-border bg-background pl-3 pr-8 text-xs font-medium text-text-primary hover:bg-muted">
-                          <span className="sr-only">
-                            {t('todo.local_project_filter', '本地项目')}
-                          </span>
-                          <span className="pointer-events-none min-w-0 truncate">
-                            {t('todo.project_with_name', '项目：{{project}}', {
-                              project:
-                                activeLocalProjectFilter === 'all'
-                                  ? t('todo.all_local_projects', '全部项目')
-                                  : (selectedLocalProject?.name ??
-                                    t('todo.select_local_project', '选择项目')),
-                            })}
-                          </span>
-                          <ChevronDown className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-text-muted" />
-                          <select
-                            data-testid="cloud-local-project-filter"
-                            aria-label={t('todo.local_project_filter', '本地项目')}
-                            value={activeLocalProjectFilter}
-                            onChange={event => {
-                              setQuickCreateStatus(null)
-                              setLocalProjectFilter(event.target.value)
-                            }}
-                            className="absolute inset-0 cursor-pointer opacity-0"
-                          >
-                            <option value="all">{t('todo.all_local_projects', '全部项目')}</option>
-                            {localProjectOptions.map(project => (
-                              <option key={project.id} value={project.id}>
-                                {project.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        <MenuSelect
+                          testId="cloud-local-project-filter"
+                          ariaLabel={t('todo.local_project_filter', '本地项目')}
+                          value={activeLocalProjectFilter}
+                          options={[
+                            { value: 'all', label: t('todo.all_local_projects', '全部项目') },
+                            ...localProjectOptions.map(project => ({
+                              value: String(project.id),
+                              label: project.name,
+                            })),
+                          ]}
+                          onChange={next => {
+                            setQuickCreateStatus(null)
+                            setLocalProjectFilter(next)
+                          }}
+                          menuWidth={220}
+                          triggerClassName="h-8 min-w-40 rounded-lg border border-border bg-background pl-3 pr-8"
+                          trigger={
+                            <span className="flex h-8 min-w-40 items-center gap-2 rounded-lg pl-3 pr-8 text-xs font-medium text-text-primary">
+                              <span className="min-w-0 truncate">
+                                {t('todo.project_with_name', '项目：{{project}}', {
+                                  project:
+                                    activeLocalProjectFilter === 'all'
+                                      ? t('todo.all_local_projects', '全部项目')
+                                      : (selectedLocalProject?.name ??
+                                        t('todo.select_local_project', '选择项目')),
+                                })}
+                              </span>
+                              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                            </span>
+                          }
+                        />
                       ) : null}
                       <AITableGroupFieldPicker
                         fields={nativeBoardGroupFields}
@@ -4288,28 +4300,32 @@ export function CloudTodoWorkspace({
                         searchPlaceholder="搜索分组字段"
                         onChange={fieldId => savePersonalGroupBy(fieldId as NativeBoardGroupBy)}
                       />
-                      <label className="relative inline-flex h-8 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-lg border border-border bg-background px-3 text-xs text-text-secondary hover:bg-muted">
-                        <span data-testid="cloud-board-group-filter-label">
-                          {nativeGroupFilter
-                            ? boardColumns.find(column => column.key === nativeGroupFilter)?.label
-                            : `全部${nativeBoardGroupFields.find(field => field.id === nativeGroupBy)?.name ?? '任务'}`}
-                        </span>
-                        <ChevronDown className="ml-2 h-3 w-3" />
-                        <select
-                          data-testid="cloud-board-group-filter"
-                          value={nativeGroupFilter}
-                          onChange={event => setNativeGroupFilter(event.target.value)}
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          aria-label="分组值筛选"
-                        >
-                          <option value="">全部</option>
-                          {boardColumns.map(column => (
-                            <option key={column.key} value={column.key}>
-                              {column.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <MenuSelect
+                        testId="cloud-board-group-filter"
+                        ariaLabel="分组值筛选"
+                        value={nativeGroupFilter}
+                        options={[
+                          { value: '', label: '全部' },
+                          ...boardColumns.map(column => ({
+                            value: column.key,
+                            label: column.label,
+                          })),
+                        ]}
+                        onChange={setNativeGroupFilter}
+                        menuWidth={220}
+                        triggerClassName="h-8 shrink-0 rounded-lg border border-border bg-background px-3"
+                        trigger={
+                          <span className="inline-flex h-8 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-3 text-xs text-text-secondary">
+                            <span data-testid="cloud-board-group-filter-label">
+                              {nativeGroupFilter
+                                ? boardColumns.find(column => column.key === nativeGroupFilter)
+                                    ?.label
+                                : `全部${nativeBoardGroupFields.find(field => field.id === nativeGroupBy)?.name ?? '任务'}`}
+                            </span>
+                            <ChevronDown className="h-3 w-3" />
+                          </span>
+                        }
+                      />
                       <label className="flex h-8 min-w-52 shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 text-xs text-text-muted focus-within:border-focus">
                         <Search className="h-3.5 w-3.5" />
                         <input

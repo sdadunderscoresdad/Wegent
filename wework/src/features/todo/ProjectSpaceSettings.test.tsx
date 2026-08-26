@@ -73,9 +73,9 @@ describe('ProjectSpaceSettings', () => {
       '其他设备'
     )
 
-    await userEvent.selectOptions(
-      screen.getByTestId('project-settings-device-limit-remote-device'),
-      '5'
+    await userEvent.click(screen.getByTestId('project-settings-device-limit-remote-device'))
+    await userEvent.click(
+      screen.getByTestId('project-settings-device-limit-remote-device-option-5')
     )
 
     await waitFor(() => expect(updateRuntimeSettings).toHaveBeenCalledWith('remote-device', 5))

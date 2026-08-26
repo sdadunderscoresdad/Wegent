@@ -20,10 +20,11 @@ import {
   type IHeaderParams,
 } from 'ag-grid-community'
 import { AgGridReact } from 'ag-grid-react'
-import { Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 
 import type { AITableApi, AITableDescription, AITableField, AITableRecord } from '@/api/aitable'
 import type { CloudProject } from '@/api/deliveries'
+import { MenuSelect, PopupMenu } from '@/components/common/MenuSelect'
 import { track } from '@/telemetry/client'
 
 ModuleRegistry.registerModules([AllCommunityModule])
@@ -217,42 +218,67 @@ function CellEditor({ field, record, onCommit }: CellEditorProps) {
 
   if (type === 'singleSelect') {
     return (
-      <select
-        data-testid={`aitable-cell-select-${record.id}-${field.id}`}
+      <MenuSelect
+        testId={`aitable-cell-select-${record.id}-${field.id}`}
         value={cellText(raw)}
         disabled={saving}
-        onChange={event => void commit(event.target.value)}
-        className="w-full rounded border border-transparent bg-transparent px-1 py-0.5 text-sm hover:border-border focus:border-primary focus:outline-none"
-      >
-        <option value="">—</option>
-        {fieldOptions(field).map(option => (
-          <option key={option.name} value={option.name}>
-            {option.name}
-          </option>
-        ))}
-      </select>
+        options={[
+          { value: '', label: '—' },
+          ...fieldOptions(field).map(option => ({ value: option.name, label: option.name })),
+        ]}
+        onChange={next => void commit(next)}
+        menuWidth={220}
+        triggerClassName="w-full rounded-none p-0"
+        trigger={
+          <span className="block w-full truncate rounded border border-transparent px-1 py-0.5 text-sm hover:border-border">
+            {cellText(raw) || '—'}
+          </span>
+        }
+      />
     )
   }
 
   if (type === 'multipleSelect') {
     const selected = selectValues(raw)
     return (
-      <select
-        multiple
-        data-testid={`aitable-cell-multiselect-${record.id}-${field.id}`}
-        value={selected}
+      <PopupMenu
+        testId={`aitable-cell-multiselect-${record.id}-${field.id}`}
         disabled={saving}
-        onChange={event =>
-          void commit(Array.from(event.target.selectedOptions, option => option.value))
+        keepOpen
+        menuWidth={220}
+        triggerClassName="w-full rounded-none p-0"
+        trigger={
+          <span className="block w-full truncate rounded border border-transparent px-1 py-0.5 text-sm hover:border-border">
+            {selected.length > 0 ? selected.join('、') : '—'}
+            <ChevronDown className="ml-1 inline h-3 w-3 text-text-muted" />
+          </span>
         }
-        className="w-full rounded border border-transparent bg-transparent px-1 py-0.5 text-sm hover:border-border focus:border-primary focus:outline-none"
       >
-        {fieldOptions(field).map(option => (
-          <option key={option.name} value={option.name}>
-            {option.name}
-          </option>
-        ))}
-      </select>
+        {() => (
+          <>
+            {fieldOptions(field).map(option => {
+              const checked = selected.includes(option.name)
+              return (
+                <button
+                  key={option.name}
+                  type="button"
+                  data-testid={`aitable-cell-multiselect-${record.id}-${field.id}-option-${option.name}`}
+                  onClick={() => {
+                    const next = checked
+                      ? selected.filter(value => value !== option.name)
+                      : [...selected, option.name]
+                    void commit(next)
+                  }}
+                  className="flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left text-sm font-medium hover:bg-surface"
+                >
+                  <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                  {checked ? <Check className="h-4 w-4 shrink-0" /> : null}
+                </button>
+              )
+            })}
+          </>
+        )}
+      </PopupMenu>
     )
   }
 
@@ -701,21 +727,42 @@ export function AITableView({ api, project }: { api: AITableApi; project: CloudP
             onChange={event => setNewFieldName(event.target.value)}
             className="h-8 w-48 rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none"
           />
-          <select
-            data-testid="aitable-field-type"
+          <MenuSelect
+            testId="aitable-field-type"
             value={newFieldType}
-            onChange={event => setNewFieldType(event.target.value)}
-            className="h-8 rounded-md border border-border bg-background px-2 text-sm focus:border-primary focus:outline-none"
-          >
-            <option value="text">文本</option>
-            <option value="number">数字</option>
-            <option value="singleSelect">单选</option>
-            <option value="multipleSelect">多选</option>
-            <option value="date">日期</option>
-            <option value="checkbox">勾选</option>
-            <option value="url">链接</option>
-            <option value="user">成员</option>
-          </select>
+            options={[
+              { value: 'text', label: '文本' },
+              { value: 'number', label: '数字' },
+              { value: 'singleSelect', label: '单选' },
+              { value: 'multipleSelect', label: '多选' },
+              { value: 'date', label: '日期' },
+              { value: 'checkbox', label: '勾选' },
+              { value: 'url', label: '链接' },
+              { value: 'user', label: '成员' },
+            ]}
+            onChange={setNewFieldType}
+            menuWidth={160}
+            triggerClassName="h-8 rounded-md border border-border bg-background px-2"
+            trigger={
+              <span className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-sm text-text-secondary">
+                <span className="truncate">
+                  {
+                    {
+                      text: '文本',
+                      number: '数字',
+                      singleSelect: '单选',
+                      multipleSelect: '多选',
+                      date: '日期',
+                      checkbox: '勾选',
+                      url: '链接',
+                      user: '成员',
+                    }[newFieldType]
+                  }
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+              </span>
+            }
+          />
           <button
             type="button"
             data-testid="aitable-add-field"
