@@ -2176,9 +2176,9 @@ describe('CloudTodoWorkspace', () => {
     expect(await screen.findByText('任务详情')).toBeInTheDocument()
     expect(screen.getAllByText('Implement cloud MCP').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Implement cloud delivery').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('local').length).toBeGreaterThan(0)
+    expect(await screen.findByTitle('local')).toBeInTheDocument()
     expect(screen.getByText('参与者')).toBeInTheDocument()
-    expect(screen.getByTestId('cloud-todo-add-collaborator')).toBeInTheDocument()
+    expect(await screen.findByTestId('cloud-todo-add-collaborator')).toBeInTheDocument()
   })
 
   it('hides the board card activity shortcut and shows activity inside task detail', async () => {
