@@ -461,7 +461,8 @@ describe('AiChatModal', () => {
       />
     )
 
-    await userEvent.selectOptions(screen.getByTestId('ai-chat-runtime-project'), '92')
+    await userEvent.click(screen.getByTestId('ai-chat-runtime-project'))
+    await userEvent.click(screen.getByTestId('ai-chat-runtime-project-option-92'))
 
     expect(screen.getByTestId('mock-chat-panel')).toHaveAttribute('data-project-id', '92')
   })

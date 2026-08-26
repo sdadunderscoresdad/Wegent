@@ -73,12 +73,21 @@ describe('IssueExecutionConfigDialog', () => {
     )
 
     const modelSelect = await screen.findByTestId('issue-execution-config-fields-model')
-    expect(modelSelect).toHaveTextContent('Local Model')
-    expect(modelSelect).not.toHaveTextContent('Cloud Model')
+    await userEvent.click(modelSelect)
+    expect(
+      screen.getByTestId('issue-execution-config-fields-model-option-runtime:local-model')
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('issue-execution-config-fields-model-option-public:cloud-model')
+    ).not.toBeInTheDocument()
 
     act(() => window.dispatchEvent(new Event(WORKBENCH_MODELS_CHANGED_EVENT)))
 
-    await waitFor(() => expect(modelSelect).toHaveTextContent('Cloud Model'))
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('issue-execution-config-fields-model-option-public:cloud-model')
+      ).toBeInTheDocument()
+    )
     expect(listModels).toHaveBeenCalledTimes(2)
   })
 
@@ -251,8 +260,8 @@ describe('IssueExecutionConfigDialog', () => {
       />
     )
 
-    expect(await screen.findByTestId('issue-execution-config-default-project')).toHaveValue(
-      'standalone'
+    expect(await screen.findByTestId('issue-execution-config-default-project')).toHaveTextContent(
+      '独立对话目录（不绑定项目）'
     )
     expect(screen.getByText('运行配置已完整')).toBeInTheDocument()
     expect(screen.getByTestId('issue-execution-config-confirm')).toBeEnabled()
@@ -333,15 +342,16 @@ describe('IssueExecutionConfigDialog', () => {
       />
     )
 
+    const deviceTrigger = await screen.findByTestId('issue-execution-config-default-device')
+    expect(deviceTrigger).toHaveTextContent('本机')
+    await userEvent.click(deviceTrigger)
     expect(
-      (await screen.findByTestId('issue-execution-config-default-device')).firstElementChild
-    ).toHaveAttribute('data-value', 'local-device')
-    expect(screen.getByTestId('issue-execution-config-default-device')).toHaveTextContent('本机')
-    expect(
-      screen.getByTestId('issue-execution-config-default-device').querySelector('.lucide-laptop')
+      screen
+        .getByTestId('issue-execution-config-default-device-option-local-device')
+        .querySelector('.lucide-laptop')
     ).toBeInTheDocument()
-    expect(screen.getByTestId('issue-execution-config-default-model')).toHaveValue(
-      'runtime:local-model'
+    expect(screen.getByTestId('issue-execution-config-default-model')).toHaveTextContent(
+      'Local Model'
     )
     expect(screen.queryByTestId('issue-execution-config-no-runtime')).not.toBeInTheDocument()
 
@@ -425,7 +435,6 @@ describe('IssueExecutionConfigDialog', () => {
     )
 
     const device = await screen.findByTestId('issue-execution-config-fields-device')
-    expect(device.firstElementChild).toHaveAttribute('data-value', 'cloud-registration')
     expect(device).toHaveTextContent('本机')
     expect(device).not.toHaveTextContent('未知设备')
   })
@@ -564,11 +573,10 @@ describe('IssueExecutionConfigDialog', () => {
     )
 
     await waitFor(() =>
-      expect(
-        screen.getByTestId('issue-execution-config-fields-device').firstElementChild
-      ).toHaveAttribute('data-value', 'configured-local-device')
+      expect(screen.getByTestId('issue-execution-config-fields-device')).toHaveTextContent(
+        '未知设备'
+      )
     )
-    expect(screen.getByTestId('issue-execution-config-fields-device')).toHaveTextContent('未知设备')
     expect(screen.getByTestId('issue-execution-config-fields-device')).not.toHaveTextContent(
       'configured-local-device'
     )
@@ -640,12 +648,9 @@ describe('IssueExecutionConfigDialog', () => {
       />
     )
 
-    await userEvent.selectOptions(
-      await screen.findByTestId('issue-execution-config-fields-agent'),
-      ''
-    )
-
     const deviceSelect = await screen.findByTestId('issue-execution-config-fields-device')
+    await userEvent.click(screen.getByTestId('issue-execution-config-fields-agent'))
+    await userEvent.click(screen.getByTestId('issue-execution-config-fields-agent-option-'))
     await userEvent.click(deviceSelect)
     expect(screen.getByTestId('issue-execution-config-fields-device-menu')).toHaveTextContent(
       '公司发的 MacBook Pro'
@@ -661,15 +666,15 @@ describe('IssueExecutionConfigDialog', () => {
         .getByTestId('issue-execution-config-fields-device-option-device-online')
         .querySelector('.lucide-cloud')
     ).toBeInTheDocument()
-
     await userEvent.click(
       screen.getByTestId('issue-execution-config-fields-device-option-device-online')
     )
-    await userEvent.selectOptions(
-      screen.getByTestId('issue-execution-config-fields-model'),
-      'public:kimi-code'
+    await userEvent.click(screen.getByTestId('issue-execution-config-fields-model'))
+    await userEvent.click(
+      screen.getByTestId('issue-execution-config-fields-model-option-public:kimi-code')
     )
-    await userEvent.selectOptions(screen.getByTestId('issue-execution-config-fields-project'), '7')
+    await userEvent.click(screen.getByTestId('issue-execution-config-fields-project'))
+    await userEvent.click(screen.getByTestId('issue-execution-config-fields-project-option-7'))
     await userEvent.click(screen.getByTestId('issue-execution-config-confirm'))
 
     await waitFor(() =>

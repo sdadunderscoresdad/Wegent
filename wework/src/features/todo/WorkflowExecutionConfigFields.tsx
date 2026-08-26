@@ -1,4 +1,4 @@
-import { Cloud, Laptop } from 'lucide-react'
+import { ChevronDown, Cloud, Laptop } from 'lucide-react'
 import type { WorkflowExecutionConfig } from '@/api/deliveries'
 import type { ProjectChatAgent } from '@/api/projectChatAgents'
 import type { RuntimeProfile } from '@/api/runtimeProfiles'
@@ -22,6 +22,38 @@ function deviceHasId(device: DeviceInfo, deviceId: string): boolean {
     device.socket_device_id,
     ...(device.runtime_routes ?? []).map(route => route.device_id),
   ].some(candidate => candidate?.trim() === deviceId)
+}
+
+function ConfigFieldSelect({
+  testId,
+  value,
+  options,
+  onChange,
+  label,
+}: {
+  testId: string
+  value: string
+  options: MenuOption[]
+  onChange: (value: string) => void
+  label: string
+}) {
+  return (
+    <MenuSelect
+      testId={testId}
+      value={value}
+      options={options}
+      onChange={onChange}
+      menuWidth={260}
+      rootClassName="mt-1.5 block"
+      triggerClassName="h-9 w-full rounded-lg border border-border bg-background px-2"
+      trigger={
+        <span className="flex h-9 w-full items-center justify-between gap-2 rounded-lg px-2 text-sm text-text-primary">
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
+  )
 }
 
 export function WorkflowExecutionConfigFields({
@@ -100,18 +132,34 @@ export function WorkflowExecutionConfigFields({
     })
   )
 
+  const selectedDeviceLabel = selectedDevice
+    ? isCurrentAppDevice(selectedDevice, localDeviceIds)
+      ? t('todo.workflow_execution_local_device', '本机')
+      : selectedDevice.name?.trim() || t('workbench.environment_device_unknown', '未知设备')
+    : selectedDeviceId
+      ? t('workbench.environment_device_unknown', '未知设备')
+      : t('todo.workflow_execution_fill_later', '运行时填写')
+
   return (
     <div
       className="grid gap-3 rounded-xl border border-border bg-muted/20 p-3"
       data-testid={testId}
     >
-      <label className="text-xs font-medium text-text-secondary">
+      <div className="text-xs font-medium text-text-secondary">
         {t('todo.workflow_execution_robot', '机器人预设（可选）')}
-        <select
-          data-testid={`${testId}-agent`}
+        <ConfigFieldSelect
+          testId={`${testId}-agent`}
           value={value.agent_id ?? ''}
-          onChange={event => {
-            const agent = projectAgents.find(candidate => candidate.id === event.target.value)
+          options={[
+            { value: '', label: t('todo.workflow_execution_no_robot', '不使用机器人预设') },
+            ...projectAgents.map(agent => ({ value: agent.id, label: agent.name })),
+          ]}
+          label={
+            projectAgents.find(agent => agent.id === value.agent_id)?.name ??
+            t('todo.workflow_execution_no_robot', '不使用机器人预设')
+          }
+          onChange={next => {
+            const agent = projectAgents.find(candidate => candidate.id === next)
             if (!agent) {
               onChange({ ...value, agent_id: null, runtime_profile_id: null })
               return
@@ -121,49 +169,56 @@ export function WorkflowExecutionConfigFields({
             )
             onChange(workflowExecutionConfigForAgent(agent, runtimeProfile))
           }}
-          className="mt-1.5 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
-        >
-          <option value="">{t('todo.workflow_execution_no_robot', '不使用机器人预设')}</option>
-          {projectAgents.map(agent => (
-            <option key={agent.id} value={agent.id}>
-              {agent.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-xs font-medium text-text-secondary">
+        />
+      </div>
+      <div className="text-xs font-medium text-text-secondary">
         {t('todo.workflow_execution_device', '执行设备')}
-        <div className="mt-1.5">
-          <MenuSelect
-            testId={`${testId}-device`}
-            value={value.execution_device_id ?? ''}
-            options={deviceOptions}
-            onChange={executionDeviceId => {
-              onChange({
-                ...value,
-                execution_device_id: executionDeviceId || null,
-                runtime_profile_id:
-                  runtimeProfiles.find(
-                    profile =>
-                      profile.id === value.runtime_profile_id &&
-                      profile.executionDeviceId === executionDeviceId
-                  )?.id ?? null,
-              })
-            }}
-            field
-            fullWidth
-          />
-        </div>
-      </label>
-      <label className="text-xs font-medium text-text-secondary">
+        <ConfigFieldSelect
+          testId={`${testId}-device`}
+          value={value.execution_device_id ?? ''}
+          options={deviceOptions}
+          label={selectedDeviceLabel}
+          onChange={executionDeviceId => {
+            onChange({
+              ...value,
+              execution_device_id: executionDeviceId || null,
+              runtime_profile_id:
+                runtimeProfiles.find(
+                  profile =>
+                    profile.id === value.runtime_profile_id &&
+                    profile.executionDeviceId === executionDeviceId
+                )?.id ?? null,
+            })
+          }}
+        />
+      </div>
+      <div className="text-xs font-medium text-text-secondary">
         {t('todo.workflow_execution_model', '模型')}
-        <select
-          data-testid={`${testId}-model`}
+        <ConfigFieldSelect
+          testId={`${testId}-model`}
           value={selectedModelKey}
-          onChange={event => {
-            const selectedModel = models.find(
-              model => `${model.type}:${model.name}` === event.target.value
+          options={[
+            { value: '', label: t('todo.workflow_execution_model_empty', '运行时填写模型') },
+            ...(value.model &&
+            !models.some(
+              model =>
+                model.name === value.model && (!value.model_type || model.type === value.model_type)
             )
+              ? [{ value: selectedModelKey, label: value.model }]
+              : []),
+            ...models.map(model => ({
+              value: `${model.type}:${model.name}`,
+              label: model.displayName || model.name,
+            })),
+          ]}
+          label={
+            models.find(model => `${model.type}:${model.name}` === selectedModelKey)?.displayName ??
+            models.find(model => `${model.type}:${model.name}` === selectedModelKey)?.name ??
+            value.model ??
+            t('todo.workflow_execution_model_empty', '运行时填写模型')
+          }
+          onChange={next => {
+            const selectedModel = models.find(model => `${model.type}:${model.name}` === next)
             if (!selectedModel) {
               onChange({
                 ...value,
@@ -181,54 +236,46 @@ export function WorkflowExecutionConfigFields({
               model_options: execution.modelOptions ?? {},
             })
           }}
-          className="mt-1.5 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
-        >
-          <option value="">{t('todo.workflow_execution_model_empty', '运行时填写模型')}</option>
-          {value.model &&
-          !models.some(
-            model =>
-              model.name === value.model && (!value.model_type || model.type === value.model_type)
-          ) ? (
-            <option value={selectedModelKey}>{value.model}</option>
-          ) : null}
-          {models.map(model => (
-            <option key={`${model.type}:${model.name}`} value={`${model.type}:${model.name}`}>
-              {model.displayName || model.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="text-xs font-medium text-text-secondary">
+        />
+      </div>
+      <div className="text-xs font-medium text-text-secondary">
         {t('todo.workflow_execution_project', '代码项目')}
-        <select
-          data-testid={`${testId}-project`}
+        <ConfigFieldSelect
+          testId={`${testId}-project`}
           value={selectedWorkspace}
-          onChange={event =>
+          options={[
+            {
+              value: '',
+              label: t('todo.workflow_execution_project_empty', '请选择代码项目'),
+            },
+            {
+              value: 'standalone',
+              label: t('todo.workflow_execution_standalone', '独立对话目录（不绑定项目）'),
+            },
+            ...localProjects.map(project => ({
+              value: String(project.id),
+              label: project.name,
+            })),
+          ]}
+          label={
+            selectedWorkspace === 'standalone'
+              ? t('todo.workflow_execution_standalone', '独立对话目录（不绑定项目）')
+              : (localProjects.find(project => String(project.id) === selectedWorkspace)?.name ??
+                t('todo.workflow_execution_project_empty', '请选择代码项目'))
+          }
+          onChange={next =>
             onChange({
               ...value,
               workspace_binding:
-                event.target.value === 'standalone'
+                next === 'standalone'
                   ? { type: 'standalone' }
-                  : event.target.value
-                    ? { type: 'backend_project', projectId: Number(event.target.value) }
+                  : next
+                    ? { type: 'backend_project', projectId: Number(next) }
                     : null,
             })
           }
-          className="mt-1.5 h-9 w-full rounded-lg border border-border bg-background px-2 text-sm"
-        >
-          <option value="" disabled>
-            {t('todo.workflow_execution_project_empty', '请选择代码项目')}
-          </option>
-          <option value="standalone">
-            {t('todo.workflow_execution_standalone', '独立对话目录（不绑定项目）')}
-          </option>
-          {localProjects.map(project => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      </label>
+        />
+      </div>
       <p className={cn('text-xs', complete ? 'text-emerald-600' : 'text-amber-600')}>
         {complete
           ? t('todo.workflow_execution_complete', '运行配置已完整')

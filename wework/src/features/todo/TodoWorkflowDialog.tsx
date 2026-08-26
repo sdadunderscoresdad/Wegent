@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Plus, Trash2, X } from 'lucide-react'
+import { ChevronDown, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
@@ -201,20 +202,30 @@ export function TodoWorkflowDialog({
                   <span className="mr-1 text-xs text-text-muted">
                     {t('todo.default_assignee', '默认负责人')}
                   </span>
-                  <select
-                    data-testid={`todo-workflow-assignee-type-${workType.key}`}
+                  <MenuSelect
+                    testId={`todo-workflow-assignee-type-${workType.key}`}
                     value={workType.defaultAssignee.type}
-                    onChange={event =>
-                      updateAssignee(workType.key, event.target.value as TodoPrincipalType)
+                    options={[
+                      { value: 'unassigned', label: t('todo.assignee_unassigned_short', '未指定') },
+                      { value: 'human', label: t('todo.assignee_human', '员工') },
+                      { value: 'ai', label: t('todo.assignee_ai', 'AI 智能体') },
+                    ]}
+                    onChange={next => updateAssignee(workType.key, next as TodoPrincipalType)}
+                    menuWidth={160}
+                    triggerClassName="h-7 rounded-md border border-border bg-background px-2"
+                    trigger={
+                      <span className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-text-secondary">
+                        <span className="truncate">
+                          {workType.defaultAssignee.type === 'human'
+                            ? t('todo.assignee_human', '员工')
+                            : workType.defaultAssignee.type === 'ai'
+                              ? t('todo.assignee_ai', 'AI 智能体')
+                              : t('todo.assignee_unassigned_short', '未指定')}
+                        </span>
+                        <ChevronDown className="h-3 w-3 shrink-0 text-text-muted" />
+                      </span>
                     }
-                    className="h-7 rounded-md border border-border bg-background px-2 text-xs text-text-secondary"
-                  >
-                    <option value="unassigned">
-                      {t('todo.assignee_unassigned_short', '未指定')}
-                    </option>
-                    <option value="human">{t('todo.assignee_human', '员工')}</option>
-                    <option value="ai">{t('todo.assignee_ai', 'AI 智能体')}</option>
-                  </select>
+                  />
                   {workType.defaultAssignee.type !== 'unassigned' && (
                     <input
                       data-testid={`todo-workflow-assignee-name-${workType.key}`}

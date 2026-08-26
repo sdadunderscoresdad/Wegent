@@ -262,7 +262,8 @@ describe('AITableView', () => {
 
     await screen.findByText('需求名称')
     fireEvent.change(screen.getByTestId('aitable-field-name'), { target: { value: '负责人' } })
-    fireEvent.change(screen.getByTestId('aitable-field-type'), { target: { value: 'user' } })
+    fireEvent.click(screen.getByTestId('aitable-field-type'))
+    fireEvent.click(screen.getByTestId('aitable-field-type-option-user'))
     fireEvent.click(screen.getByTestId('aitable-add-field'))
 
     await waitFor(() =>

@@ -59,6 +59,7 @@ import type { ProjectWithTasks, Team } from '@/types/api'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
+import { MenuSelect, type MenuOption, type MenuSection } from '@/components/common/MenuSelect'
 import { reconcileIssueWorkflowForTaskBindings } from '@/api/issueWorkflow'
 import { AssignmentChainPopover } from './AssignmentChainPopover'
 import { isLoopItemExecutionActive } from './cloudMyWorkModel'
@@ -1428,102 +1429,9 @@ export function TodoEditor(props: TodoEditorProps) {
   const twoColumn = item !== null && editProps?.project !== undefined
 
   // Property controls, shared by the single-column chip row and the
-  // two-column Xiaohongshu-style rail cells. The overlay select/input keeps
-  // every cell editable in place regardless of where it is rendered.
-  const statusSelect = (
-    <select
-      data-testid={isCreate ? 'cloud-todo-create-status' : 'cloud-todo-detail-status'}
-      aria-label="状态"
-      value={status}
-      onChange={event => setStatus(event.target.value as CloudLoopItem['status'])}
-      className={overlayControlClass}
-    >
-      {status === '' ? <option value="">未设置</option> : null}
-      {statusOptions.map(option => (
-        <option key={option.id} value={option.id}>
-          {option.name}
-        </option>
-      ))}
-    </select>
-  )
-  const prioritySelect = (
-    <select
-      data-testid={isCreate ? 'cloud-todo-create-priority' : 'cloud-todo-detail-priority'}
-      aria-label="优先级"
-      value={priority}
-      onChange={event => setPriority(event.target.value as CloudLoopItem['priority'])}
-      className={overlayControlClass}
-    >
-      <option value="none">无</option>
-      <option value="low">低</option>
-      <option value="medium">普通</option>
-      <option value="high">高</option>
-      <option value="urgent">紧急</option>
-    </select>
-  )
-  const assigneeSelect = (
-    <select
-      data-testid={isCreate ? 'cloud-todo-create-assignee' : 'cloud-todo-detail-assignee'}
-      aria-label="负责人"
-      value={assigneeTarget}
-      onChange={event => setAssigneeTarget(event.target.value)}
-      disabled={!canAssign}
-      className={overlayControlClass}
-    >
-      <option value="">添加负责人</option>
-      <optgroup label="成员">
-        {projectMembers.map(member => (
-          <option key={member.user_id} value={`user:${member.user_id}`}>
-            {member.user_name}
-          </option>
-        ))}
-      </optgroup>
-      {projectAgents.length ? (
-        <optgroup label="机器人">
-          {projectAgents.map(agent => (
-            <option key={agent.id} value={`agent:${agent.id}`}>
-              {agent.name}
-            </option>
-          ))}
-        </optgroup>
-      ) : null}
-      {wegentTeams.length ? (
-        <optgroup label="Wegent 智能体">
-          {wegentTeams.map(team => (
-            <option key={team.id} value={`team:${team.id}`}>
-              {team.displayName || team.name}
-            </option>
-          ))}
-        </optgroup>
-      ) : null}
-    </select>
-  )
-  const parentSelect = (
-    <select
-      data-testid={isCreate ? 'cloud-todo-create-parent' : 'cloud-todo-detail-parent'}
-      aria-label="父任务"
-      value={parentId}
-      onChange={event => setParentId(event.target.value)}
-      className={overlayControlClass}
-    >
-      <option value="">{isCreate ? '顶层任务' : '无父任务'}</option>
-      {parentOptions.map(candidate => (
-        <option key={candidate.id} value={candidate.id}>
-          {candidate.id} · {candidate.title}
-        </option>
-      ))}
-    </select>
-  )
-  const dueInput = (
-    <input
-      data-testid={isCreate ? 'cloud-todo-create-due-date' : 'cloud-todo-detail-due-date'}
-      aria-label="截止时间"
-      type="date"
-      value={dueDate}
-      onChange={event => setDueDate(event.target.value)}
-      className={overlayControlClass}
-    />
-  )
+  // two-column Xiaohongshu-style rail cells. The custom menu keeps every cell
+  // editable in place regardless of where it is rendered; the date input
+  // remains a native overlay because it is an input, not a select.
   const statusValue = (
     <>
       <span
@@ -1542,6 +1450,249 @@ export function TodoEditor(props: TodoEditorProps) {
       {priority === 'none' ? '普通' : priority}
     </span>
   )
+  const statusTestId = isCreate ? 'cloud-todo-create-status' : 'cloud-todo-detail-status'
+  const priorityTestId = isCreate ? 'cloud-todo-create-priority' : 'cloud-todo-detail-priority'
+  const assigneeTestId = isCreate ? 'cloud-todo-create-assignee' : 'cloud-todo-detail-assignee'
+  const parentTestId = isCreate ? 'cloud-todo-create-parent' : 'cloud-todo-detail-parent'
+  const statusMenuOptions: MenuOption[] = statusOptions.map(option => ({
+    value: option.id,
+    label: option.name,
+  }))
+  const priorityMenuOptions: MenuOption[] = [
+    { value: 'none', label: '无' },
+    { value: 'low', label: '低' },
+    { value: 'medium', label: '普通' },
+    { value: 'high', label: '高' },
+    { value: 'urgent', label: '紧急' },
+  ]
+  const assigneeMenuOptions: MenuOption[] = [{ value: '', label: '添加负责人' }]
+  const assigneeMenuSections: MenuSection[] = [
+    projectMembers.length
+      ? {
+          label: '成员',
+          options: projectMembers.map(member => ({
+            value: `user:${member.user_id}`,
+            label: member.user_name,
+          })),
+        }
+      : null,
+    projectAgents.length
+      ? {
+          label: '机器人',
+          options: projectAgents.map(agent => ({
+            value: `agent:${agent.id}`,
+            label: agent.name,
+          })),
+        }
+      : null,
+    wegentTeams.length
+      ? {
+          label: 'Wegent 智能体',
+          options: wegentTeams.map(team => ({
+            value: `team:${team.id}`,
+            label: team.displayName || team.name,
+          })),
+        }
+      : null,
+  ].filter((section): section is MenuSection => section !== null)
+  const parentMenuOptions: MenuOption[] = [
+    { value: '', label: isCreate ? '顶层任务' : '无父任务' },
+    ...parentOptions.map(candidate => ({
+      value: candidate.id,
+      label: `${candidate.id} · ${candidate.title}`,
+    })),
+  ]
+  const chipTriggerClassName = 'rounded-none p-0'
+  const statusSelect = (
+    <MenuSelect
+      testId={statusTestId}
+      value={status}
+      options={statusMenuOptions}
+      onChange={next => setStatus(next as CloudLoopItem['status'])}
+      menuWidth={220}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={propChipClass}>
+          <Circle className="h-3.5 w-3.5 text-text-muted" />
+          <span className="text-text-muted">状态</span>
+          {statusValue}
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const prioritySelect = (
+    <MenuSelect
+      testId={priorityTestId}
+      value={priority}
+      options={priorityMenuOptions}
+      onChange={next => setPriority(next as CloudLoopItem['priority'])}
+      menuWidth={200}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={propChipClass}>
+          <Flag className="h-3.5 w-3.5 text-text-muted" />
+          <span className="text-text-muted">优先级</span>
+          {priorityValue}
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const assigneeSelect = (
+    <MenuSelect
+      testId={assigneeTestId}
+      value={assigneeTarget}
+      options={assigneeMenuOptions}
+      sections={assigneeMenuSections}
+      onChange={setAssigneeTarget}
+      disabled={!canAssign}
+      menuWidth={240}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        workspacePanel ? (
+          <span className="task-detail-workspace-meta-pill">
+            {assigneeAgent || assigneeTeam ? (
+              <Bot className="h-3.5 w-3.5 text-violet-600" />
+            ) : (
+              <span className="task-detail-workspace-mini-avatar">
+                {(assignee?.user_name ?? '?').slice(0, 1).toUpperCase()}
+              </span>
+            )}
+            <span>负责人</span>
+            <span className="text-text-primary">
+              {assignee?.user_name ??
+                assigneeTeam?.displayName ??
+                assigneeTeam?.name ??
+                assigneeAgent?.name ??
+                '未指派'}
+            </span>
+            <ChevronDown className="h-3 w-3" />
+          </span>
+        ) : twoColumn ? (
+          <span className="task-detail-meta-item">
+            {assigneeAgent || assigneeTeam ? (
+              <Bot className="h-3.5 w-3.5 text-violet-600" />
+            ) : (
+              <CircleUserRound className="h-3.5 w-3.5" />
+            )}
+            负责人
+            <span className="text-text-primary">
+              {assignee?.user_name ??
+                assigneeTeam?.displayName ??
+                assigneeTeam?.name ??
+                assigneeAgent?.name ??
+                '未指派'}
+            </span>
+            <ChevronDown className="h-3 w-3" />
+          </span>
+        ) : (
+          <span className={propChipClass}>
+            {assigneeAgent || assigneeTeam ? (
+              <Bot className="h-3.5 w-3.5 text-violet-600" />
+            ) : (
+              <CircleUserRound className="h-3.5 w-3.5 text-text-muted" />
+            )}
+            <span className="text-text-muted">负责人</span>
+            <span className="text-text-primary">
+              {assigneeTeam?.displayName ??
+                assigneeTeam?.name ??
+                assigneeAgent?.name ??
+                assignee?.user_name ??
+                '添加'}
+            </span>
+            <ChevronDown className="h-3 w-3 text-text-muted" />
+          </span>
+        )
+      }
+    />
+  )
+  const parentSelect = (
+    <MenuSelect
+      testId={parentTestId}
+      value={parentId}
+      options={parentMenuOptions}
+      onChange={setParentId}
+      menuWidth={260}
+      triggerClassName={chipTriggerClassName}
+      trigger={
+        <span className={propChipClass}>
+          <ListTodo className="h-3.5 w-3.5 text-text-muted" />
+          <span className="text-text-muted">父任务</span>
+          <span className="max-w-40 truncate">
+            {parentItem
+              ? `${parentItem.id} · ${parentItem.title}`
+              : isCreate
+                ? '顶层任务'
+                : '无父任务'}
+          </span>
+          <ChevronDown className="h-3 w-3 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  // Workspace-panel rail variants: the same menus with a value-only trigger so
+  // the row label stays the rail key.
+  const statusRailControl = (
+    <MenuSelect
+      testId={statusTestId}
+      value={status}
+      options={statusMenuOptions}
+      onChange={next => setStatus(next as CloudLoopItem['status'])}
+      menuWidth={220}
+      triggerClassName="absolute inset-0 h-full w-full cursor-pointer rounded-none p-0"
+      trigger={<span className="sr-only">状态</span>}
+    />
+  )
+  const priorityRailControl = (
+    <MenuSelect
+      testId={priorityTestId}
+      value={priority}
+      options={priorityMenuOptions}
+      onChange={next => setPriority(next as CloudLoopItem['priority'])}
+      menuWidth={200}
+      triggerClassName="absolute inset-0 h-full w-full cursor-pointer rounded-none p-0"
+      trigger={<span className="sr-only">优先级</span>}
+    />
+  )
+  const collaboratorMenuOptions: MenuOption[] = [
+    { value: '', label: '选择项目空间成员' },
+    ...availableCollaborators.map(member => ({
+      value: String(member.user_id),
+      label: member.user_name,
+    })),
+  ]
+  const collaboratorSelect = (
+    <MenuSelect
+      testId="cloud-todo-collaborator-select"
+      value={selectedCollaboratorId ? String(selectedCollaboratorId) : ''}
+      options={collaboratorMenuOptions}
+      onChange={next => setSelectedCollaboratorId(Number(next) || null)}
+      menuWidth={240}
+      rootClassName="min-w-0 flex-1"
+      triggerClassName="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm"
+      trigger={
+        <span className="flex h-8 w-full items-center justify-between gap-2 text-text-secondary">
+          <span className="truncate">
+            {availableCollaborators.find(
+              member => String(member.user_id) === String(selectedCollaboratorId)
+            )?.user_name ?? '选择项目空间成员'}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
+  )
+  const dueInput = (
+    <input
+      data-testid={isCreate ? 'cloud-todo-create-due-date' : 'cloud-todo-detail-due-date'}
+      aria-label="截止时间"
+      type="date"
+      value={dueDate}
+      onChange={event => setDueDate(event.target.value)}
+      className={overlayControlClass}
+    />
+  )
   const iterationText =
     item && editProps?.project
       ? (sourceCellText(item.source_cells, ['iteration', 'sprint', '迭代']) ??
@@ -1556,15 +1707,7 @@ export function TodoEditor(props: TodoEditorProps) {
         null)
       : null
   const collaboratorPreview = collaborators.slice(0, 2)
-  const statusChip = (
-    <span className={propChipClass}>
-      <Circle className="h-3.5 w-3.5 text-text-muted" />
-      <span className="text-text-muted">状态</span>
-      {statusValue}
-      <ChevronDown className="h-3 w-3 text-text-muted" />
-      {statusSelect}
-    </span>
-  )
+  const statusChip = statusSelect
   const statusHistoryTrigger = item?.status_history?.length ? (
     <button
       ref={statusHistoryTriggerRef}
@@ -1579,15 +1722,7 @@ export function TodoEditor(props: TodoEditorProps) {
       <History className="h-3.5 w-3.5" />
     </button>
   ) : null
-  const priorityChip = (
-    <span className={propChipClass}>
-      <Flag className="h-3.5 w-3.5 text-text-muted" />
-      <span className="text-text-muted">优先级</span>
-      {priorityValue}
-      <ChevronDown className="h-3 w-3 text-text-muted" />
-      {prioritySelect}
-    </span>
-  )
+  const priorityChip = prioritySelect
   const tagControls = (
     <>
       <span className="task-detail-pill">
@@ -1632,26 +1767,7 @@ export function TodoEditor(props: TodoEditorProps) {
       {statusChip}
       {statusHistoryTrigger}
       {priorityChip}
-      <span
-        className={cn(
-          propChipClass,
-          !assignee && !assigneeAgent && !assigneeTeam && 'text-text-muted'
-        )}
-      >
-        {assigneeAgent || assigneeTeam ? (
-          <Bot className="h-3.5 w-3.5 text-violet-600" />
-        ) : (
-          <CircleUserRound className="h-3.5 w-3.5 text-text-muted" />
-        )}
-        <span className="text-text-muted">负责人</span>
-        {assigneeTeam?.displayName ??
-          assigneeTeam?.name ??
-          assigneeAgent?.name ??
-          assignee?.user_name ??
-          '添加'}
-        <ChevronDown className="h-3 w-3 text-text-muted" />
-        {assigneeSelect}
-      </span>
+      {assigneeSelect}
       {item && (
         <span
           data-testid="cloud-todo-detail-creator"
@@ -1664,19 +1780,7 @@ export function TodoEditor(props: TodoEditorProps) {
           </span>
         </span>
       )}
-      <span className={propChipClass}>
-        <ListTodo className="h-3.5 w-3.5 text-text-muted" />
-        <span className="text-text-muted">父任务</span>
-        <span className="max-w-40 truncate">
-          {parentItem
-            ? `${parentItem.id} · ${parentItem.title}`
-            : isCreate
-              ? '顶层任务'
-              : '无父任务'}
-        </span>
-        <ChevronDown className="h-3 w-3 text-text-muted" />
-        {parentSelect}
-      </span>
+      {parentSelect}
       <span className={cn(propChipClass, !dueDate && 'text-text-muted')}>
         <Calendar className="h-3.5 w-3.5 text-text-muted" />
         <span className="text-text-muted">截止时间</span>
@@ -1728,19 +1832,7 @@ export function TodoEditor(props: TodoEditorProps) {
       </RailProp>
       {addingCollaborator ? (
         <div className="col-span-full flex items-center gap-2 px-2 pb-1">
-          <select
-            data-testid="cloud-todo-collaborator-select"
-            value={selectedCollaboratorId ?? ''}
-            onChange={event => setSelectedCollaboratorId(Number(event.target.value) || null)}
-            className="h-8 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-sm outline-none focus:border-text-muted"
-          >
-            <option value="">选择项目空间成员</option>
-            {availableCollaborators.map(member => (
-              <option key={member.user_id} value={member.user_id}>
-                {member.user_name}
-              </option>
-            ))}
-          </select>
+          {collaboratorSelect}
           <button
             type="button"
             data-testid="cloud-todo-confirm-collaborator"
@@ -1916,25 +2008,7 @@ export function TodoEditor(props: TodoEditorProps) {
               ) : null}
               {workspacePanel && item ? (
                 <div className="task-detail-workspace-meta-row">
-                  <span className="task-detail-workspace-meta-pill relative">
-                    {assigneeAgent || assigneeTeam ? (
-                      <Bot className="h-3.5 w-3.5 text-violet-600" />
-                    ) : (
-                      <span className="task-detail-workspace-mini-avatar">
-                        {(assignee?.user_name ?? '?').slice(0, 1).toUpperCase()}
-                      </span>
-                    )}
-                    <span>负责人</span>
-                    <span className="text-text-primary">
-                      {assignee?.user_name ??
-                        assigneeTeam?.displayName ??
-                        assigneeTeam?.name ??
-                        assigneeAgent?.name ??
-                        '未指派'}
-                    </span>
-                    <ChevronDown className="h-3 w-3" />
-                    {assigneeSelect}
-                  </span>
+                  {assigneeSelect}
                   <span className="task-detail-workspace-meta-pill relative">
                     <Calendar className="h-3.5 w-3.5" />
                     <span>截止</span>
@@ -1997,21 +2071,7 @@ export function TodoEditor(props: TodoEditorProps) {
 
               {twoColumn && !workspacePanel ? (
                 <div className="task-detail-meta-line">
-                  <span className="task-detail-meta-item relative cursor-pointer">
-                    {assigneeAgent || assigneeTeam ? (
-                      <Bot className="h-3.5 w-3.5 text-violet-600" />
-                    ) : (
-                      <CircleUserRound className="h-3.5 w-3.5" />
-                    )}
-                    负责人
-                    <span className="text-text-primary">
-                      {assignee?.user_name ??
-                        assigneeTeam?.displayName ??
-                        assigneeTeam?.name ??
-                        assigneeAgent?.name ??
-                        '未指派'}
-                    </span>
-                    <ChevronDown className="h-3 w-3" />
+                  <span className="inline-flex items-center gap-1">
                     {assigneeSelect}
                     {item?.assignment_history?.length ? (
                       <button
@@ -2535,11 +2595,11 @@ export function TodoEditor(props: TodoEditorProps) {
                       <ChevronDown className="ml-auto h-4 w-4" />
                     </summary>
                     <div className="task-detail-workspace-properties-grid">
-                      <RailProp label="状态" control={statusSelect}>
+                      <RailProp label="状态" control={statusRailControl}>
                         {statusValue}
                         {statusHistoryTrigger}
                       </RailProp>
-                      <RailProp label="优先级" control={prioritySelect}>
+                      <RailProp label="优先级" control={priorityRailControl}>
                         <span className="task-detail-workspace-tag">
                           {priority === 'none' ? '普通' : priority}
                           <ChevronDown className="h-3 w-3" />
@@ -2760,21 +2820,7 @@ export function TodoEditor(props: TodoEditorProps) {
                       </div>
                       {addingCollaborator && (
                         <div className="mt-2 flex items-center gap-2">
-                          <select
-                            data-testid="cloud-todo-collaborator-select"
-                            value={selectedCollaboratorId ?? ''}
-                            onChange={event =>
-                              setSelectedCollaboratorId(Number(event.target.value) || null)
-                            }
-                            className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-text-muted"
-                          >
-                            <option value="">选择项目空间成员</option>
-                            {availableCollaborators.map(member => (
-                              <option key={member.user_id} value={member.user_id}>
-                                {member.user_name}
-                              </option>
-                            ))}
-                          </select>
+                          {collaboratorSelect}
                           <button
                             type="button"
                             data-testid="cloud-todo-confirm-collaborator"

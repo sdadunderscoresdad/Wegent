@@ -183,11 +183,12 @@ describe('CloudMyWorkView', () => {
   it('filters every view by project while keeping all projects as the default', async () => {
     renderView()
 
-    expect(screen.getByTestId('my-work-project-filter')).toHaveValue('all')
+    expect(screen.getByTestId('my-work-project-filter')).toHaveTextContent('全部项目')
     expect(screen.getByTestId('my-work-group-action-WEG-1')).toBeInTheDocument()
     expect(screen.getByTestId('my-work-group-action-APP-1')).toBeInTheDocument()
 
-    await userEvent.selectOptions(screen.getByTestId('my-work-project-filter'), 'APP')
+    await userEvent.click(screen.getByTestId('my-work-project-filter'))
+    await userEvent.click(screen.getByTestId('my-work-project-filter-option-APP'))
 
     expect(screen.queryByTestId('my-work-group-action-WEG-1')).not.toBeInTheDocument()
     expect(screen.getByTestId('my-work-group-action-APP-1')).toBeInTheDocument()

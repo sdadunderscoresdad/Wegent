@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, X } from 'lucide-react'
+import { ChevronDown, Plus, Trash2, X } from 'lucide-react'
 import type { DeliverableRequirement, DeliverableValueType } from '@/api/deliveries'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useTranslation } from '@/hooks/useTranslation'
 import {
   createWorkflowDeliverableRequirement,
@@ -93,17 +94,12 @@ export function WorkflowDeliverableRequirementsDialog({
                       className="mt-1.5 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-blue-500"
                     />
                   </label>
-                  <label className="block text-xs font-medium text-text-secondary">
+                  <div className="block text-xs font-medium text-text-secondary">
                     {t('todo.workflow_deliverable_type_label', '交付类型')}
-                    <select
+                    <MenuSelect
+                      testId={`workflow-deliverable-requirement-type-${draft.id}`}
                       value={draft.value_type}
-                      data-testid={`workflow-deliverable-requirement-type-${draft.id}`}
-                      onChange={event =>
-                        updateType(draft.id, event.target.value as DeliverableValueType)
-                      }
-                      className="mt-1.5 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-blue-500"
-                    >
-                      {(
+                      options={(
                         [
                           'text',
                           'file',
@@ -112,13 +108,24 @@ export function WorkflowDeliverableRequirementsDialog({
                           'pull_request',
                           'url',
                         ] as DeliverableValueType[]
-                      ).map(valueType => (
-                        <option key={valueType} value={valueType}>
-                          {workflowDeliverableTypeLabel(valueType, t)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      ).map(valueType => ({
+                        value: valueType,
+                        label: workflowDeliverableTypeLabel(valueType, t),
+                      }))}
+                      onChange={next => updateType(draft.id, next as DeliverableValueType)}
+                      menuWidth={200}
+                      rootClassName="mt-1.5 block"
+                      triggerClassName="h-9 w-full rounded-lg border border-border bg-background px-3"
+                      trigger={
+                        <span className="flex h-9 w-full items-center justify-between gap-2 rounded-lg px-3 text-sm text-text-primary">
+                          <span className="truncate">
+                            {workflowDeliverableTypeLabel(draft.value_type, t)}
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                        </span>
+                      }
+                    />
+                  </div>
                   <label className="col-span-2 block text-xs font-medium text-text-secondary">
                     {t('todo.workflow_deliverable_description_label', '验收说明')}
                     <textarea

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, Copy, RefreshCw, Server } from 'lucide-react'
+import { Check, ChevronDown, Copy, RefreshCw, Server } from 'lucide-react'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
 import type { ProjectSpaceDetailServiceMap } from '@/features/workbench/workbenchServices'
 import { useTranslation } from '@/hooks/useTranslation'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { getLocalExecutorStatus } from '@/desktop/localExecutor'
 import { isCurrentAppDevice } from '@/lib/app-device-registration'
@@ -321,24 +322,27 @@ export function ProjectSpaceSettings({
                               })}
                         </p>
                       </div>
-                      <select
-                        data-testid={`project-settings-device-limit-${device.device_id}`}
-                        aria-label={t('workbench.project_settings_device_limit', {
+                      <MenuSelect
+                        testId={`project-settings-device-limit-${device.device_id}`}
+                        ariaLabel={t('workbench.project_settings_device_limit', {
                           name: device.name,
                         })}
-                        value={Math.max(1, device.slot_max ?? 1)}
+                        value={String(Math.max(1, device.slot_max ?? 1))}
                         disabled={offline || savingDeviceId === device.device_id}
-                        onChange={event => void updateLimit(device, Number(event.target.value))}
-                        className="h-8 w-20 rounded-md border border-border bg-background px-2 text-sm disabled:opacity-40"
-                      >
-                        {Array.from({ length: MAX_CONCURRENT_TASKS }, (_, index) => index + 1).map(
-                          value => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          )
-                        )}
-                      </select>
+                        options={Array.from(
+                          { length: MAX_CONCURRENT_TASKS },
+                          (_, index) => index + 1
+                        ).map(value => ({ value: String(value), label: String(value) }))}
+                        onChange={next => void updateLimit(device, Number(next))}
+                        menuWidth={120}
+                        triggerClassName="h-8 w-20 rounded-md border border-border bg-background px-2"
+                        trigger={
+                          <span className="inline-flex h-8 w-20 items-center justify-between gap-1 rounded-md px-2 text-sm text-text-primary">
+                            <span>{Math.max(1, device.slot_max ?? 1)}</span>
+                            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                          </span>
+                        }
+                      />
                     </div>
                   )
                 })}

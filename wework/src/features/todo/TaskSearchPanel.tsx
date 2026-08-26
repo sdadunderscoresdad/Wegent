@@ -1,5 +1,6 @@
-import { Search, X } from 'lucide-react'
+import { ChevronDown, Search, X } from 'lucide-react'
 import type { CloudLoopItem, CloudProjectMember } from '@/api/deliveries'
+import { MenuSelect, type MenuOption } from '@/components/common/MenuSelect'
 import { cn } from '@/lib/utils'
 import { columns, priorityBadgeClasses } from './todoShared'
 import {
@@ -20,8 +21,39 @@ interface TaskSearchPanelProps {
   onSelect: (item: CloudLoopItem) => void
 }
 
-const selectClass =
-  'h-8 rounded-lg border border-border bg-background px-2 text-xs text-text-secondary outline-none focus:border-text-muted'
+function SearchFilterSelect({
+  testId,
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  testId: string
+  label: string
+  value: string
+  options: MenuOption[]
+  onChange: (value: string) => void
+}) {
+  return (
+    <MenuSelect
+      testId={testId}
+      ariaLabel={label}
+      value={value}
+      options={options}
+      onChange={onChange}
+      menuWidth={200}
+      triggerClassName="h-8 rounded-lg border border-border bg-background px-2"
+      trigger={
+        <span className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-text-secondary">
+          <span className="max-w-40 truncate">
+            {options.find(option => option.value === value)?.label ?? value}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
+  )
+}
 
 export function TaskSearchPanel({
   items,
@@ -67,126 +99,114 @@ export function TaskSearchPanel({
         )}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
-        <select
-          data-testid="cloud-task-filter-status"
+        <SearchFilterSelect
+          testId="cloud-task-filter-status"
+          label="按状态筛选"
           value={filters.status ?? ''}
-          onChange={event =>
+          options={[
+            { value: '', label: '全部状态' },
+            ...columns.map(column => ({ value: column.status, label: column.label })),
+          ]}
+          onChange={next =>
             onFiltersChange({
               ...filters,
-              status: (event.target.value || null) as CloudLoopItem['status'] | null,
+              status: (next || null) as CloudLoopItem['status'] | null,
             })
           }
-          className={selectClass}
-          aria-label="按状态筛选"
-        >
-          <option value="">全部状态</option>
-          {columns.map(column => (
-            <option key={column.status} value={column.status}>
-              {column.label}
-            </option>
-          ))}
-        </select>
-        <select
-          data-testid="cloud-task-filter-priority"
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-priority"
+          label="按优先级筛选"
           value={filters.priority ?? ''}
-          onChange={event =>
+          options={[
+            { value: '', label: '全部优先级' },
+            { value: 'none', label: '普通' },
+            { value: 'low', label: '低' },
+            { value: 'medium', label: '中' },
+            { value: 'high', label: '高' },
+            { value: 'urgent', label: '紧急' },
+          ]}
+          onChange={next =>
             onFiltersChange({
               ...filters,
-              priority: (event.target.value || null) as CloudLoopItem['priority'] | null,
+              priority: (next || null) as CloudLoopItem['priority'] | null,
             })
           }
-          className={selectClass}
-          aria-label="按优先级筛选"
-        >
-          <option value="">全部优先级</option>
-          <option value="none">普通</option>
-          <option value="low">低</option>
-          <option value="medium">中</option>
-          <option value="high">高</option>
-          <option value="urgent">紧急</option>
-        </select>
-        <select
-          data-testid="cloud-task-filter-tag"
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-tag"
+          label="按标签筛选"
           value={filters.tag ?? ''}
-          onChange={event => onFiltersChange({ ...filters, tag: event.target.value || null })}
-          className={selectClass}
-          aria-label="按标签筛选"
-        >
-          <option value="">全部标签</option>
-          {tags.map(tag => (
-            <option key={tag} value={tag}>
-              {tag}
-            </option>
-          ))}
-        </select>
-        <select
-          data-testid="cloud-task-filter-assignee"
-          value={filters.assigneeUserId ?? ''}
-          onChange={event =>
+          options={[
+            { value: '', label: '全部标签' },
+            ...tags.map(tag => ({ value: tag, label: tag })),
+          ]}
+          onChange={next => onFiltersChange({ ...filters, tag: next || null })}
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-assignee"
+          label="按负责人筛选"
+          value={filters.assigneeUserId ? String(filters.assigneeUserId) : ''}
+          options={[
+            { value: '', label: '全部负责人' },
+            ...members.map(member => ({
+              value: String(member.user_id),
+              label: member.user_name,
+            })),
+          ]}
+          onChange={next =>
             onFiltersChange({
               ...filters,
-              assigneeUserId: event.target.value ? Number(event.target.value) : null,
+              assigneeUserId: next ? Number(next) : null,
             })
           }
-          className={selectClass}
-          aria-label="按负责人筛选"
-        >
-          <option value="">全部负责人</option>
-          {members.map(member => (
-            <option key={member.user_id} value={member.user_id}>
-              {member.user_name}
-            </option>
-          ))}
-        </select>
-        <select
-          data-testid="cloud-task-filter-creator"
-          value={filters.creatorUserId ?? ''}
-          onChange={event =>
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-creator"
+          label="按创建人筛选"
+          value={filters.creatorUserId ? String(filters.creatorUserId) : ''}
+          options={[
+            { value: '', label: '全部创建人' },
+            ...members.map(member => ({
+              value: String(member.user_id),
+              label: member.user_name,
+            })),
+          ]}
+          onChange={next =>
             onFiltersChange({
               ...filters,
-              creatorUserId: event.target.value ? Number(event.target.value) : null,
+              creatorUserId: next ? Number(next) : null,
             })
           }
-          className={selectClass}
-          aria-label="按创建人筛选"
-        >
-          <option value="">全部创建人</option>
-          {members.map(member => (
-            <option key={member.user_id} value={member.user_id}>
-              {member.user_name}
-            </option>
-          ))}
-        </select>
-        <select
-          data-testid="cloud-task-filter-due"
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-due"
+          label="按截止时间筛选"
           value={filters.due}
-          onChange={event =>
-            onFiltersChange({ ...filters, due: event.target.value as TaskSearchFilters['due'] })
-          }
-          className={selectClass}
-          aria-label="按截止时间筛选"
-        >
-          <option value="any">全部截止时间</option>
-          <option value="with_due_date">有截止时间</option>
-          <option value="overdue">已逾期</option>
-          <option value="no_due_date">无截止时间</option>
-        </select>
-        <select
-          data-testid="cloud-task-filter-children"
+          options={[
+            { value: 'any', label: '全部截止时间' },
+            { value: 'with_due_date', label: '有截止时间' },
+            { value: 'overdue', label: '已逾期' },
+            { value: 'no_due_date', label: '无截止时间' },
+          ]}
+          onChange={next => onFiltersChange({ ...filters, due: next as TaskSearchFilters['due'] })}
+        />
+        <SearchFilterSelect
+          testId="cloud-task-filter-children"
+          label="按子任务筛选"
           value={filters.children}
-          onChange={event =>
+          options={[
+            { value: 'any', label: '全部任务层级' },
+            { value: 'with_children', label: '有子任务' },
+            { value: 'without_children', label: '无子任务' },
+          ]}
+          onChange={next =>
             onFiltersChange({
               ...filters,
-              children: event.target.value as TaskSearchFilters['children'],
+              children: next as TaskSearchFilters['children'],
             })
           }
-          className={selectClass}
-          aria-label="按子任务筛选"
-        >
-          <option value="any">全部任务层级</option>
-          <option value="with_children">有子任务</option>
-          <option value="without_children">无子任务</option>
-        </select>
+        />
       </div>
       <div className="mt-3 max-h-[420px] overflow-y-auto">
         {!active ? (

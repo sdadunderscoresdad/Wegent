@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import type { TodoDetailItem, TodoViewState } from './TodoDetailPanel'
 import {
   countActiveTodoFilters,
@@ -209,24 +210,22 @@ function FilterSelect({
 }) {
   const selected = options.find(option => option.value === value)?.label ?? value
   return (
-    <label className="relative flex h-[30px] items-center gap-1.5 rounded-md border border-border bg-muted px-2 pr-7 text-xs text-text-secondary">
-      <span className="text-text-muted">{label}</span>
-      <span className="font-semibold text-text-primary">{selected}</span>
-      <ChevronDown className="pointer-events-none absolute right-2 h-3 w-3 text-text-muted" />
-      <select
-        data-testid={testId}
-        value={value}
-        onChange={event => onChange(event.target.value)}
-        className="absolute inset-0 cursor-pointer appearance-none opacity-0"
-        aria-label={`${label}: ${selected}`}
-      >
-        {options.map(option => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <MenuSelect
+      testId={testId}
+      ariaLabel={`${label}: ${selected}`}
+      value={value}
+      options={options}
+      onChange={onChange}
+      menuWidth={200}
+      triggerClassName="h-[30px] rounded-md border border-border bg-muted pr-7"
+      trigger={
+        <span className="flex h-[30px] items-center gap-1.5 rounded-md px-2 pr-7 text-xs text-text-secondary">
+          <span className="text-text-muted">{label}</span>
+          <span className="font-semibold text-text-primary">{selected}</span>
+          <ChevronDown className="ml-auto h-3 w-3 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
   )
 }
 

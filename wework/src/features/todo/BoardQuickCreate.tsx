@@ -1,5 +1,6 @@
-import { Check, Maximize2, Plus, X } from 'lucide-react'
+import { Check, ChevronDown, Maximize2, Plus, X } from 'lucide-react'
 import { useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { Tooltip } from '@/components/ui/tooltip'
 import { useTranslation } from '@/hooks/useTranslation'
 
@@ -91,26 +92,29 @@ export function BoardQuickCreate({
         ) : null}
         <div className="mt-1 flex items-center justify-between pl-6">
           {localProjects?.length && localProjectId && onLocalProjectChange ? (
-            <label className="relative flex h-7 max-w-40 cursor-pointer items-center rounded-md px-1.5 text-xs text-text-muted hover:bg-muted hover:text-text-primary">
-              <span className="min-w-0 truncate">
-                {t('todo.project_with_name', '项目：{{project}}', {
-                  project: localProjects.find(project => project.id === localProjectId)?.name ?? '',
-                })}
-              </span>
-              <select
-                data-testid={`cloud-todo-column-quick-create-project-${columnKey}`}
-                aria-label={t('todo.local_project_filter', '本地项目')}
-                value={localProjectId}
-                onChange={event => onLocalProjectChange(Number(event.target.value))}
-                className="absolute inset-0 cursor-pointer opacity-0"
-              >
-                {localProjects.map(project => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <MenuSelect
+              testId={`cloud-todo-column-quick-create-project-${columnKey}`}
+              ariaLabel={t('todo.local_project_filter', '本地项目')}
+              value={String(localProjectId)}
+              options={localProjects.map(project => ({
+                value: String(project.id),
+                label: project.name,
+              }))}
+              onChange={next => onLocalProjectChange(Number(next))}
+              menuWidth={200}
+              triggerClassName="h-7 max-w-40 rounded-md px-1.5"
+              trigger={
+                <span className="flex h-7 max-w-40 items-center gap-1 rounded-md px-1.5 text-xs text-text-muted hover:bg-muted hover:text-text-primary">
+                  <span className="min-w-0 truncate">
+                    {t('todo.project_with_name', '项目：{{project}}', {
+                      project:
+                        localProjects.find(project => project.id === localProjectId)?.name ?? '',
+                    })}
+                  </span>
+                  <ChevronDown className="h-3 w-3 shrink-0" />
+                </span>
+              }
+            />
           ) : (
             <span />
           )}
