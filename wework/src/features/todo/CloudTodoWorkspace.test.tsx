@@ -1942,6 +1942,11 @@ describe('CloudTodoWorkspace', () => {
 
     await userEvent.click((await screen.findAllByText('Wegent V4'))[0])
     await userEvent.click(screen.getByTestId('cloud-board-group-by'))
+    expect(
+      screen
+        .getByTestId('cloud-board-group-by-menu')
+        .closest('[data-testid="cloud-todo-workspace"]')
+    ).toBeNull()
     await userEvent.click(screen.getByTestId('cloud-board-group-option-assignee'))
 
     expect(screen.getByTestId('cloud-todo-column-assignee-agent-agent-1')).toHaveTextContent(
@@ -2024,6 +2029,11 @@ describe('CloudTodoWorkspace', () => {
     )
 
     await userEvent.click(screen.getByTestId('dingtalk-board-group-by'))
+    expect(
+      screen
+        .getByTestId('dingtalk-board-group-by-menu')
+        .closest('[data-testid="cloud-todo-workspace"]')
+    ).toBeNull()
     await userEvent.type(screen.getByTestId('dingtalk-board-group-search'), '负责人')
     expect(screen.queryByTestId('dingtalk-board-group-option-field-status')).not.toBeInTheDocument()
     await userEvent.click(screen.getByTestId('dingtalk-board-group-option-field-owner'))

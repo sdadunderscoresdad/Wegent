@@ -67,7 +67,7 @@ import {
 } from '@/components/layout/DesktopSidebarPrimitives'
 import { MacOSTitleBarDragRegion } from '@/components/layout/MacOSTitleBarDragRegion'
 import { ActionMenu } from '@/components/common/ActionMenu'
-import { MenuSelect, type MenuOption } from '@/components/common/MenuSelect'
+import { MenuSelect, PopupMenu, type MenuOption } from '@/components/common/MenuSelect'
 import { Tooltip } from '@/components/ui/tooltip'
 import type {
   ArchiveRuntimeTaskOptions,
@@ -367,8 +367,6 @@ function AITableGroupFieldPicker({
   testIdPrefix?: string
   searchPlaceholder?: string
 }) {
-  const rootRef = useRef<HTMLDivElement>(null)
-  const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const selected = fields.find(field => field.id === value)
   const visibleFields = fields
@@ -379,29 +377,22 @@ function AITableGroupFieldPicker({
       return recommended(left) - recommended(right)
     })
 
-  useEffect(() => {
-    if (!open) return
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [open])
-
   return (
-    <div ref={rootRef} className="relative shrink-0">
-      <button
-        type="button"
-        data-testid={`${testIdPrefix}-by`}
-        onClick={() => setOpen(current => !current)}
-        className="flex h-8 min-w-32 items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-xs text-text-secondary hover:bg-muted"
-        aria-expanded={open}
-      >
-        <span className="max-w-32 truncate">{selected?.name ?? '选择分组字段'}</span>
-        <ChevronDown className="h-3 w-3 shrink-0" />
-      </button>
-      {open ? (
-        <div className="absolute left-0 top-9 z-40 w-64 overflow-hidden rounded-xl border border-border bg-background p-1.5 shadow-lg">
+    <PopupMenu
+      testId={`${testIdPrefix}-by`}
+      ariaLabel={selected?.name ?? '选择分组字段'}
+      keepOpen
+      menuWidth={256}
+      triggerClassName="flex h-8 min-w-32 items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-xs text-text-secondary hover:bg-muted"
+      trigger={
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="max-w-32 truncate">{selected?.name ?? '选择分组字段'}</span>
+          <ChevronDown className="h-3 w-3 shrink-0" />
+        </span>
+      }
+    >
+      {close => (
+        <>
           <label className="flex h-8 items-center gap-2 rounded-lg bg-muted px-2.5 text-text-muted">
             <Search className="h-3.5 w-3.5" />
             <input
@@ -421,8 +412,8 @@ function AITableGroupFieldPicker({
                 data-testid={`${testIdPrefix}-option-${field.id}`}
                 onClick={() => {
                   onChange(field.id)
-                  setOpen(false)
                   setQuery('')
+                  close()
                 }}
                 className={cn(
                   'flex h-9 w-full items-center rounded-lg px-2.5 text-left text-sm hover:bg-muted',
@@ -438,9 +429,9 @@ function AITableGroupFieldPicker({
               <p className="px-3 py-6 text-center text-xs text-text-muted">没有匹配字段</p>
             ) : null}
           </div>
-        </div>
-      ) : null}
-    </div>
+        </>
+      )}
+    </PopupMenu>
   )
 }
 
