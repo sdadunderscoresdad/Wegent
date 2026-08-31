@@ -2623,6 +2623,7 @@ function DisconnectedCloudCodexSyncSection({
               disabled
               value=""
               options={[]}
+              onChange={() => undefined}
               ariaLabel={t('workbench.runtime_config_sync_source', '认证来源')}
               triggerClassName="h-8 w-[152px] cursor-not-allowed rounded-md border border-border bg-muted px-2 text-sm text-text-muted"
               trigger={
