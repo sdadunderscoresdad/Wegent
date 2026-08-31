@@ -4295,7 +4295,7 @@ describe('MessageList', () => {
     stubClipboardWriteText(writeText)
 
     const copyButton = screen.getByTestId('copy-message-button')
-    expect(copyButton).toHaveAttribute('title', '复制')
+    expect(copyButton).toHaveAttribute('aria-label', '复制消息')
     expect(copyButton).not.toHaveClass('opacity-0')
 
     await userEvent.click(copyButton)
@@ -4393,7 +4393,7 @@ describe('MessageList', () => {
     fireEvent.pointerEnter(lastHoverRegion as HTMLElement)
 
     expect(screen.getByTestId('edit-message-label')).toHaveTextContent('编辑')
-    expect(screen.getByTestId('edit-message-button')).toHaveAttribute('title', '编辑')
+    expect(screen.getByTestId('edit-message-button')).toHaveAttribute('aria-label', '编辑消息')
 
     await userEvent.click(screen.getByTestId('edit-message-button'))
     expect(screen.getByTestId('edit-user-message-form')).toBeInTheDocument()
@@ -4778,7 +4778,7 @@ describe('MessageList', () => {
     stubClipboardWriteText(writeText)
 
     const copyButton = screen.getByTestId('copy-message-button')
-    expect(copyButton).toHaveAttribute('title', '复制')
+    expect(copyButton).toHaveAttribute('aria-label', '复制消息')
     expect(copyButton).not.toHaveClass('opacity-0')
 
     await userEvent.click(copyButton)

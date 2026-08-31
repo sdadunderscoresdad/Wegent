@@ -27,6 +27,7 @@ import { ExperimentalBadge } from '@/features/experimental-features/Experimental
 import { useExperimentalFeaturesEnabled } from '@/features/experimental-features/useExperimentalFeaturesEnabled'
 import { useTranslation } from '@/hooks/useTranslation'
 import { SettingsPage, SettingsPageHeader, SettingsRow, SettingsSwitch } from './settings-ui'
+import { Tooltip } from '@/components/ui/tooltip'
 import { openExternalUrl } from '@/lib/external-links'
 import { isImeEnterEvent } from '@/lib/ime'
 import { navigateTo } from '@/lib/navigation'
@@ -661,13 +662,14 @@ function DeviceCard({ device, onChanged }: { device: DeviceInfo; onChanged: () =
               </div>
             ) : (
               <div className="group flex items-center gap-1.5">
-                <h3
-                  className="cursor-pointer truncate text-sm font-semibold text-text-primary"
-                  onClick={handleStartEdit}
-                  title="点击修改名称"
-                >
-                  {displayName}
-                </h3>
+                <Tooltip label="点击修改名称" side="bottom">
+                  <h3
+                    className="cursor-pointer truncate text-sm font-semibold text-text-primary"
+                    onClick={handleStartEdit}
+                  >
+                    {displayName}
+                  </h3>
+                </Tooltip>
                 <button
                   type="button"
                   onClick={handleStartEdit}

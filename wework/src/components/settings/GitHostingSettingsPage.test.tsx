@@ -228,12 +228,16 @@ describe('GitHostingSettingsPage', () => {
 
     expect(await screen.findAllByText('gitlab · git.example.com')).toHaveLength(2)
     expect(screen.getByTestId('git-device-sync-duplicate-warning')).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Remote One · remote' })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: 'Busy Cloud · cloud' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: 'Local One · local' })).not.toBeInTheDocument()
+    const trigger = screen.getByTestId('git-device-sync-select')
+    await userEvent.click(trigger)
+    expect(screen.getByTestId('git-device-sync-select-option-remote-1')).toHaveTextContent(
+      'Remote One · remote'
+    )
+    expect(screen.queryByTestId('git-device-sync-select-option-busy-cloud')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('git-device-sync-select-option-local-one')).not.toBeInTheDocument()
     expect(screen.getByTestId('git-device-sync-submit')).toBeDisabled()
 
-    await userEvent.selectOptions(screen.getByTestId('git-device-sync-select'), 'remote-1')
+    await userEvent.click(screen.getByTestId('git-device-sync-select-option-remote-1'))
     await userEvent.click(screen.getByTestId('git-device-sync-submit'))
 
     await waitFor(() => expect(syncGitAccounts).toHaveBeenCalledWith('remote-1', false))
@@ -261,7 +265,8 @@ describe('GitHostingSettingsPage', () => {
     render(<DeviceGitSyncSection />)
 
     await screen.findByText('云端尚未配置 Git 账户。')
-    await userEvent.selectOptions(screen.getByTestId('git-device-sync-select'), 'remote-1')
+    await userEvent.click(screen.getByTestId('git-device-sync-select'))
+    await userEvent.click(screen.getByTestId('git-device-sync-select-option-remote-1'))
     await userEvent.click(screen.getByTestId('git-device-sync-submit'))
 
     expect(screen.getByTestId('git-device-sync-clear-dialog')).toBeInTheDocument()
@@ -291,7 +296,8 @@ describe('GitHostingSettingsPage', () => {
     render(<DeviceGitSyncSection />)
 
     await screen.findAllByText('gitlab · git.example.com')
-    await userEvent.selectOptions(screen.getByTestId('git-device-sync-select'), 'remote-1')
+    await userEvent.click(screen.getByTestId('git-device-sync-select'))
+    await userEvent.click(screen.getByTestId('git-device-sync-select-option-remote-1'))
     await userEvent.click(screen.getByTestId('git-device-sync-submit'))
 
     expect(await screen.findByTestId('git-device-sync-managed-warning')).toBeInTheDocument()

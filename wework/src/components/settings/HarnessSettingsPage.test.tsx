@@ -90,7 +90,8 @@ describe('HarnessSettingsPage', () => {
     expect(screen.getByTestId('harness-executable-path-claude_code')).toHaveTextContent(
       '/opt/claude/bin/claude'
     )
-    await userEvent.selectOptions(screen.getByTestId('harness-permission-mode-claude_code'), 'plan')
+    await userEvent.click(screen.getByTestId('harness-permission-mode-claude_code'))
+    await userEvent.click(screen.getByTestId('harness-permission-mode-claude_code-option-plan'))
     fireEvent.change(screen.getByTestId('harness-args-claude_code'), {
       target: { value: '--verbose\n--model\nsonnet' },
     })

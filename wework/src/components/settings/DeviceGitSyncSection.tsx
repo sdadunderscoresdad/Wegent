@@ -1,5 +1,6 @@
-import { AlertTriangle, Cloud, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Cloud, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useOptionalCloudConnection } from '@/features/cloud-connection/useCloudConnection'
 import { useTranslation } from '@/hooks/useTranslation'
 import type { DeviceInfo } from '@/types/devices'
@@ -78,6 +79,13 @@ export function DeviceGitSyncSection({
   )
     ? selectedDeviceId
     : ''
+  const activeDeviceLabel = eligibleDevices.find(
+    device => device.device_id === activeSelectedDeviceId
+  )
+    ? `${eligibleDevices.find(device => device.device_id === activeSelectedDeviceId)!.name?.trim() || t('workbench.environment_device_unknown', '未知设备')} · ${eligibleDevices.find(device => device.device_id === activeSelectedDeviceId)!.device_type}`
+    : eligibleDevices.length
+      ? t('workbench.git_device_sync_select_placeholder', '请选择设备')
+      : t('workbench.git_device_sync_no_devices', '没有可同步的在线设备')
   const loading = syncLoading || devicesLoading
 
   const loadSyncConfiguration = useCallback(
@@ -255,25 +263,31 @@ export function DeviceGitSyncSection({
 
             <label className="block text-xs font-medium text-text-primary">
               {t('workbench.git_device_sync_target', '目标设备')}
-              <select
-                data-testid="git-device-sync-select"
+              <MenuSelect
+                testId="git-device-sync-select"
                 value={activeSelectedDeviceId}
-                onChange={event => setSelectedDeviceId(event.target.value)}
+                onChange={setSelectedDeviceId}
                 disabled={syncing || eligibleDevices.length === 0}
-                className="mt-2 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-text-primary outline-none focus:border-primary disabled:opacity-50"
-              >
-                <option value="">
-                  {eligibleDevices.length
+                placeholder={
+                  eligibleDevices.length
                     ? t('workbench.git_device_sync_select_placeholder', '请选择设备')
-                    : t('workbench.git_device_sync_no_devices', '没有可同步的在线设备')}
-                </option>
-                {eligibleDevices.map(device => (
-                  <option key={device.device_id} value={device.device_id}>
-                    {device.name?.trim() || t('workbench.environment_device_unknown', '未知设备')} ·{' '}
-                    {device.device_type}
-                  </option>
-                ))}
-              </select>
+                    : t('workbench.git_device_sync_no_devices', '没有可同步的在线设备')
+                }
+                options={eligibleDevices.map(device => ({
+                  value: device.device_id,
+                  label: `${device.name?.trim() || t('workbench.environment_device_unknown', '未知设备')} · ${device.device_type}`,
+                }))}
+                menuWidth={260}
+                triggerClassName="mt-2 h-9 w-full rounded-lg border border-border bg-background px-3 text-sm text-text-primary disabled:opacity-50"
+                trigger={
+                  <span className="flex h-9 w-full items-center justify-between gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                      {activeDeviceLabel}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-text-muted" />
+                  </span>
+                }
+              />
             </label>
 
             <div className="flex flex-wrap items-center gap-3">

@@ -28,7 +28,10 @@ describe('AppearanceSettingsPage', () => {
     expect(systemMode).toHaveClass('bg-text-primary', 'text-background')
     expect(systemMode).not.toHaveClass('bg-primary', 'text-primary-contrast')
 
-    expect(screen.getByTestId('appearance-accent-input')).toHaveValue('#2563eb')
+    expect(screen.getByTestId('appearance-accent-swatch')).toHaveStyle({
+      background: '#2563eb',
+    })
+    expect(screen.getByText('#2563EB')).toBeInTheDocument()
     expect(screen.getByTestId('appearance-background-select-button')).toBeInTheDocument()
     expect(screen.queryByTestId('appearance-background-select-button-dark')).not.toBeInTheDocument()
     expect(screen.getByTestId('appearance-background-visibility-slider')).toBeDisabled()
@@ -149,10 +152,11 @@ describe('AppearanceSettingsPage', () => {
       value: 'dark',
     })
 
-    fireEvent.blur(screen.getByTestId('appearance-accent-input'))
+    await userEvent.click(screen.getByTestId('appearance-accent-swatch'))
+    await userEvent.click(screen.getByTestId('appearance-accent-swatch-0d9488'))
     expect(trackMock).toHaveBeenCalledWith('setting_changed', {
       setting: 'accent_color',
-      value: '#2563eb',
+      value: '#0d9488',
     })
   })
 })

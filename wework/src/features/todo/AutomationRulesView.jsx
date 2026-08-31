@@ -30,7 +30,8 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react'
-import { PopupMenu } from '@/components/common/MenuSelect'
+import { MenuSelect, PopupMenu } from '@/components/common/MenuSelect'
+import { timeMenuOptions } from '@/components/common/menu-options'
 import { AutomationWorkflowCanvas } from './AutomationWorkflowCanvas.jsx'
 import { automationClass } from './automationStyles'
 
@@ -230,6 +231,31 @@ function ExecutionEnvironmentSelect({ testId, value, options, onChange }) {
         </>
       )}
     </PopupMenu>
+  )
+}
+
+function PanelSelect({ testId, value, placeholder, options, onChange, menuWidth = 220 }) {
+  const selected = options.find(option => option.value === value)
+  return (
+    <MenuSelect
+      testId={testId}
+      value={value}
+      placeholder={placeholder}
+      options={options}
+      onChange={onChange}
+      menuWidth={menuWidth}
+      triggerClassName="w-full rounded-lg"
+      trigger={
+        <span className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-transparent bg-muted/60 px-3 text-sm text-text-primary transition-colors hover:bg-muted">
+          <span
+            className={`min-w-0 flex-1 truncate text-left ${selected ? '' : 'text-text-muted'}`}
+          >
+            {selected?.label ?? placeholder}
+          </span>
+          <ChevronDown className="h-4 w-4 shrink-0 text-text-muted" />
+        </span>
+      }
+    />
   )
 }
 
@@ -2284,14 +2310,15 @@ function TriggerSettings({ draft, projectTags, onChange, onRuleChange }) {
           <i className={automationClass('cascade-index')}>1</i>
           触发来源
         </span>
-        <select
-          data-testid="automation-trigger-type"
+        <PanelSelect
+          testId="automation-trigger-type"
           value={trigger.type}
-          onChange={event => onChange('type', event.target.value)}
-        >
-          <option value="schedule">按计划执行</option>
-          <option value="event">Issue 触发</option>
-        </select>
+          options={[
+            { value: 'schedule', label: '按计划执行' },
+            { value: 'event', label: 'Issue 触发' },
+          ]}
+          onChange={next => onChange('type', next)}
+        />
       </label>
       {trigger.type === 'schedule' ? (
         <section className={automationClass('schedule-settings')}>
@@ -2300,15 +2327,16 @@ function TriggerSettings({ draft, projectTags, onChange, onRuleChange }) {
               <i className={automationClass('cascade-index')}>2</i>
               重复频率
             </span>
-            <select
-              data-testid="automation-trigger-frequency"
+            <PanelSelect
+              testId="automation-trigger-frequency"
               value={trigger.schedule.frequency}
-              onChange={event => updateSchedule('frequency', event.target.value)}
-            >
-              <option value="daily">每天</option>
-              <option value="weekdays">工作日</option>
-              <option value="weekly">每周</option>
-            </select>
+              options={[
+                { value: 'daily', label: '每天' },
+                { value: 'weekdays', label: '工作日' },
+                { value: 'weekly', label: '每周' },
+              ]}
+              onChange={next => updateSchedule('frequency', next)}
+            />
           </label>
           {trigger.schedule.frequency === 'weekly' ? (
             <label className={automationClass('panel-field')}>
@@ -2316,17 +2344,15 @@ function TriggerSettings({ draft, projectTags, onChange, onRuleChange }) {
                 <i className={automationClass('cascade-index')}>3</i>
                 星期
               </span>
-              <select
-                data-testid="automation-trigger-weekday"
+              <PanelSelect
+                testId="automation-trigger-weekday"
                 value={trigger.schedule.weekday}
-                onChange={event => updateSchedule('weekday', event.target.value)}
-              >
-                {Object.entries(weekdayLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
+                options={Object.entries(weekdayLabels).map(([value, label]) => ({
+                  value,
+                  label,
+                }))}
+                onChange={next => updateSchedule('weekday', next)}
+              />
             </label>
           ) : null}
           <label className={automationClass('panel-field')}>
@@ -2336,11 +2362,12 @@ function TriggerSettings({ draft, projectTags, onChange, onRuleChange }) {
               </i>
               执行时间
             </span>
-            <input
-              type="time"
-              data-testid="automation-trigger-time"
+            <PanelSelect
+              testId="automation-trigger-time"
               value={trigger.schedule.time}
-              onChange={event => updateSchedule('time', event.target.value)}
+              options={timeMenuOptions(trigger.schedule.time)}
+              onChange={next => updateSchedule('time', next)}
+              menuWidth={140}
             />
           </label>
           <label className={automationClass('panel-field')}>
@@ -2350,15 +2377,16 @@ function TriggerSettings({ draft, projectTags, onChange, onRuleChange }) {
               </i>
               时区
             </span>
-            <select
-              data-testid="automation-trigger-timezone"
+            <PanelSelect
+              testId="automation-trigger-timezone"
               value={trigger.schedule.timezone}
-              onChange={event => updateSchedule('timezone', event.target.value)}
-            >
-              <option value="Asia/Shanghai">Asia/Shanghai · 上海时间</option>
-              <option value="America/Los_Angeles">America/Los_Angeles</option>
-              <option value="UTC">UTC</option>
-            </select>
+              options={[
+                { value: 'Asia/Shanghai', label: 'Asia/Shanghai · 上海时间' },
+                { value: 'America/Los_Angeles', label: 'America/Los_Angeles' },
+                { value: 'UTC', label: 'UTC' },
+              ]}
+              onChange={next => updateSchedule('timezone', next)}
+            />
           </label>
         </section>
       ) : (
@@ -2635,18 +2663,19 @@ function CoordinatorSettings({
             <Sparkles size={14} />
             调度模型
           </span>
-          <select
-            data-testid="ai-coordinator-model"
+          <PanelSelect
+            testId="ai-coordinator-model"
             value={coordinator.model}
-            onChange={event => selectModel(event.target.value)}
-          >
-            <option value="">不指定模型</option>
-            {modelOptions.map(option => (
-              <option key={`${option.type}-${option.name}`} value={option.name}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            options={[
+              { value: '', label: '不指定模型' },
+              ...modelOptions.map(option => ({
+                value: option.name,
+                label: option.label,
+              })),
+            ]}
+            onChange={selectModel}
+            menuWidth={240}
+          />
         </label>
         <div className={automationClass('panel-field')}>
           <span>
@@ -2970,18 +2999,13 @@ function StepSettings({
                     }
                   />
                 </div>
-                <select
-                  data-testid={`execution-node-deliverable-type-${deliverable.id}`}
+                <PanelSelect
+                  testId={`execution-node-deliverable-type-${deliverable.id}`}
                   value={deliverable.valueType}
-                  aria-label={`交付物类型 ${deliverable.name}`}
-                  onChange={event => updateDeliverableType(deliverable.id, event.target.value)}
-                >
-                  {DELIVERABLE_TYPE_OPTIONS.map(option => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  options={DELIVERABLE_TYPE_OPTIONS}
+                  onChange={next => updateDeliverableType(deliverable.id, next)}
+                  menuWidth={160}
+                />
                 <button
                   type="button"
                   data-testid={`execution-node-deliverable-delete-${deliverable.id}`}
@@ -3055,18 +3079,19 @@ function StepSettings({
                 <Sparkles size={14} />
                 模型
               </span>
-              <select
-                data-testid={`execution-node-model-${step.id}`}
+              <PanelSelect
+                testId={`execution-node-model-${step.id}`}
                 value={step.model}
-                onChange={event => selectModel(event.target.value)}
-              >
-                <option value="">不指定模型</option>
-                {modelOptions.map(option => (
-                  <option key={`${option.type}-${option.name}`} value={option.name}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                options={[
+                  { value: '', label: '不指定模型' },
+                  ...modelOptions.map(option => ({
+                    value: option.name,
+                    label: option.label,
+                  })),
+                ]}
+                onChange={selectModel}
+                menuWidth={240}
+              />
             </label>
             <div className={automationClass('panel-field')}>
               <span>
@@ -3098,15 +3123,17 @@ function StepSettings({
         {!constraint ? (
           <label className={automationClass('panel-field')}>
             <span>任务工作空间</span>
-            <select
-              data-testid={`execution-node-workspace-${step.id}`}
+            <PanelSelect
+              testId={`execution-node-workspace-${step.id}`}
               value={step.workspacePolicy}
-              onChange={event => onChange('workspacePolicy', event.target.value)}
-            >
-              <option value="composer">创建任务时选择工作空间</option>
-              <option value="inherit">继承前序任务工作空间</option>
-              <option value="none">不限定工作空间</option>
-            </select>
+              options={[
+                { value: 'composer', label: '创建任务时选择工作空间' },
+                { value: 'inherit', label: '继承前序任务工作空间' },
+                { value: 'none', label: '不限定工作空间' },
+              ]}
+              onChange={next => onChange('workspacePolicy', next)}
+              menuWidth={240}
+            />
           </label>
         ) : null}
 

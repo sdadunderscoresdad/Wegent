@@ -1,5 +1,6 @@
 import { ChevronDown, FolderOpen, RotateCcw, SquareTerminal } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useAppPreferencesState } from '@/features/app-preferences/useAppPreferencesState'
 import { ExperimentalBadge } from '@/features/experimental-features/ExperimentalBadge'
 import { useTranslation } from '@/hooks/useTranslation'
@@ -328,36 +329,46 @@ export function HarnessSettingsPage() {
                         '启动 Claude Code 时应用；危险绕过模式会跳过权限确认。'
                       )}
                       control={
-                        <select
-                          data-testid="harness-permission-mode-claude_code"
+                        <MenuSelect
+                          testId="harness-permission-mode-claude_code"
                           value={draft.preference.permissionMode}
-                          onChange={event =>
+                          options={[
+                            {
+                              value: 'default',
+                              label: t('workbench.harness_permission_default', '默认'),
+                            },
+                            {
+                              value: 'acceptEdits',
+                              label: t('workbench.harness_permission_accept_edits', '自动接受编辑'),
+                            },
+                            {
+                              value: 'plan',
+                              label: t('workbench.harness_permission_plan', '计划模式'),
+                            },
+                            {
+                              value: 'auto',
+                              label: t('workbench.harness_permission_auto', '自动模式'),
+                            },
+                            {
+                              value: 'bypass',
+                              label: t(
+                                'workbench.harness_permission_bypass',
+                                '跳过权限确认（危险）'
+                              ),
+                            },
+                          ]}
+                          onChange={next =>
                             updateDraft(id, current => ({
                               ...current,
                               preference: {
                                 ...current.preference,
-                                permissionMode: event.target.value as ClaudeCodePermissionMode,
+                                permissionMode: next as ClaudeCodePermissionMode,
                               },
                             }))
                           }
-                          className="h-8 rounded-lg border border-border bg-background px-2.5 text-sm text-text-primary outline-none focus:border-focus"
-                        >
-                          <option value="default">
-                            {t('workbench.harness_permission_default', '默认')}
-                          </option>
-                          <option value="acceptEdits">
-                            {t('workbench.harness_permission_accept_edits', '自动接受编辑')}
-                          </option>
-                          <option value="plan">
-                            {t('workbench.harness_permission_plan', '计划模式')}
-                          </option>
-                          <option value="auto">
-                            {t('workbench.harness_permission_auto', '自动模式')}
-                          </option>
-                          <option value="bypass">
-                            {t('workbench.harness_permission_bypass', '跳过权限确认（危险）')}
-                          </option>
-                        </select>
+                          menuWidth={200}
+                          triggerClassName="h-8 rounded-lg border border-border bg-background px-2.5 text-sm text-text-primary"
+                        />
                       }
                     />
                   ) : null}

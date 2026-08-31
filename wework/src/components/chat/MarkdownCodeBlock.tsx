@@ -134,7 +134,6 @@ export function MarkdownCodeBlock({
             onClick={() => void handleCopy()}
             className={CODE_ACTION_BUTTON_CLASS}
             aria-label="复制代码"
-            title="复制代码"
             data-testid="markdown-code-copy-button"
           >
             {copied ? (

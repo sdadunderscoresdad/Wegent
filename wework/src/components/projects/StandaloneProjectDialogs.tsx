@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   ChevronLeft,
   Copy,
   FolderOpen,
@@ -11,6 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { createPortal } from 'react-dom'
 import { useEscapeKey } from '@/hooks/useEscapeKey'
 import { useTranslation } from '@/hooks/useTranslation'
@@ -446,6 +448,18 @@ export function StandaloneFolderProjectDialog({
     selectableDevices.find(device => device.device_id === activeDeviceId) ??
     selectableDevices[0] ??
     null
+  const activeDeviceLabel = activeDevice
+    ? getRemoteDeviceOptionLabel(
+        activeDevice,
+        isCloudDevice(activeDevice)
+          ? t('workbench.remote_host_cloud_group', '云设备')
+          : t('workbench.remote_host_docker_group', '远程 Docker 设备'),
+        t('workbench.project_device_offline', '（离线）'),
+        t('workbench.remote_host_upgrade_required', `需升级到 v${WEWORK_MIN_EXECUTOR_VERSION}`, {
+          version: WEWORK_MIN_EXECUTOR_VERSION,
+        })
+      )
+    : t('workbench.no_remote_project_device', '暂无可用远程或云设备')
   const addingRemoteDevice = mode === 'remote' && remoteIntent === 'add-device'
   const choosingProjectSource =
     (mode === 'remote' || chooseProjectSource) &&
@@ -826,70 +840,75 @@ export function StandaloneFolderProjectDialog({
             </span>
             <span className="mt-2 flex h-10 items-center gap-2.5 rounded-[10px] border border-border bg-background px-3">
               <Globe2 className="h-4 w-4 text-primary" />
-              <select
-                data-testid="standalone-remote-device-select"
+              <MenuSelect
+                testId="standalone-remote-device-select"
                 value={activeDevice?.device_id ?? ''}
-                onChange={event => {
-                  setActiveDeviceId(event.target.value)
+                placeholder={t('workbench.no_remote_project_device', '暂无可用远程或云设备')}
+                options={[]}
+                sections={[
+                  ...(cloudDeviceOptions.length > 0
+                    ? [
+                        {
+                          label: t('workbench.remote_host_cloud_group', '云设备'),
+                          options: cloudDeviceOptions.map(device => ({
+                            value: device.device_id,
+                            disabled: !canUseForRemoteProjectCreation(device),
+                            label: getRemoteDeviceOptionLabel(
+                              device,
+                              t('workbench.remote_host_cloud_group', '云设备'),
+                              t('workbench.project_device_offline', '（离线）'),
+                              t(
+                                'workbench.remote_host_upgrade_required',
+                                `需升级到 v${WEWORK_MIN_EXECUTOR_VERSION}`,
+                                { version: WEWORK_MIN_EXECUTOR_VERSION }
+                              )
+                            ),
+                          })),
+                        },
+                      ]
+                    : []),
+                  ...(remoteDockerDeviceOptions.length > 0
+                    ? [
+                        {
+                          label: t('workbench.remote_host_docker_group', '远程 Docker 设备'),
+                          options: remoteDockerDeviceOptions.map(device => ({
+                            value: device.device_id,
+                            disabled: !canUseForRemoteProjectCreation(device),
+                            label: getRemoteDeviceOptionLabel(
+                              device,
+                              t('workbench.remote_host_docker_group', '远程 Docker 设备'),
+                              t('workbench.project_device_offline', '（离线）'),
+                              t(
+                                'workbench.remote_host_upgrade_required',
+                                `需升级到 v${WEWORK_MIN_EXECUTOR_VERSION}`,
+                                { version: WEWORK_MIN_EXECUTOR_VERSION }
+                              )
+                            ),
+                          })),
+                        },
+                      ]
+                    : []),
+                ]}
+                onChange={next => {
+                  setActiveDeviceId(next)
                   gitParentDefaultDeviceIdRef.current = null
                   setGitParentPath('')
                   setGitParentPickerOpen(false)
                   setGitError(null)
                 }}
-                className="min-w-0 flex-1 bg-transparent text-sm text-text-primary outline-none"
-              >
-                {!activeDevice && (
-                  <option value="" disabled>
-                    {t('workbench.no_remote_project_device', '暂无可用远程或云设备')}
-                  </option>
-                )}
-                {cloudDeviceOptions.length > 0 && (
-                  <optgroup label={t('workbench.remote_host_cloud_group', '云设备')}>
-                    {cloudDeviceOptions.map(device => (
-                      <option
-                        key={device.device_id}
-                        value={device.device_id}
-                        disabled={!canUseForRemoteProjectCreation(device)}
-                        data-testid={`standalone-remote-device-option-${device.device_id}`}
-                      >
-                        {getRemoteDeviceOptionLabel(
-                          device,
-                          t('workbench.remote_host_cloud_group', '云设备'),
-                          t('workbench.project_device_offline', '（离线）'),
-                          t(
-                            'workbench.remote_host_upgrade_required',
-                            `需升级到 v${WEWORK_MIN_EXECUTOR_VERSION}`,
-                            { version: WEWORK_MIN_EXECUTOR_VERSION }
-                          )
-                        )}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {remoteDockerDeviceOptions.length > 0 && (
-                  <optgroup label={t('workbench.remote_host_docker_group', '远程 Docker 设备')}>
-                    {remoteDockerDeviceOptions.map(device => (
-                      <option
-                        key={device.device_id}
-                        value={device.device_id}
-                        disabled={!canUseForRemoteProjectCreation(device)}
-                        data-testid={`standalone-remote-device-option-${device.device_id}`}
-                      >
-                        {getRemoteDeviceOptionLabel(
-                          device,
-                          t('workbench.remote_host_docker_group', '远程 Docker 设备'),
-                          t('workbench.project_device_offline', '（离线）'),
-                          t(
-                            'workbench.remote_host_upgrade_required',
-                            `需升级到 v${WEWORK_MIN_EXECUTOR_VERSION}`,
-                            { version: WEWORK_MIN_EXECUTOR_VERSION }
-                          )
-                        )}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+                menuWidth={320}
+                fullWidth
+                rootClassName="min-w-0 flex-1"
+                triggerClassName="h-10 rounded-none bg-transparent"
+                trigger={
+                  <span className="flex h-10 w-full min-w-0 items-center justify-between gap-2 px-3 text-sm">
+                    <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                      {activeDeviceLabel}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-text-muted" />
+                  </span>
+                }
+              />
             </span>
             {remoteDeviceOptions.some(device => !canUseForRemoteProjectCreation(device)) && (
               <span

@@ -1,5 +1,13 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
-import { LoaderCircle, PackagePlus, PlugZap, RefreshCw, RotateCw, Trash2 } from 'lucide-react'
+import {
+  ChevronRight,
+  LoaderCircle,
+  PackagePlus,
+  PlugZap,
+  RefreshCw,
+  RotateCw,
+  Trash2,
+} from 'lucide-react'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import {
   installCoreDshPlugin,
@@ -197,8 +205,9 @@ export function CoreDshPluginManagementSection() {
               onUninstall={() => setUninstallConfirmation(plugin.name)}
             />
           ))}
-          <details>
-            <summary className="cursor-pointer px-4 py-3 text-sm text-text-secondary">
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm text-text-secondary">
+              <ChevronRight className="h-4 w-4 text-text-muted transition-transform group-open:rotate-90" />
               {t('workbench.core_dsh_plugins_builtins', '{{count}} 个 Wework 内置插件', {
                 count: builtIns.length,
               })}

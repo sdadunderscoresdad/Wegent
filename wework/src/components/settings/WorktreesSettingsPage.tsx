@@ -1,5 +1,6 @@
 import { CircleCheck, Loader2, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
 import type { RefreshWorkLists } from '@/features/workbench/workbenchContextTypes'
 import { useTranslation } from '@/hooks/useTranslation'
@@ -299,18 +300,17 @@ export function WorktreesSettingsPage({
       {availableDevices.length > 1 && (
         <label className="block text-sm text-text-secondary">
           <span className="mb-2 block">{t('workbench.worktrees_device')}</span>
-          <select
-            data-testid="worktrees-device-select"
+          <MenuSelect
+            testId="worktrees-device-select"
             value={selectedDeviceId}
-            onChange={event => setDeviceId(event.target.value)}
-            className="h-9 w-full max-w-[360px] rounded-md border border-border bg-background px-3 text-sm text-text-primary"
-          >
-            {availableDevices.map(device => (
-              <option key={device.device_id} value={device.device_id}>
-                {device.name}
-              </option>
-            ))}
-          </select>
+            options={availableDevices.map(device => ({
+              value: device.device_id,
+              label: device.name,
+            }))}
+            onChange={setDeviceId}
+            menuWidth={360}
+            triggerClassName="h-9 w-full max-w-[360px] rounded-md border border-border bg-background px-3 text-sm text-text-primary"
+          />
         </label>
       )}
 

@@ -11,6 +11,7 @@ import {
 } from 'react'
 import { Check, Copy, Info, Minimize2, PlugZap } from 'lucide-react'
 import { AuthProvider } from '@/features/auth/AuthProvider'
+import { Tooltip } from '@/components/ui/tooltip'
 import { useAuth } from '@/features/auth/useAuth'
 import { WorkbenchProvider } from '@/features/workbench/WorkbenchProvider'
 import {
@@ -1196,16 +1197,17 @@ function WeworkDevInstanceBadge() {
           <div className="mb-1 flex items-center justify-between px-2 py-1">
             <span className="font-medium text-text-primary">Development instance</span>
             {!collapsed && (
-              <button
-                type="button"
-                data-testid="collapse-wework-dev-instance-button"
-                className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:bg-black/[0.04] hover:text-text-primary"
-                title="Collapse to movable icon"
-                aria-label="Collapse development instance info"
-                onClick={() => setCollapsed(true)}
-              >
-                <Minimize2 className="h-3.5 w-3.5" />
-              </button>
+              <Tooltip label="Collapse to movable icon">
+                <button
+                  type="button"
+                  data-testid="collapse-wework-dev-instance-button"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:bg-black/[0.04] hover:text-text-primary"
+                  aria-label="Collapse development instance info"
+                  onClick={() => setCollapsed(true)}
+                >
+                  <Minimize2 className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
             )}
           </div>
           <div className="space-y-1">

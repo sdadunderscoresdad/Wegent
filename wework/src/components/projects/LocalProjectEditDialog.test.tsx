@@ -162,8 +162,9 @@ describe('LocalProjectEditDialog', () => {
     )
 
     const select = await screen.findByTestId('local-project-auto-join-space-select')
-    await waitFor(() => expect(select).toHaveValue('local:space-1'))
-    await userEvent.selectOptions(select, '')
+    await waitFor(() => expect(select).toHaveTextContent('Task Follow-up Board'))
+    await userEvent.click(select)
+    await userEvent.click(screen.getByTestId('local-project-auto-join-space-select-option-'))
     await userEvent.click(screen.getByTestId('save-local-project-button'))
 
     expect(onSave).toHaveBeenCalledWith({
@@ -212,11 +213,10 @@ describe('LocalProjectEditDialog', () => {
       screen.getByTestId('local-project-instructions-input'),
       'Always run focused tests.'
     )
-    await userEvent.selectOptions(
-      screen.getByTestId('local-project-model-select'),
-      'runtime:gpt-5.5'
-    )
-    await userEvent.selectOptions(screen.getByTestId('local-project-reasoning-select'), 'medium')
+    await userEvent.click(screen.getByTestId('local-project-model-select'))
+    await userEvent.click(screen.getByTestId('local-project-model-select-option-runtime:gpt-5.5'))
+    await userEvent.click(screen.getByTestId('local-project-reasoning-select'))
+    await userEvent.click(screen.getByTestId('local-project-reasoning-select-option-medium'))
     await userEvent.click(screen.getByTestId('save-local-project-button'))
 
     expect(onSave).toHaveBeenCalledWith({

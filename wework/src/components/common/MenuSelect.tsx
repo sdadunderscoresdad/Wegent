@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
+import { timeMenuOptions } from './menu-options'
 
 export interface MenuOption {
   value: string
@@ -174,17 +175,7 @@ export function TimeMenu({
   value: string
   onChange: (value: string) => void
 }) {
-  const options = Array.from({ length: 96 }, (_, index) => {
-    const hour = Math.floor(index / 4)
-    const minute = (index % 4) * 15
-    const raw = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
-    return { value: raw, label: `${hour}:${String(minute).padStart(2, '0')}` }
-  })
-  if (!options.some(option => option.value === value)) {
-    const [hour = '0', minute = '00'] = value.split(':')
-    options.push({ value, label: `${Number(hour)}:${minute}` })
-    options.sort((left, right) => left.value.localeCompare(right.value))
-  }
+  const options = timeMenuOptions(value)
   return <MenuSelect testId={testId} value={value} options={options} onChange={onChange} pill />
 }
 

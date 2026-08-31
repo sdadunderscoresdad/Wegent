@@ -4510,15 +4510,17 @@ describe('DesktopWorkbenchLayout', () => {
     await userEvent.click(screen.getByTestId('project-create-remote-option'))
 
     const select = screen.getByTestId('standalone-remote-device-select')
-    expect(select).toHaveTextContent('云设备')
-    expect(select).toHaveTextContent('远程 Docker 设备')
-    expect(select).toHaveTextContent('Cloud Device')
-    expect(select).toHaveTextContent('Remote Device')
-    expect(select).toHaveTextContent('10.201.3.200')
-    expect(select).toHaveTextContent('127.0.0.1')
-    expect(select).not.toHaveTextContent('Local Device')
-    expect(screen.getByTestId('standalone-remote-device-option-cloud-device')).toBeEnabled()
-    expect(screen.getByTestId('standalone-remote-device-option-remote-device')).toBeEnabled()
+    await userEvent.click(select)
+    const menu = screen.getByTestId('standalone-remote-device-select-menu')
+    expect(menu).toHaveTextContent('云设备')
+    expect(menu).toHaveTextContent('远程 Docker 设备')
+    expect(menu).toHaveTextContent('Cloud Device')
+    expect(menu).toHaveTextContent('Remote Device')
+    expect(menu).toHaveTextContent('10.201.3.200')
+    expect(menu).toHaveTextContent('127.0.0.1')
+    expect(menu).not.toHaveTextContent('Local Device')
+    expect(screen.getByTestId('standalone-remote-device-select-option-cloud-device')).toBeEnabled()
+    expect(screen.getByTestId('standalone-remote-device-select-option-remote-device')).toBeEnabled()
   })
 
   test('remote project dialog shows a version-mismatched Docker device as disabled', async () => {
@@ -4554,14 +4556,16 @@ describe('DesktopWorkbenchLayout', () => {
     expect(screen.getByTestId('standalone-folder-project-dialog')).toBeInTheDocument()
     expect(screen.getByTestId('standalone-folder-no-device')).toHaveTextContent('连接一台云端设备')
     expect(screen.getByTestId('standalone-folder-no-device')).toHaveTextContent('启动脚本')
-    expect(screen.getByTestId('standalone-remote-device-select')).toHaveTextContent(
-      'Remote Docker Device'
-    )
-    expect(screen.getByTestId('standalone-remote-device-select')).toHaveTextContent('10.201.3.201')
-    expect(screen.getByTestId('standalone-remote-device-select')).toHaveTextContent(
-      '需升级到 v1.8.5'
-    )
-    expect(screen.getByTestId('standalone-remote-device-option-remote-device')).toBeDisabled()
+    const trigger = screen.getByTestId('standalone-remote-device-select')
+    expect(trigger).toHaveTextContent('暂无可用远程或云设备')
+    await userEvent.click(trigger)
+    const menu = screen.getByTestId('standalone-remote-device-select-menu')
+    expect(menu).toHaveTextContent('Remote Docker Device')
+    expect(menu).toHaveTextContent('10.201.3.201')
+    expect(menu).toHaveTextContent('需升级到 v1.8.5')
+    expect(
+      screen.getByTestId('standalone-remote-device-select-option-remote-device')
+    ).toBeDisabled()
     expect(screen.getByTestId('standalone-remote-device-unavailable-hint')).toHaveTextContent(
       '版本不匹配'
     )

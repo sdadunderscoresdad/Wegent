@@ -601,7 +601,7 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(browserNav)
 
     expect(await screen.findByTestId('browser-settings-page')).toBeInTheDocument()
-    expect(screen.getByTestId('browser-external-link-target')).toHaveValue('system')
+    expect(screen.getByTestId('browser-external-link-target')).toHaveTextContent('系统')
     expect(window.location.pathname).toBe('/settings/browser')
   })
 
@@ -752,11 +752,12 @@ describe('ConnectionsSettingsPage', () => {
     await screen.findByTestId('model-settings-page')
     await userEvent.click(screen.getByTestId('local-model-add-button'))
 
-    expect(screen.getByTestId('local-model-provider-select')).toHaveValue('')
+    expect(screen.getByTestId('local-model-provider-select')).toHaveTextContent('请选择提供商')
     expect(screen.queryByTestId('local-model-api-format-select')).not.toBeInTheDocument()
     expect(screen.queryByTestId('local-model-save-button')).not.toBeInTheDocument()
 
-    await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
+    await userEvent.click(screen.getByTestId('local-model-provider-select'))
+    await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
 
     expect(screen.getByTestId('local-model-api-format-select')).toBeInTheDocument()
     expect(screen.getByTestId('local-model-save-button')).toBeInTheDocument()
@@ -787,12 +788,16 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
     await screen.findByTestId('model-settings-page')
     await userEvent.click(screen.getByTestId('local-model-add-button'))
-    await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'deepseek')
+    await userEvent.click(screen.getByTestId('local-model-provider-select'))
+    await userEvent.click(screen.getByTestId('local-model-provider-select-option-deepseek'))
 
     const visionSelect = screen.getByTestId('local-model-vision-proxy-select')
+    await userEvent.click(visionSelect)
+    expect(screen.getByTestId('local-model-vision-proxy-select-option-vision')).toHaveTextContent(
+      'Vision Model'
+    )
+    await userEvent.click(screen.getByTestId('local-model-vision-proxy-select-option-vision'))
     expect(visionSelect).toHaveTextContent('Vision Model')
-    await userEvent.selectOptions(visionSelect, 'vision')
-    expect(visionSelect).toHaveValue('vision')
   })
 
   test('persists custom catalog capabilities and silently restarts Codex when idle', async () => {
@@ -808,7 +813,8 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
     await screen.findByTestId('model-settings-page')
     await userEvent.click(screen.getByTestId('local-model-add-button'))
-    await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
+    await userEvent.click(screen.getByTestId('local-model-provider-select'))
+    await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
     expect(
       (screen.getByTestId('local-model-base-instructions-input') as HTMLTextAreaElement).value
     ).toContain('# Working with the user')
@@ -819,13 +825,14 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('local-model-image-generation-checkbox'))
     await userEvent.click(screen.getByTestId('local-model-reasoning-level-high'))
     const defaultReasoningSelect = screen.getByTestId('local-model-default-reasoning-input')
+    await userEvent.click(defaultReasoningSelect)
+    expect(screen.getByTestId('local-model-default-reasoning-input-option-high')).toHaveTextContent(
+      '高'
+    )
     expect(
-      within(defaultReasoningSelect).getByRole('option', {
-        name: '高',
-      })
-    ).toHaveAttribute('value', 'high')
-    expect(within(defaultReasoningSelect).queryByRole('option', { name: 'high' })).toBeNull()
-    await userEvent.selectOptions(defaultReasoningSelect, 'high')
+      screen.queryByTestId('local-model-default-reasoning-input-option-high')
+    ).not.toHaveTextContent('high')
+    await userEvent.click(screen.getByTestId('local-model-default-reasoning-input-option-high'))
     await userEvent.click(screen.getByTestId('local-model-advanced-capabilities-toggle'))
     await userEvent.click(screen.getByTestId('local-model-advanced-section-metadata'))
     await userEvent.type(screen.getByTestId('local-model-speed-tiers-input'), 'fast')
@@ -838,9 +845,9 @@ describe('ConnectionsSettingsPage', () => {
       'Faster requests'
     )
     expect(screen.getByTestId('local-model-service-tiers-0-delete').closest('label')).toBeNull()
-    await userEvent.selectOptions(
-      screen.getByTestId('local-model-default-service-tier-input'),
-      'priority'
+    await userEvent.click(screen.getByTestId('local-model-default-service-tier-input'))
+    await userEvent.click(
+      screen.getByTestId('local-model-default-service-tier-input-option-priority')
     )
     await userEvent.click(screen.getByTestId('local-model-advanced-capabilities-close'))
     await userEvent.type(screen.getByTestId('local-model-id-input'), 'custom-coder')
@@ -892,7 +899,8 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
     await screen.findByTestId('model-settings-page')
     await userEvent.click(screen.getByTestId('local-model-add-button'))
-    await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
+    await userEvent.click(screen.getByTestId('local-model-provider-select'))
+    await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
     await userEvent.type(screen.getByTestId('local-model-id-input'), 'pending-coder')
     await userEvent.type(screen.getByTestId('local-model-url-input'), 'http://localhost:11434/v1')
     await userEvent.click(screen.getByTestId('local-model-save-button'))
@@ -923,10 +931,8 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
       await screen.findByTestId('model-settings-page')
       await userEvent.click(screen.getByTestId('local-model-add-button'))
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-provider-select'),
-        'kimi-coding'
-      )
+      await userEvent.click(screen.getByTestId('local-model-provider-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-select-option-kimi-coding'))
       const groupInput = screen.getByTestId('local-model-group-input')
       expect(groupInput).toHaveValue('Kimi')
       await userEvent.clear(groupInput)
@@ -934,7 +940,7 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.type(screen.getByTestId('local-model-api-key-input'), 'test-key')
       await userEvent.click(screen.getByTestId('local-model-load-provider-models-button'))
       await waitFor(() =>
-        expect(screen.getByTestId('local-model-provider-model-select')).toHaveValue('k3')
+        expect(screen.getByTestId('local-model-provider-model-select')).toHaveTextContent('k3')
       )
       await userEvent.click(screen.getByTestId('local-model-save-button'))
 
@@ -1000,20 +1006,19 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
       await screen.findByTestId('model-settings-page')
       await userEvent.click(screen.getByTestId('local-model-add-button'))
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-provider-select'),
-        'kimi-coding'
-      )
+      await userEvent.click(screen.getByTestId('local-model-provider-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-select-option-kimi-coding'))
       await userEvent.type(screen.getByTestId('local-model-api-key-input'), 'shared-key')
       await userEvent.click(screen.getByTestId('local-model-load-provider-models-button'))
       await waitFor(() =>
         expect(screen.getByTestId('local-model-provider-model-select')).toBeInTheDocument()
       )
-      await userEvent.selectOptions(screen.getByTestId('local-model-provider-model-select'), 'k3')
+      await userEvent.click(screen.getByTestId('local-model-provider-model-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-model-select-option-k3'))
       await userEvent.click(screen.getByTestId('local-model-provider-model-add-button'))
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-provider-model-select-1'),
-        'kimi-for-coding-highspeed'
+      await userEvent.click(screen.getByTestId('local-model-provider-model-select-1'))
+      await userEvent.click(
+        screen.getByTestId('local-model-provider-model-select-1-option-kimi-for-coding-highspeed')
       )
       await userEvent.click(screen.getByTestId('local-model-test-button-1'))
       expect(await screen.findByTestId('local-model-test-result-1')).toHaveTextContent(
@@ -1092,9 +1097,9 @@ describe('ConnectionsSettingsPage', () => {
       await waitFor(() =>
         expect(screen.getByTestId('local-model-provider-model-select-1')).toBeInTheDocument()
       )
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-provider-model-select-1'),
-        'deepseek-v4-pro'
+      await userEvent.click(screen.getByTestId('local-model-provider-model-select-1'))
+      await userEvent.click(
+        screen.getByTestId('local-model-provider-model-select-1-option-deepseek-v4-pro')
       )
       await userEvent.click(screen.getByTestId('local-model-save-button'))
 
@@ -1148,15 +1153,15 @@ describe('ConnectionsSettingsPage', () => {
         await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
         await screen.findByTestId('model-settings-page')
         await userEvent.click(screen.getByTestId('local-model-add-button'))
-        await userEvent.selectOptions(
-          screen.getByTestId('local-model-provider-select'),
-          providerProfileId
+        await userEvent.click(screen.getByTestId('local-model-provider-select'))
+        await userEvent.click(
+          screen.getByTestId(`local-model-provider-select-option-${providerProfileId}`)
         )
         expect(screen.getByTestId('local-model-group-input')).toHaveValue('MiniMax')
         await userEvent.type(screen.getByTestId('local-model-api-key-input'), 'test-key')
         await userEvent.click(screen.getByTestId('local-model-load-provider-models-button'))
         await waitFor(() =>
-          expect(screen.getByTestId('local-model-provider-model-select')).toHaveValue(
+          expect(screen.getByTestId('local-model-provider-model-select')).toHaveTextContent(
             'MiniMax-M2.7'
           )
         )
@@ -1221,7 +1226,8 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
       await screen.findByTestId('model-settings-page')
       await userEvent.click(screen.getByTestId('local-model-add-button'))
-      await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
+      await userEvent.click(screen.getByTestId('local-model-provider-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
       expect(screen.getByTestId('local-model-request-url')).toHaveTextContent(
         '填写模型基础地址和请求路径；粘贴完整地址时会自动拆分'
       )
@@ -1283,10 +1289,11 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
       await screen.findByTestId('model-settings-page')
       await userEvent.click(screen.getByTestId('local-model-add-button'))
-      await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-api-format-select'),
-        'openai-chat-completions'
+      await userEvent.click(screen.getByTestId('local-model-provider-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
+      await userEvent.click(screen.getByTestId('local-model-api-format-select'))
+      await userEvent.click(
+        screen.getByTestId('local-model-api-format-select-option-openai-chat-completions')
       )
       expect(screen.getByTestId('local-model-request-path-input')).toHaveValue('/chat/completions')
       await userEvent.type(
@@ -1335,10 +1342,11 @@ describe('ConnectionsSettingsPage', () => {
       await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
       await screen.findByTestId('model-settings-page')
       await userEvent.click(screen.getByTestId('local-model-add-button'))
-      await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
-      await userEvent.selectOptions(
-        screen.getByTestId('local-model-api-format-select'),
-        'anthropic-messages'
+      await userEvent.click(screen.getByTestId('local-model-provider-select'))
+      await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
+      await userEvent.click(screen.getByTestId('local-model-api-format-select'))
+      await userEvent.click(
+        screen.getByTestId('local-model-api-format-select-option-anthropic-messages')
       )
       expect(screen.getByTestId('local-model-request-path-input')).toHaveValue('/v1/messages')
       fireEvent.change(screen.getByTestId('local-model-url-input'), {
@@ -1382,7 +1390,8 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
     await screen.findByTestId('model-settings-page')
     await userEvent.click(screen.getByTestId('local-model-add-button'))
-    await userEvent.selectOptions(screen.getByTestId('local-model-provider-select'), 'custom')
+    await userEvent.click(screen.getByTestId('local-model-provider-select'))
+    await userEvent.click(screen.getByTestId('local-model-provider-select-option-custom'))
     await userEvent.type(screen.getByTestId('local-model-url-input'), 'http://localhost:11434/v1')
 
     await userEvent.click(screen.getByTestId('local-model-add-button'))
@@ -1401,7 +1410,7 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('local-model-discard-changes-confirm-button'))
 
     expect(screen.queryByTestId('local-model-discard-changes-dialog')).not.toBeInTheDocument()
-    expect(screen.getByTestId('local-model-provider-select')).toHaveValue('')
+    expect(screen.getByTestId('local-model-provider-select')).toHaveTextContent('请选择提供商')
     expect(screen.queryByTestId('local-model-url-input')).not.toBeInTheDocument()
   })
 
@@ -1861,7 +1870,10 @@ describe('ConnectionsSettingsPage', () => {
       deviceList.compareDocumentPosition(gitSyncSection) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
     expect(gitSyncSection).toHaveTextContent('gitlab · git.example.com')
-    expect(screen.getByRole('option', { name: 'Remote Alias · remote' })).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('git-device-sync-select'))
+    expect(screen.getByTestId('git-device-sync-select-option-remote-docker')).toHaveTextContent(
+      'Remote Alias · remote'
+    )
   })
 
   test('does not show the current app backend registration in cloud connections', async () => {

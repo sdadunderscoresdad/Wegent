@@ -1,8 +1,10 @@
 import type { ChangeEvent, FormEvent } from 'react'
 import { useRef, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   Download,
   FileJson,
   KeyRound,
@@ -12,11 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type {
-  InstalledMCPServerConfig,
-  MCPProviderInfo,
-  MCPServer,
-} from '@/types/api'
+import type { InstalledMCPServerConfig, MCPProviderInfo, MCPServer } from '@/types/api'
 import { parseCustomMcpJson } from './mcp-json-import'
 
 export interface CustomMcpFormState {
@@ -31,13 +29,7 @@ export interface CustomMcpFormState {
   headersJson: string
 }
 
-export function SectionHeading({
-  title,
-  description,
-}: {
-  title: string
-  description: string
-}) {
+export function SectionHeading({ title, description }: { title: string; description: string }) {
   return (
     <div>
       <h2 className="text-sm font-semibold text-text-primary">{title}</h2>
@@ -64,9 +56,9 @@ export function CustomMcpForm({
   const [jsonImportText, setJsonImportText] = useState('')
   const [jsonImportError, setJsonImportError] = useState<string | null>(null)
   const [isJsonImportOpen, setIsJsonImportOpen] = useState(false)
-  const updateField = <Key extends keyof CustomMcpFormState,>(
+  const updateField = <Key extends keyof CustomMcpFormState>(
     key: Key,
-    value: CustomMcpFormState[Key],
+    value: CustomMcpFormState[Key]
   ) => onChange({ ...form, [key]: value })
   const applyJsonImport = (value: string) => {
     try {
@@ -81,7 +73,7 @@ export function CustomMcpForm({
       setJsonImportError(
         error instanceof Error
           ? error.message
-          : t('workbench.plugins_custom_mcp_json_error', 'JSON 解析失败'),
+          : t('workbench.plugins_custom_mcp_json_error', 'JSON 解析失败')
       )
     }
   }
@@ -94,16 +86,13 @@ export function CustomMcpForm({
   }
 
   return (
-    <form
-      className="rounded-2xl border border-border bg-surface p-5"
-      onSubmit={onSubmit}
-    >
+    <form className="rounded-2xl border border-border bg-surface p-5" onSubmit={onSubmit}>
       <div className="flex items-start justify-between gap-4">
         <SectionHeading
           title={t('workbench.plugins_custom_mcp_title', '创建自定义 MCP')}
           description={t(
             'workbench.plugins_custom_mcp_description',
-            '保存用户自行配置的 MCP，创建后会进入已安装列表。',
+            '保存用户自行配置的 MCP，创建后会进入已安装列表。'
           )}
         />
         <div className="flex items-center gap-2">
@@ -111,7 +100,7 @@ export function CustomMcpForm({
             type="button"
             data-testid="custom-mcp-import-json-button"
             className="flex h-9 items-center gap-2 rounded-xl bg-background px-3 text-sm font-semibold hover:bg-muted"
-            onClick={() => setIsJsonImportOpen((previous) => !previous)}
+            onClick={() => setIsJsonImportOpen(previous => !previous)}
           >
             <FileJson className="h-4 w-4" />
             {t('workbench.plugins_custom_mcp_import_json', '导入 JSON')}
@@ -132,7 +121,7 @@ export function CustomMcpForm({
             <p className="text-xs font-semibold text-text-secondary">
               {t(
                 'workbench.plugins_custom_mcp_json_hint',
-                '粘贴 mcpServers 或单个 MCP server JSON。',
+                '粘贴 mcpServers 或单个 MCP server JSON。'
               )}
             </p>
             <button
@@ -148,14 +137,14 @@ export function CustomMcpForm({
               accept=".json,application/json"
               className="hidden"
               data-testid="custom-mcp-import-json-file-input"
-              onChange={(event) => void importJsonFile(event)}
+              onChange={event => void importJsonFile(event)}
             />
           </div>
           <textarea
             value={jsonImportText}
             data-testid="custom-mcp-import-json-textarea"
             className="mt-3 h-28 w-full resize-none rounded-xl border border-border bg-surface p-3 font-mono text-xs outline-none focus:border-primary"
-            onChange={(event) => setJsonImportText(event.target.value)}
+            onChange={event => setJsonImportText(event.target.value)}
           />
           {jsonImportError && (
             <div className="mt-2 flex items-center gap-2 text-xs font-semibold text-red-500">
@@ -181,37 +170,42 @@ export function CustomMcpForm({
           label={t('workbench.plugins_custom_mcp_name', '名称')}
           value={form.name}
           testId="custom-mcp-name-input"
-          onChange={(value) => updateField('name', value)}
+          onChange={value => updateField('name', value)}
         />
         <McpTextInput
           label={t('workbench.plugins_custom_mcp_display_name', '显示名称')}
           value={form.displayName}
           testId="custom-mcp-display-name-input"
-          onChange={(value) => updateField('displayName', value)}
+          onChange={value => updateField('displayName', value)}
         />
         <label className="text-xs font-semibold text-text-secondary">
           {t('workbench.plugins_custom_mcp_type', '类型')}
-          <select
+          <MenuSelect
+            testId="custom-mcp-type-select"
             value={form.type}
-            data-testid="custom-mcp-type-select"
-            className="mt-2 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-text-primary outline-none focus:border-primary"
-            onChange={(event) =>
-              updateField(
-                'type',
-                event.target.value as InstalledMCPServerConfig['type'],
-              )
+            options={[
+              { value: 'streamable-http', label: 'streamable-http' },
+              { value: 'sse', label: 'sse' },
+              { value: 'http', label: 'http' },
+              { value: 'stdio', label: 'stdio' },
+            ]}
+            onChange={next => updateField('type', next as InstalledMCPServerConfig['type'])}
+            menuWidth={180}
+            triggerClassName="mt-2 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-text-primary"
+            trigger={
+              <span className="flex h-10 w-full items-center justify-between gap-2 text-sm">
+                <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                  {form.type}
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-text-muted" />
+              </span>
             }
-          >
-            <option value="streamable-http">streamable-http</option>
-            <option value="sse">sse</option>
-            <option value="http">http</option>
-            <option value="stdio">stdio</option>
-          </select>
+          />
         </label>
         <McpTextInput
           label={t('workbench.plugins_custom_mcp_description_label', '描述')}
           value={form.description}
-          onChange={(value) => updateField('description', value)}
+          onChange={value => updateField('description', value)}
         />
         {form.type === 'stdio' ? (
           <>
@@ -219,20 +213,20 @@ export function CustomMcpForm({
               label={t('workbench.plugins_custom_mcp_command', '命令')}
               value={form.command}
               testId="custom-mcp-command-input"
-              onChange={(value) => updateField('command', value)}
+              onChange={value => updateField('command', value)}
             />
             <McpTextInput
               label={t('workbench.plugins_custom_mcp_args', '参数')}
               value={form.args}
               testId="custom-mcp-args-input"
-              onChange={(value) => updateField('args', value)}
+              onChange={value => updateField('args', value)}
             />
             <div className="col-span-2">
               <McpTextarea
                 label={t('workbench.plugins_custom_mcp_env', '环境变量 JSON')}
                 value={form.envJson}
                 testId="custom-mcp-env-input"
-                onChange={(value) => updateField('envJson', value)}
+                onChange={value => updateField('envJson', value)}
               />
             </div>
           </>
@@ -242,14 +236,14 @@ export function CustomMcpForm({
               label={t('workbench.plugins_custom_mcp_url', '服务地址')}
               value={form.url}
               testId="custom-mcp-url-input"
-              onChange={(value) => updateField('url', value)}
+              onChange={value => updateField('url', value)}
             />
             <div className="col-span-2">
               <McpTextarea
                 label={t('workbench.plugins_custom_mcp_headers', '请求头 JSON')}
                 value={form.headersJson}
                 testId="custom-mcp-headers-input"
-                onChange={(value) => updateField('headersJson', value)}
+                onChange={value => updateField('headersJson', value)}
               />
             </div>
           </>
@@ -328,7 +322,7 @@ function McpTextInput({
         value={value}
         data-testid={testId}
         className="mt-2 h-10 w-full rounded-xl border border-border bg-background px-3 text-sm text-text-primary outline-none placeholder:text-text-muted focus:border-primary"
-        onChange={(event) => onChange(event.target.value)}
+        onChange={event => onChange(event.target.value)}
       />
     </label>
   )
@@ -352,7 +346,7 @@ function McpTextarea({
         value={value}
         data-testid={testId}
         className="mt-2 h-20 w-full resize-none rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-primary"
-        onChange={(event) => onChange(event.target.value)}
+        onChange={event => onChange(event.target.value)}
       />
     </label>
   )
@@ -393,23 +387,17 @@ export function McpProviderBlock({
               <Server className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <h3 className="truncate text-base font-semibold">
-                {providerName}
-              </h3>
+              <h3 className="truncate text-base font-semibold">{providerName}</h3>
               <p className="truncate text-xs text-text-muted">{provider.key}</p>
             </div>
           </div>
-          <p className="mt-3 text-sm leading-6 text-text-secondary">
-            {provider.description}
-          </p>
+          <p className="mt-3 text-sm leading-6 text-text-secondary">{provider.description}</p>
         </div>
         <button
           type="button"
           data-testid={`mcp-provider-sync-${provider.key}`}
           className="flex h-9 shrink-0 items-center gap-2 rounded-xl bg-surface px-3 text-sm font-semibold hover:bg-muted disabled:opacity-60"
-          disabled={
-            isLoading || (provider.requires_token && !provider.has_token)
-          }
+          disabled={isLoading || (provider.requires_token && !provider.has_token)}
           onClick={onSync}
         >
           {isLoading ? (
@@ -438,7 +426,7 @@ export function McpProviderBlock({
                   : t('workbench.plugins_mcp_provider_token', '供应商 Token')
               }
               className="h-10 w-full rounded-xl border border-border bg-surface pl-10 pr-3 text-sm outline-none focus:border-primary"
-              onChange={(event) => onTokenChange(event.target.value)}
+              onChange={event => onTokenChange(event.target.value)}
             />
           </label>
           <button
@@ -458,13 +446,11 @@ export function McpProviderBlock({
         </div>
       )}
 
-      {error && (
-        <p className="mt-3 text-sm font-medium text-red-500">{error}</p>
-      )}
+      {error && <p className="mt-3 text-sm font-medium text-red-500">{error}</p>}
 
       {servers.length > 0 && (
         <div className="mt-5 space-y-3">
-          {servers.map((server) => (
+          {servers.map(server => (
             <McpProviderServerRow
               key={server.id}
               server={server}
@@ -477,13 +463,7 @@ export function McpProviderBlock({
   )
 }
 
-function McpProviderServerRow({
-  server,
-  onInstall,
-}: {
-  server: MCPServer
-  onInstall: () => void
-}) {
+function McpProviderServerRow({ server, onInstall }: { server: MCPServer; onInstall: () => void }) {
   const { t } = useTranslation('common')
   const installed = server.installState === 'installed'
 
@@ -497,9 +477,7 @@ function McpProviderServerRow({
           </span>
         </div>
         {server.description && (
-          <p className="mt-1 truncate text-xs text-text-secondary">
-            {server.description}
-          </p>
+          <p className="mt-1 truncate text-xs text-text-secondary">{server.description}</p>
         )}
       </div>
       {installed ? (

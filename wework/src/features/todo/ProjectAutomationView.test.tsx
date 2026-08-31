@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { CloudProject } from '@/api/deliveries'
 import type { ProjectAutomationRule, ProjectAutomationRun } from '@/api/projectAutomations'
@@ -604,9 +605,11 @@ describe('ProjectAutomationView', () => {
     expect(environmentSelect.querySelector('[data-value]')).toHaveAttribute('data-value', '')
 
     const modelSelect = screen.getByTestId('execution-node-model-step-1')
-    fireEvent.change(modelSelect, { target: { value: '' } })
-    expect(modelSelect).toHaveValue('')
-    expect(screen.getByRole('option', { name: '不指定模型' })).not.toBeDisabled()
+    await userEvent.click(modelSelect)
+    const noneOption = screen.getByTestId('execution-node-model-step-1-option-')
+    expect(noneOption).not.toBeDisabled()
+    await userEvent.click(noneOption)
+    expect(modelSelect).toHaveTextContent('不指定模型')
 
     fireEvent.click(screen.getByTestId('automation-save'))
 
@@ -713,9 +716,12 @@ describe('ProjectAutomationView', () => {
     fireEvent.click(screen.getByTestId('execution-node-step-1'))
     fireEvent.click(screen.getByTestId('execution-node-add-deliverable-step-1'))
 
-    const typeSelect = screen.getByRole('combobox', { name: /交付物类型/ })
-    fireEvent.change(typeSelect, { target: { value: 'file' } })
-    expect(typeSelect).toHaveValue('file')
+    const typeSelect = await screen.findByTestId(/^execution-node-deliverable-type-/)
+    await userEvent.click(typeSelect)
+    await userEvent.click(
+      await screen.findByTestId(/^execution-node-deliverable-type-.*-option-file$/)
+    )
+    expect(typeSelect).toHaveTextContent('文件')
 
     fireEvent.click(screen.getByTestId('automation-save'))
 
@@ -936,9 +942,8 @@ describe('ProjectAutomationView', () => {
     })
     fireEvent.click(screen.getByTestId('ai-coordinator-environment'))
     fireEvent.click(await screen.findByTestId('ai-coordinator-environment-option-local-device'))
-    fireEvent.change(screen.getByTestId('ai-coordinator-model'), {
-      target: { value: 'codex-runtime' },
-    })
+    await userEvent.click(screen.getByTestId('ai-coordinator-model'))
+    await userEvent.click(screen.getByTestId('ai-coordinator-model-option-codex-runtime'))
     fireEvent.click(screen.getByTestId('automation-save'))
 
     await waitFor(() => expect(projectAutomationApi.create).toHaveBeenCalledOnce())

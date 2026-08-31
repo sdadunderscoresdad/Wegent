@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Check,
   ChevronDown,
@@ -22,6 +22,8 @@ import {
   WeekdayMenu,
   type MenuOption,
 } from '@/components/common/MenuSelect'
+import { timeMenuOptions } from '@/components/common/menu-options'
+import { toDateTimeLocal } from './automationDraft'
 import { SectionTitle, SettingsGroup, SettingsRow } from '@/components/common/SettingsGroup'
 import type {
   DeviceInfo,
@@ -457,6 +459,27 @@ function FrequencySettings({
   onChange: <K extends keyof AutomationDraft>(key: K, value: AutomationDraft[K]) => void
 }) {
   const { t } = useTranslation('common')
+  const executeAtDateOptions = useMemo(() => {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    return Array.from({ length: 14 }, (_, index) => {
+      const date = new Date(today)
+      date.setDate(today.getDate() + index)
+      const value = toDateTimeLocal(date).slice(0, 10)
+      const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date)
+      const monthDay = new Intl.DateTimeFormat(undefined, {
+        month: 'numeric',
+        day: 'numeric',
+      }).format(date)
+      const label =
+        index === 0
+          ? `${t('workbench.automation_today', '今天')} ${monthDay}`
+          : index === 1
+            ? `${t('workbench.automation_tomorrow', '明天')} ${monthDay}`
+            : `${monthDay} ${weekday}`
+      return { value, label }
+    })
+  }, [t])
   const repeatOptions = [
     { value: 'weekdays', label: t('workbench.weekdays', '工作日') },
     { value: 'daily', label: t('workbench.daily', '每天') },
@@ -501,14 +524,44 @@ function FrequencySettings({
       </SettingsRow>
       {draft.scheduleType === 'one_time' ? (
         <SettingsRow label={t('workbench.automation_execute_at', '执行时间')}>
-          <input
-            data-testid="automation-execute-at-input"
-            type="datetime-local"
-            step="1"
-            value={draft.executeAt}
-            onChange={event => onChange('executeAt', event.target.value)}
-            className="bg-transparent text-right text-sm outline-none"
-          />
+          <div className="flex items-center justify-end gap-2">
+            <MenuSelect
+              testId="automation-execute-at-date"
+              value={draft.executeAt.slice(0, 10)}
+              options={executeAtDateOptions}
+              onChange={next =>
+                onChange('executeAt', `${next}T${draft.executeAt.slice(11) || '09:00'}`)
+              }
+              menuWidth={220}
+              triggerClassName="h-8 rounded-lg border border-border bg-background px-2.5 text-sm text-text-primary"
+              trigger={
+                <span className="flex h-8 items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                    {executeAtDateOptions.find(
+                      option => option.value === draft.executeAt.slice(0, 10)
+                    )?.label ?? draft.executeAt.slice(0, 10)}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                </span>
+              }
+            />
+            <MenuSelect
+              testId="automation-execute-at-time"
+              value={draft.executeAt.slice(11) || '09:00'}
+              options={timeMenuOptions(draft.executeAt.slice(11) || '09:00')}
+              onChange={next => onChange('executeAt', `${draft.executeAt.slice(0, 10)}T${next}`)}
+              menuWidth={140}
+              triggerClassName="h-8 rounded-lg border border-border bg-background px-2.5 text-sm text-text-primary"
+              trigger={
+                <span className="flex h-8 items-center justify-between gap-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                    {draft.executeAt.slice(11) || '09:00'}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                </span>
+              }
+            />
+          </div>
         </SettingsRow>
       ) : null}
       {draft.scheduleType === 'cron' && draft.cronPreset === 'custom' ? (

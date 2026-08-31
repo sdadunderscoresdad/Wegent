@@ -221,26 +221,27 @@ describe('GeneralSettingsPage', () => {
       </WorkbenchContext.Provider>
     )
 
-    const select = await screen.findByTestId('general-max-concurrent-tasks-select')
-    await waitFor(() => expect(select).toBeEnabled())
-    expect(select).toHaveValue('5')
+    const trigger = await screen.findByTestId('general-max-concurrent-tasks-select')
+    await waitFor(() => expect(trigger).toBeEnabled())
+    expect(trigger).toHaveTextContent('5')
 
-    await userEvent.selectOptions(select, '2')
+    await userEvent.click(trigger)
+    await userEvent.click(screen.getByTestId('general-max-concurrent-tasks-select-option-2'))
 
     await waitFor(() => {
       expect(updateRuntimeSettingsMock).toHaveBeenCalledWith({ maxConcurrentTasks: 2 })
     })
     expect(refreshWorkListsMock).toHaveBeenCalledOnce()
-    expect(select).toHaveValue('2')
+    expect(trigger).toHaveTextContent('2')
   })
 
   test('uses ten parallel tasks when runtime settings are unavailable', async () => {
     getRuntimeSettingsMock.mockResolvedValue(undefined)
     render(<GeneralSettingsPage />)
 
-    const select = await screen.findByTestId('general-max-concurrent-tasks-select')
-    await waitFor(() => expect(select).toBeEnabled())
-    expect(select).toHaveValue('10')
+    const trigger = await screen.findByTestId('general-max-concurrent-tasks-select')
+    await waitFor(() => expect(trigger).toBeEnabled())
+    expect(trigger).toHaveTextContent('10')
   })
 
   test('saves and applies the selected language', async () => {
@@ -333,14 +334,12 @@ describe('GeneralSettingsPage', () => {
       })
     })
 
-    const modelSelect = screen.getByTestId('friendly-task-title-model-select')
+    const modelTrigger = screen.getByTestId('friendly-task-title-model-select')
+    expect(modelTrigger).toHaveTextContent('与任务相同')
+    await userEvent.click(modelTrigger)
     expect(
-      (within(modelSelect).getByRole('option', { name: '与任务相同' }) as HTMLOptionElement)
-        .selected
-    ).toBe(true)
-    expect(
-      within(modelSelect).queryByRole('option', { name: '请选择模型' })
-    ).not.toBeInTheDocument()
+      screen.getByTestId('friendly-task-title-model-select-option-task-model')
+    ).toHaveTextContent('与任务相同')
   })
 
   test('shows an unavailable saved friendly title model for replacement', async () => {
@@ -375,14 +374,8 @@ describe('GeneralSettingsPage', () => {
       </WorkbenchContext.Provider>
     )
 
-    const modelSelect = await screen.findByTestId('friendly-task-title-model-select')
-    expect(
-      (
-        within(modelSelect).getByRole('option', {
-          name: 'removed-model（不可用）',
-        }) as HTMLOptionElement
-      ).selected
-    ).toBe(true)
+    const modelTrigger = await screen.findByTestId('friendly-task-title-model-select')
+    expect(modelTrigger).toHaveTextContent('removed-model（不可用）')
   })
 
   test('enables the system drag panel by default and persists disabling it', async () => {

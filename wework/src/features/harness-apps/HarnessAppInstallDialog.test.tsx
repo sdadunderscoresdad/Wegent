@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, test, vi } from 'vitest'
 import type { HarnessAppPreview } from '@/api/local/harnessApps'
 import { HarnessAppInstallDialog } from './HarnessAppInstallDialog'
@@ -48,7 +49,7 @@ const modelOptions = [
 ]
 
 describe('HarnessAppInstallDialog', () => {
-  test('shows package requirements and installs with the selected model', () => {
+  test('shows package requirements and installs with the selected model', async () => {
     const onInstall = vi.fn()
     const onModelChange = vi.fn()
 
@@ -74,9 +75,10 @@ describe('HarnessAppInstallDialog', () => {
     expect(screen.getByTestId('harness-app-choose-another')).toBeInTheDocument()
     expect(screen.getByTestId('harness-app-install-cancel')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByTestId('harness-app-model-select'), {
-      target: { value: modelOptions[0].key },
-    })
+    await userEvent.click(screen.getByTestId('harness-app-model-select'))
+    await userEvent.click(
+      screen.getByTestId(`harness-app-model-select-option-${modelOptions[0].key}`)
+    )
     fireEvent.click(screen.getByTestId('harness-app-install-confirm'))
 
     expect(onModelChange).toHaveBeenCalledWith(modelOptions[0].key)

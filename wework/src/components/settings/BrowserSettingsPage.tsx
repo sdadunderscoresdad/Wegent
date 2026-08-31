@@ -1,5 +1,6 @@
 import { FolderOpen, History, Loader2, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useTranslation } from '@/hooks/useTranslation'
 import { stripAppBasePath } from '@/config/runtime'
 import { canUseEmbeddedBrowser, clearEmbeddedBrowserData } from '@/lib/embedded-browser'
@@ -43,16 +44,18 @@ function LinkTargetSelect({
   const { t } = useTranslation('common')
 
   return (
-    <select
-      data-testid={testId}
+    <MenuSelect
+      testId={testId}
       value={value}
       disabled={disabled}
-      onChange={event => onChange(event.target.value as BrowserLinkTarget)}
-      className="h-8 min-w-[156px] rounded-md border border-border bg-background px-2.5 text-sm text-text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-    >
-      <option value="system">{t('workbench.browser_settings_target_system')}</option>
-      <option value="wework">{t('workbench.browser_settings_target_wework')}</option>
-    </select>
+      options={[
+        { value: 'system', label: t('workbench.browser_settings_target_system') },
+        { value: 'wework', label: t('workbench.browser_settings_target_wework') },
+      ]}
+      onChange={next => onChange(next as BrowserLinkTarget)}
+      menuWidth={180}
+      triggerClassName="h-8 min-w-[156px] rounded-md border border-border bg-background px-2.5 text-sm text-text-primary"
+    />
   )
 }
 

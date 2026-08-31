@@ -1,6 +1,7 @@
 import type { LocalModelCatalogEntry } from '@/features/model-settings/localModelCatalog'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useTranslation } from '@/hooks/useTranslation'
-import { Plus, Trash2, X } from 'lucide-react'
+import { ChevronRight, Plus, Trash2, X } from 'lucide-react'
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
 
@@ -383,27 +384,26 @@ export function CustomModelCapabilitiesForm({
           </div>
         </Field>
         <Field label={t('workbench.local_model_default_reasoning_label', '默认推理等级')}>
-          <select
-            data-testid="local-model-default-reasoning-input"
+          <MenuSelect
+            testId="local-model-default-reasoning-input"
             value={stringValue(entry.default_reasoning_level)}
-            onChange={event =>
-              update({ default_reasoning_level: nullableString(event.target.value) })
-            }
-            className={FIELD_CLASS}
-          >
-            <option value="">{t('workbench.local_model_automatic_option', '自动')}</option>
-            {structuredItems(entry.supported_reasoning_levels).map(item => {
-              const effort = stringValue(item.effort)
-              const knownOption = REASONING_LEVEL_OPTIONS.find(option => option.effort === effort)
-              return effort ? (
-                <option key={effort} value={effort}>
-                  {knownOption
+            placeholder={t('workbench.local_model_automatic_option', '自动')}
+            options={structuredItems(entry.supported_reasoning_levels)
+              .filter(item => stringValue(item.effort))
+              .map(item => {
+                const effort = stringValue(item.effort)
+                const knownOption = REASONING_LEVEL_OPTIONS.find(option => option.effort === effort)
+                return {
+                  value: effort,
+                  label: knownOption
                     ? t(`workbench.local_model_reasoning_${knownOption.labelKey}`)
-                    : effort}
-                </option>
-              ) : null
-            })}
-          </select>
+                    : effort,
+                }
+              })}
+            onChange={next => update({ default_reasoning_level: nullableString(next) })}
+            menuWidth={220}
+            field
+          />
         </Field>
         <Field label={t('workbench.local_model_parallel_tools_label', '并行工具调用')}>
           <BooleanSelect
@@ -449,11 +449,12 @@ export function CustomModelCapabilitiesForm({
         </Field>
       </div>
 
-      <details className="rounded-md border border-border bg-surface px-3 py-2">
+      <details className="group rounded-md border border-border bg-surface px-3 py-2">
         <summary
           data-testid="local-model-base-instructions-toggle"
-          className="cursor-pointer text-sm font-medium text-text-secondary"
+          className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-text-secondary"
         >
+          <ChevronRight className="h-4 w-4 text-text-muted transition-transform group-open:rotate-90" />
           {t('workbench.local_model_base_instructions_label', '基础提示词')}
         </summary>
         <div className="mt-3">
@@ -573,20 +574,17 @@ export function CustomModelCapabilitiesForm({
                             '默认推理摘要'
                           )}
                         >
-                          <select
-                            data-testid="local-model-default-reasoning-summary-select"
+                          <MenuSelect
+                            testId="local-model-default-reasoning-summary-select"
                             value={stringValue(entry.default_reasoning_summary) || 'auto'}
-                            onChange={event =>
-                              update({ default_reasoning_summary: event.target.value })
-                            }
-                            className={FIELD_CLASS}
-                          >
-                            {['auto', 'concise', 'detailed', 'none'].map(value => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
+                            options={['auto', 'concise', 'detailed', 'none'].map(value => ({
+                              value,
+                              label: value,
+                            }))}
+                            onChange={next => update({ default_reasoning_summary: next })}
+                            menuWidth={160}
+                            field
+                          />
                         </Field>
                         <Field label={t('workbench.local_model_field_verbosity', '详细程度参数')}>
                           <BooleanSelect
@@ -598,21 +596,18 @@ export function CustomModelCapabilitiesForm({
                         <Field
                           label={t('workbench.local_model_field_default_verbosity', '默认详细程度')}
                         >
-                          <select
-                            data-testid="local-model-default-verbosity-select"
+                          <MenuSelect
+                            testId="local-model-default-verbosity-select"
                             value={stringValue(entry.default_verbosity)}
-                            onChange={event =>
-                              update({ default_verbosity: nullableString(event.target.value) })
-                            }
-                            className={FIELD_CLASS}
-                          >
-                            <option value="">Auto</option>
-                            {['low', 'medium', 'high'].map(value => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="Auto"
+                            options={['low', 'medium', 'high'].map(value => ({
+                              value,
+                              label: value,
+                            }))}
+                            onChange={next => update({ default_verbosity: nullableString(next) })}
+                            menuWidth={140}
+                            field
+                          />
                         </Field>
                         <Field
                           label={t('workbench.local_model_field_original_image', '原始图片精度')}
@@ -638,33 +633,33 @@ export function CustomModelCapabilitiesForm({
                         <Field
                           label={t('workbench.local_model_field_shell_type', 'Shell 工具类型')}
                         >
-                          <select
-                            data-testid="local-model-shell-type-select"
+                          <MenuSelect
+                            testId="local-model-shell-type-select"
                             value={stringValue(entry.shell_type)}
-                            onChange={event => update({ shell_type: event.target.value })}
-                            className={FIELD_CLASS}
-                          >
-                            {['default', 'local', 'unified_exec', 'disabled', 'shell_command'].map(
-                              value => (
-                                <option key={value} value={value}>
-                                  {value}
-                                </option>
-                              )
-                            )}
-                          </select>
+                            options={[
+                              'default',
+                              'local',
+                              'unified_exec',
+                              'disabled',
+                              'shell_command',
+                            ].map(value => ({ value, label: value }))}
+                            onChange={next => update({ shell_type: next })}
+                            menuWidth={180}
+                            field
+                          />
                         </Field>
                         <Field label={t('workbench.local_model_field_apply_patch', '补丁工具')}>
-                          <select
-                            data-testid="local-model-apply-patch-type-select"
+                          <MenuSelect
+                            testId="local-model-apply-patch-type-select"
                             value={stringValue(entry.apply_patch_tool_type)}
-                            onChange={event =>
-                              update({ apply_patch_tool_type: nullableString(event.target.value) })
+                            placeholder="Disabled"
+                            options={[{ value: 'freeform', label: 'freeform' }]}
+                            onChange={next =>
+                              update({ apply_patch_tool_type: nullableString(next) })
                             }
-                            className={FIELD_CLASS}
-                          >
-                            <option value="">Disabled</option>
-                            <option value="freeform">freeform</option>
-                          </select>
+                            menuWidth={140}
+                            field
+                          />
                         </Field>
                         <Field
                           label={t(
@@ -672,15 +667,17 @@ export function CustomModelCapabilitiesForm({
                             '网页搜索工具类型'
                           )}
                         >
-                          <select
-                            data-testid="local-model-web-search-tool-type-select"
+                          <MenuSelect
+                            testId="local-model-web-search-tool-type-select"
                             value={stringValue(entry.web_search_tool_type) || 'text'}
-                            onChange={event => update({ web_search_tool_type: event.target.value })}
-                            className={FIELD_CLASS}
-                          >
-                            <option value="text">text</option>
-                            <option value="text_and_image">text_and_image</option>
-                          </select>
+                            options={[
+                              { value: 'text', label: 'text' },
+                              { value: 'text_and_image', label: 'text_and_image' },
+                            ]}
+                            onChange={next => update({ web_search_tool_type: next })}
+                            menuWidth={180}
+                            field
+                          />
                         </Field>
                         <Field label={t('workbench.local_model_field_search_tool', '搜索工具')}>
                           <BooleanSelect
@@ -699,38 +696,32 @@ export function CustomModelCapabilitiesForm({
                           />
                         </Field>
                         <Field label={t('workbench.local_model_field_tool_mode', '工具模式')}>
-                          <select
-                            data-testid="local-model-tool-mode-select"
+                          <MenuSelect
+                            testId="local-model-tool-mode-select"
                             value={stringValue(entry.tool_mode)}
-                            onChange={event =>
-                              update({ tool_mode: nullableString(event.target.value) })
-                            }
-                            className={FIELD_CLASS}
-                          >
-                            <option value="">Default</option>
-                            {['direct', 'code_mode', 'code_mode_only'].map(value => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="Default"
+                            options={['direct', 'code_mode', 'code_mode_only'].map(value => ({
+                              value,
+                              label: value,
+                            }))}
+                            onChange={next => update({ tool_mode: nullableString(next) })}
+                            menuWidth={180}
+                            field
+                          />
                         </Field>
                         <Field label={t('workbench.local_model_field_multi_agent', '多智能体版本')}>
-                          <select
-                            data-testid="local-model-multi-agent-version-select"
+                          <MenuSelect
+                            testId="local-model-multi-agent-version-select"
                             value={stringValue(entry.multi_agent_version)}
-                            onChange={event =>
-                              update({ multi_agent_version: nullableString(event.target.value) })
-                            }
-                            className={FIELD_CLASS}
-                          >
-                            <option value="">Default</option>
-                            {['disabled', 'v1', 'v2'].map(value => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
+                            placeholder="Default"
+                            options={['disabled', 'v1', 'v2'].map(value => ({
+                              value,
+                              label: value,
+                            }))}
+                            onChange={next => update({ multi_agent_version: nullableString(next) })}
+                            menuWidth={140}
+                            field
+                          />
                         </Field>
                         <Field
                           label={t('workbench.local_model_field_experimental_tools', '实验性工具')}
@@ -752,18 +743,17 @@ export function CustomModelCapabilitiesForm({
                       <div className="grid gap-4">
                         <div className="grid gap-3 sm:grid-cols-2">
                           <Field label={t('workbench.local_model_field_visibility', '可见性')}>
-                            <select
-                              data-testid="local-model-visibility-select"
+                            <MenuSelect
+                              testId="local-model-visibility-select"
                               value={stringValue(entry.visibility)}
-                              onChange={event => update({ visibility: event.target.value })}
-                              className={FIELD_CLASS}
-                            >
-                              {['list', 'hide', 'none'].map(value => (
-                                <option key={value} value={value}>
-                                  {value}
-                                </option>
-                              ))}
-                            </select>
+                              options={['list', 'hide', 'none'].map(value => ({
+                                value,
+                                label: value,
+                              }))}
+                              onChange={next => update({ visibility: next })}
+                              menuWidth={120}
+                              field
+                            />
                           </Field>
                           <Field label={t('workbench.local_model_field_supported_api', 'API 可用')}>
                             <BooleanSelect
@@ -833,24 +823,26 @@ export function CustomModelCapabilitiesForm({
                           <Field
                             label={t('workbench.local_model_field_truncation_mode', '截断模式')}
                           >
-                            <select
-                              data-testid="local-model-truncation-mode-select"
+                            <MenuSelect
+                              testId="local-model-truncation-mode-select"
                               value={
                                 stringValue(nestedObject(entry.truncation_policy).mode) || 'tokens'
                               }
-                              onChange={event =>
+                              options={[
+                                { value: 'tokens', label: 'tokens' },
+                                { value: 'bytes', label: 'bytes' },
+                              ]}
+                              onChange={next =>
                                 update({
                                   truncation_policy: {
                                     ...nestedObject(entry.truncation_policy),
-                                    mode: event.target.value,
+                                    mode: next,
                                   },
                                 })
                               }
-                              className={FIELD_CLASS}
-                            >
-                              <option value="tokens">tokens</option>
-                              <option value="bytes">bytes</option>
-                            </select>
+                              menuWidth={120}
+                              field
+                            />
                           </Field>
                           <Field
                             label={t('workbench.local_model_field_truncation_limit', '截断保留量')}
@@ -893,26 +885,22 @@ export function CustomModelCapabilitiesForm({
                               '默认服务档位'
                             )}
                           >
-                            <select
-                              data-testid="local-model-default-service-tier-input"
+                            <MenuSelect
+                              testId="local-model-default-service-tier-input"
                               value={stringValue(entry.default_service_tier)}
-                              onChange={event =>
-                                update({ default_service_tier: nullableString(event.target.value) })
+                              placeholder={t('workbench.local_model_automatic_option', '自动')}
+                              options={structuredItems(entry.service_tiers)
+                                .filter(item => stringValue(item.id))
+                                .map(item => ({
+                                  value: stringValue(item.id),
+                                  label: stringValue(item.name) || stringValue(item.id),
+                                }))}
+                              onChange={next =>
+                                update({ default_service_tier: nullableString(next) })
                               }
-                              className={FIELD_CLASS}
-                            >
-                              <option value="">
-                                {t('workbench.local_model_automatic_option', '自动')}
-                              </option>
-                              {structuredItems(entry.service_tiers).map(item => {
-                                const id = stringValue(item.id)
-                                return id ? (
-                                  <option key={id} value={id}>
-                                    {stringValue(item.name) || id}
-                                  </option>
-                                ) : null
-                              })}
-                            </select>
+                              menuWidth={200}
+                              field
+                            />
                           </Field>
                         </div>
 

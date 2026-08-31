@@ -85,8 +85,8 @@ describe('BrowserSettingsPage', () => {
   test('renders configured link targets without implementation notices', async () => {
     render(<BrowserSettingsPage />)
 
-    expect(await screen.findByTestId('browser-external-link-target')).toHaveValue('system')
-    expect(screen.getByTestId('browser-local-link-target')).toHaveValue('wework')
+    expect(await screen.findByTestId('browser-external-link-target')).toHaveTextContent('系统')
+    expect(screen.getByTestId('browser-local-link-target')).toHaveTextContent('Wework')
     expect(screen.queryByText('Wework 内置浏览器可用')).not.toBeInTheDocument()
     expect(screen.queryByText('Google Chrome 个人资料')).not.toBeInTheDocument()
   })
@@ -96,7 +96,8 @@ describe('BrowserSettingsPage', () => {
     const externalTarget = await screen.findByTestId('browser-external-link-target')
     await waitFor(() => expect(externalTarget).toBeEnabled())
 
-    await userEvent.selectOptions(externalTarget, 'wework')
+    await userEvent.click(externalTarget)
+    await userEvent.click(screen.getByTestId('browser-external-link-target-option-wework'))
     await waitFor(() =>
       expect(updateAppPreferencesMock).toHaveBeenCalledWith({
         browserExternalLinkTarget: 'wework',

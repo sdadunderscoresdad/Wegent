@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Bell,
   Check,
+  ChevronDown,
   CircleDot,
   Gauge,
   Loader2,
@@ -15,6 +16,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { KeyboardShortcut } from '@/components/common/KeyboardShortcut'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { useTranslation } from '@/hooks/useTranslation'
 import {
   SettingsGroup,
@@ -554,13 +556,34 @@ export function GeneralSettingsPage() {
                     </div>
                   )
                 })}
-                <select
-                  data-testid="general-fixed-tab-add"
+                <MenuSelect
+                  testId="general-fixed-tab-add"
                   disabled={loading || saving}
                   value=""
-                  onChange={event => {
-                    const value = event.target.value
-                    if (!value) return
+                  placeholder={t(
+                    'workbench.general_settings_add_fixed_workspace_tab',
+                    '+ 添加固定标签页'
+                  )}
+                  options={[
+                    ...BUILT_IN_FIXED_TAB_OPTIONS.filter(
+                      kind => !fixedWorkspaceTabs.some(tab => tab.kind === kind)
+                    ).map(kind => ({
+                      value: kind,
+                      label: t(`workbench.general_settings_default_workspace_tab_${kind}`),
+                    })),
+                    ...(preferences.experimentalFeaturesEnabled ? installedSmartApps : [])
+                      .filter(
+                        app =>
+                          !fixedWorkspaceTabs.some(
+                            tab => tab.kind === 'smart_app' && tab.installationId === app.id
+                          )
+                      )
+                      .map(app => ({
+                        value: `smart_app:${app.id}`,
+                        label: app.manifest.displayName,
+                      })),
+                  ]}
+                  onChange={value => {
                     const builtIn = BUILT_IN_FIXED_TAB_OPTIONS.find(kind => kind === value)
                     const smartApp = installedSmartApps.find(app => `smart_app:${app.id}` === value)
                     const nextTab: FixedWorkspaceTabPreference | null = builtIn
@@ -577,31 +600,20 @@ export function GeneralSettingsPage() {
                       void saveFixedWorkspaceTabs([...fixedWorkspaceTabs, nextTab])
                     }
                   }}
-                  className="h-11 w-full rounded-lg border border-dashed border-border bg-background px-2 text-sm text-text-secondary md:h-9"
-                >
-                  <option value="">
-                    {t('workbench.general_settings_add_fixed_workspace_tab', '+ 添加固定标签页')}
-                  </option>
-                  {BUILT_IN_FIXED_TAB_OPTIONS.filter(
-                    kind => !fixedWorkspaceTabs.some(tab => tab.kind === kind)
-                  ).map(kind => (
-                    <option key={kind} value={kind}>
-                      {t(`workbench.general_settings_default_workspace_tab_${kind}`)}
-                    </option>
-                  ))}
-                  {(preferences.experimentalFeaturesEnabled ? installedSmartApps : [])
-                    .filter(
-                      app =>
-                        !fixedWorkspaceTabs.some(
-                          tab => tab.kind === 'smart_app' && tab.installationId === app.id
-                        )
-                    )
-                    .map(app => (
-                      <option key={app.id} value={`smart_app:${app.id}`}>
-                        {app.manifest.displayName}
-                      </option>
-                    ))}
-                </select>
+                  menuWidth={240}
+                  triggerClassName="h-11 w-full rounded-lg border border-dashed border-border bg-background text-sm text-text-secondary md:h-9"
+                  trigger={
+                    <span className="flex h-11 w-full items-center justify-between gap-2 px-2 text-sm text-text-secondary md:h-9">
+                      <span className="truncate">
+                        {t(
+                          'workbench.general_settings_add_fixed_workspace_tab',
+                          '+ 添加固定标签页'
+                        )}
+                      </span>
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                    </span>
+                  }
+                />
               </div>
             }
           />
@@ -647,24 +659,21 @@ export function GeneralSettingsPage() {
             className={GENERAL_ROW_CLASS_NAME}
             labelClassName={GENERAL_ROW_LABEL_CLASS_NAME}
             control={
-              <select
-                data-testid="general-max-concurrent-tasks-select"
-                value={maxConcurrentTasks}
+              <MenuSelect
+                testId="general-max-concurrent-tasks-select"
+                value={String(maxConcurrentTasks)}
                 disabled={loading || saving}
-                aria-label={t('workbench.general_settings_max_concurrent_tasks')}
-                onChange={event => {
-                  void saveMaxConcurrentTasks(Number(event.target.value))
+                ariaLabel={t('workbench.general_settings_max_concurrent_tasks')}
+                options={Array.from(
+                  { length: MAX_CONCURRENT_TASKS_LIMIT },
+                  (_, index) => index + 1
+                ).map(value => ({ value: String(value), label: String(value) }))}
+                onChange={value => {
+                  void saveMaxConcurrentTasks(Number(value))
                 }}
-                className="h-8 w-24 rounded-md border border-border bg-background px-2 text-sm text-text-primary"
-              >
-                {Array.from({ length: MAX_CONCURRENT_TASKS_LIMIT }, (_, index) => index + 1).map(
-                  value => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  )
-                )}
-              </select>
+                menuWidth={88}
+                triggerClassName="h-8 w-24 rounded-md border border-border bg-background px-2 text-sm text-text-primary"
+              />
             }
           />
           {renderSwitchRow({
@@ -727,44 +736,43 @@ export function GeneralSettingsPage() {
                     )}
                   </p>
                 </div>
-                <select
-                  data-testid="friendly-task-title-model-select"
+                <MenuSelect
+                  testId="friendly-task-title-model-select"
                   value={friendlyTitleModelKey}
                   disabled={loading || saving}
-                  onChange={event => {
-                    void saveFriendlyTaskTitles(
-                      preferences.friendlyTaskTitlesEnabled,
-                      event.target.value
-                    )
-                  }}
-                  className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-text-primary md:w-[220px]"
-                >
-                  <option value={FRIENDLY_TITLE_TASK_MODEL_VALUE}>
-                    {t('workbench.friendly_task_titles_model_task', '与任务相同')}
-                  </option>
-                  {friendlyTitleModel &&
+                  options={[
+                    {
+                      value: FRIENDLY_TITLE_TASK_MODEL_VALUE,
+                      label: t('workbench.friendly_task_titles_model_task', '与任务相同'),
+                    },
+                    ...(friendlyTitleModel &&
                     !friendlyTitleModels.some(
                       model =>
                         model.name === friendlyTitleModel.modelName &&
                         model.type === friendlyTitleModel.modelType
-                    ) && (
-                      <option value={friendlyTitleModelKey}>
-                        {t(
-                          'workbench.friendly_task_titles_model_unavailable',
-                          `${friendlyTitleModel.modelName}（不可用）`,
-                          { modelName: friendlyTitleModel.modelName }
-                        )}
-                      </option>
-                    )}
-                  {friendlyTitleModels.map(model => (
-                    <option
-                      key={`${model.type}:${model.name}`}
-                      value={`${model.type}:${model.name}`}
-                    >
-                      {model.displayName || model.name}
-                    </option>
-                  ))}
-                </select>
+                    )
+                      ? [
+                          {
+                            value: friendlyTitleModelKey,
+                            label: t(
+                              'workbench.friendly_task_titles_model_unavailable',
+                              `${friendlyTitleModel.modelName}（不可用）`,
+                              { modelName: friendlyTitleModel.modelName }
+                            ),
+                          },
+                        ]
+                      : []),
+                    ...friendlyTitleModels.map(model => ({
+                      value: `${model.type}:${model.name}`,
+                      label: model.displayName || model.name,
+                    })),
+                  ]}
+                  onChange={value => {
+                    void saveFriendlyTaskTitles(preferences.friendlyTaskTitlesEnabled, value)
+                  }}
+                  menuWidth={220}
+                  triggerClassName="h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-text-primary md:w-[220px]"
+                />
               </div>
             </div>
           )}

@@ -392,7 +392,6 @@ export function TaskDescriptionEditor({
                 data-testid="cloud-todo-preview-view"
                 className="task-description-attachment-preview-view"
                 aria-label="查看大图"
-                title="查看大图"
                 onClick={openLightbox}
               >
                 <Maximize2 className="h-3.5 w-3.5" />
@@ -421,7 +420,6 @@ export function TaskDescriptionEditor({
                   type="button"
                   data-testid="cloud-todo-preview-zoom-out"
                   aria-label="缩小"
-                  title="缩小"
                   onClick={() => setZoom(current => clampZoom(current - ZOOM_STEP))}
                 >
                   <Minus className="h-4 w-4" />
@@ -431,7 +429,6 @@ export function TaskDescriptionEditor({
                   type="button"
                   data-testid="cloud-todo-preview-zoom-in"
                   aria-label="放大"
-                  title="放大"
                   onClick={() => setZoom(current => clampZoom(current + ZOOM_STEP))}
                 >
                   <Plus className="h-4 w-4" />
@@ -440,7 +437,6 @@ export function TaskDescriptionEditor({
                   type="button"
                   data-testid="cloud-todo-preview-close"
                   aria-label="关闭"
-                  title="关闭"
                   onClick={() => setLightbox(null)}
                 >
                   <X className="h-4 w-4" />

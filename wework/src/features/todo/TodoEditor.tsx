@@ -1918,7 +1918,6 @@ export function TodoEditor(props: TodoEditorProps) {
             <button
               type="button"
               aria-label="复制任务编号"
-              title="复制任务编号"
               onClick={() => void navigator.clipboard?.writeText(item.id)}
               className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-muted hover:text-text-primary"
             >

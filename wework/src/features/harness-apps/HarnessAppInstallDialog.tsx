@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import type { HarnessAppPreview } from '@/api/local/harnessApps'
 import { Button } from '@/components/ui/button'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import type { LocalHarnessModelOption } from '@/features/local-harness/localHarnessModels'
 import { useTranslation } from '@/hooks/useTranslation'
 
@@ -146,22 +147,28 @@ export function HarnessAppInstallDialog({
                     '智能工作台启动后通过 Wework 的模型连接发起请求，不同智能工作台可以分别绑定。'
                   )}
                 </span>
-                <span className="relative mt-2 block">
-                  <select
-                    data-testid="harness-app-model-select"
-                    className="h-10 w-full appearance-none rounded-xl border border-border/50 bg-background px-3 pr-10 text-sm text-text-primary outline-none transition-colors focus:border-focus focus:ring-2 focus:ring-focus/15"
-                    value={modelKey}
-                    onChange={event => onModelChange(event.target.value)}
-                  >
-                    <option value="">{t('workbench.harness_apps_model_choose')}</option>
-                    {modelOptions.map(option => (
-                      <option key={option.key} value={option.key}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-text-muted" />
-                </span>
+                <MenuSelect
+                  testId="harness-app-model-select"
+                  rootClassName="mt-2 block"
+                  value={modelKey}
+                  placeholder={t('workbench.harness_apps_model_choose')}
+                  options={modelOptions.map(option => ({
+                    value: option.key,
+                    label: option.label,
+                  }))}
+                  onChange={onModelChange}
+                  menuWidth={260}
+                  triggerClassName="h-10 w-full rounded-xl border border-border/50 bg-background px-3 text-sm text-text-primary"
+                  trigger={
+                    <span className="flex h-10 w-full items-center justify-between gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                        {modelOptions.find(option => option.key === modelKey)?.label ??
+                          t('workbench.harness_apps_model_choose')}
+                      </span>
+                      <ChevronDown className="h-4 w-4 shrink-0 text-text-muted" />
+                    </span>
+                  }
+                />
               </label>
 
               {modelOptions.length === 0 ? (

@@ -134,12 +134,18 @@ describe('WorktreesSettingsPage', () => {
       />
     )
 
-    const select = await screen.findByTestId('worktrees-device-select')
-    expect(within(select).getAllByRole('option')).toHaveLength(2)
-    expect(within(select).getByRole('option', { name: 'This Mac' })).toBeInTheDocument()
-    expect(within(select).getByRole('option', { name: 'Busy Cloud' })).toBeInTheDocument()
-    expect(within(select).queryByRole('option', { name: 'Old Executor' })).not.toBeInTheDocument()
-    expect(within(select).queryByRole('option', { name: 'Offline Cloud' })).not.toBeInTheDocument()
+    const trigger = await screen.findByTestId('worktrees-device-select')
+    expect(trigger).toHaveTextContent('This Mac')
+    await userEvent.click(trigger)
+    expect(screen.getAllByTestId(/^worktrees-device-select-option-/)).toHaveLength(2)
+    expect(screen.getByTestId('worktrees-device-select-option-local-device')).toBeInTheDocument()
+    expect(screen.getByTestId('worktrees-device-select-option-busy-device')).toBeInTheDocument()
+    expect(
+      screen.queryByTestId('worktrees-device-select-option-old-executor')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId('worktrees-device-select-option-offline-device')
+    ).not.toBeInTheDocument()
   })
 
   test('matches the Codex project grouping and opens a linked conversation', async () => {
@@ -319,7 +325,8 @@ describe('WorktreesSettingsPage', () => {
       />
     )
 
-    await userEvent.selectOptions(screen.getByTestId('worktrees-device-select'), 'cloud-device')
+    await userEvent.click(screen.getByTestId('worktrees-device-select'))
+    await userEvent.click(screen.getByTestId('worktrees-device-select-option-cloud-device'))
     expect(await screen.findByText('/cloud/repo')).toBeInTheDocument()
     expect(screen.getByTestId('worktrees-keep-count-input')).toHaveValue(7)
 

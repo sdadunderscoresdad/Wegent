@@ -1580,7 +1580,6 @@ function MessageHoverActions({
         type="button"
         data-testid="copy-message-button"
         onClick={handleCopy}
-        title="复制"
         className={[
           'flex h-6 w-6 items-center justify-center rounded-md transition-colors',
           copied
@@ -1618,9 +1617,8 @@ function MessageHoverActions({
           }
           onEdit()
         }}
-        title="编辑"
-        className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-muted hover:text-text-secondary"
         aria-label="编辑消息"
+        className="flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-muted hover:text-text-secondary"
       >
         <Pencil data-testid="edit-message-icon" className="h-3.5 w-3.5" />
       </button>

@@ -13,6 +13,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-
 import { CSS } from '@dnd-kit/utilities'
 import { CornerDownRight, GripVertical, MoreHorizontal, Pencil, Trash2, Zap } from 'lucide-react'
 import { ActionMenu } from '@/components/common/ActionMenu'
+import { Tooltip } from '@/components/ui/tooltip'
 import { useTranslation } from '@/hooks/useTranslation'
 import type { GuidanceWorkbenchMessage, QueuedWorkbenchMessage } from '@/types/workbench'
 
@@ -217,18 +218,19 @@ function QueueRow({
       ].join(' ')}
     >
       {canReorder && (
-        <button
-          type="button"
-          ref={setActivatorNodeRef}
-          data-testid={`queue-drag-handle-${id}`}
-          {...attributes}
-          {...listeners}
-          className="flex h-8 w-4 shrink-0 touch-none cursor-grab items-center justify-center rounded text-text-muted hover:bg-muted active:cursor-grabbing"
-          aria-label="拖拽调整消息顺序"
-          title="拖拽调整消息顺序"
-        >
-          <GripVertical className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <Tooltip label="拖拽调整消息顺序" side="bottom">
+          <button
+            type="button"
+            ref={setActivatorNodeRef}
+            data-testid={`queue-drag-handle-${id}`}
+            {...attributes}
+            {...listeners}
+            className="flex h-8 w-4 shrink-0 touch-none cursor-grab items-center justify-center rounded text-text-muted hover:bg-muted active:cursor-grabbing"
+            aria-label="拖拽调整消息顺序"
+          >
+            <GripVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </Tooltip>
       )}
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />

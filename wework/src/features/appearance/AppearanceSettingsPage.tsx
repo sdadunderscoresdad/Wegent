@@ -1,5 +1,6 @@
-import { Image, Monitor, Moon, RotateCcw, Sun, Trash2 } from 'lucide-react'
+import { Check, Image, Monitor, Moon, RotateCcw, Sun, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { PopupMenu } from '@/components/common/MenuSelect'
 import {
   SettingsPage,
   SettingsPageHeader,
@@ -17,6 +18,69 @@ import {
   MIN_UI_FONT_SIZE,
   normalizeFontSize,
 } from './typography'
+
+const ACCENT_COLOR_PRESETS = [
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+  '#ea580c',
+  '#16a34a',
+  '#0d9488',
+  '#dc2626',
+  '#3f3f46',
+]
+
+function AccentColorEditor({
+  value,
+  onCommit,
+}: {
+  value: string
+  onCommit: (value: string) => void
+}) {
+  const { t } = useTranslation('common')
+  const [draft, setDraft] = useState(value.replace('#', ''))
+  const commitHex = (raw: string) => {
+    if (/^[0-9a-fA-F]{6}$/.test(raw)) onCommit(`#${raw.toLowerCase()}`)
+  }
+  return (
+    <div className="w-60 p-2">
+      <div className="grid grid-cols-4 gap-1.5">
+        {ACCENT_COLOR_PRESETS.map(color => (
+          <button
+            key={color}
+            type="button"
+            data-testid={`appearance-accent-swatch-${color.replace('#', '')}`}
+            aria-label={color}
+            onClick={() => {
+              setDraft(color.replace('#', ''))
+              onCommit(color)
+            }}
+            className="flex h-7 w-full items-center justify-center rounded-md border border-black/10 transition hover:scale-105"
+            style={{ background: color }}
+          >
+            {color === value ? (
+              <Check className="h-3.5 w-3.5 text-white" aria-hidden="true" />
+            ) : null}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2">
+        <span className="text-xs text-text-muted">#</span>
+        <input
+          data-testid="appearance-accent-input"
+          value={draft}
+          onChange={event => {
+            setDraft(event.target.value)
+            commitHex(event.target.value)
+          }}
+          className="h-8 min-w-0 flex-1 bg-transparent font-mono text-xs text-text-primary outline-none"
+          spellCheck={false}
+          aria-label={t('workbench.appearance_accent_hex', '十六进制颜色')}
+        />
+      </div>
+    </div>
+  )
+}
 import {
   backgroundImageUrl,
   removeWorkbenchBackground,
@@ -295,19 +359,31 @@ export function AppearanceSettingsPage() {
               label={t('workbench.appearance_accent', '强调色')}
               control={
                 <label className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-2">
-                  <input
-                    data-testid="appearance-accent-input"
-                    type="color"
-                    value={appearance.accentColor}
-                    onChange={event => setAppearance({ accentColor: event.target.value })}
-                    onBlur={() =>
-                      track('setting_changed', {
-                        setting: 'accent_color',
-                        value: appearance.accentColor,
-                      })
+                  <PopupMenu
+                    testId="appearance-accent-picker"
+                    keepOpen
+                    trigger={
+                      <span
+                        data-testid="appearance-accent-swatch"
+                        className="block h-5 w-5 cursor-pointer rounded border border-black/10"
+                        style={{ background: appearance.accentColor }}
+                      />
                     }
-                    className="h-5 w-5 cursor-pointer rounded border-0 bg-transparent p-0"
-                  />
+                  >
+                    {close => (
+                      <AccentColorEditor
+                        value={appearance.accentColor}
+                        onCommit={next => {
+                          setAppearance({ accentColor: next })
+                          close()
+                          track('setting_changed', {
+                            setting: 'accent_color',
+                            value: next,
+                          })
+                        }}
+                      />
+                    )}
+                  </PopupMenu>
                   <span className="w-20 font-mono text-xs text-text-secondary">
                     {appearance.accentColor.toUpperCase()}
                   </span>

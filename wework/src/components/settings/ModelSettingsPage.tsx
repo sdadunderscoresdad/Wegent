@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { createDeviceApi } from '@/api/devices'
 import { createHttpClient } from '@/api/http'
 import {
@@ -1556,25 +1557,21 @@ function LocalModelSettingsSection({
           >
             <label className="grid gap-1.5 text-xs font-medium text-text-secondary">
               {t('workbench.local_model_provider_label')}
-              <select
-                data-testid="local-model-provider-select"
+              <MenuSelect
+                testId="local-model-provider-select"
                 value={form.providerProfileId}
-                onChange={event =>
-                  selectProviderProfile(event.target.value as LocalModelProviderProfileId)
-                }
-                className={LOCAL_MODEL_FIELD_CLASS}
-              >
-                <option value="" disabled>
-                  {t('workbench.local_model_provider_placeholder')}
-                </option>
-                {LOCAL_MODEL_PROVIDER_PROFILES.map(profile => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.id === 'custom'
+                placeholder={t('workbench.local_model_provider_placeholder')}
+                options={LOCAL_MODEL_PROVIDER_PROFILES.map(profile => ({
+                  value: profile.id,
+                  label:
+                    profile.id === 'custom'
                       ? t('workbench.local_model_provider_custom')
-                      : providerDisplayName(profile)}
-                  </option>
-                ))}
-              </select>
+                      : providerDisplayName(profile),
+                }))}
+                onChange={next => selectProviderProfile(next as LocalModelProviderProfileId)}
+                menuWidth={280}
+                field
+              />
             </label>
 
             {form.providerProfileId && form.providerProfileId !== 'custom' ? (
@@ -1675,15 +1672,32 @@ function LocalModelSettingsSection({
                         <div className="flex items-start gap-2">
                           <label className="grid min-w-0 flex-1 gap-1.5 text-xs font-medium text-text-secondary">
                             {t('workbench.local_model_provider_model_label')}
-                            <select
-                              data-testid={
+                            <MenuSelect
+                              testId={
                                 index === 0
                                   ? 'local-model-provider-model-select'
                                   : `local-model-provider-model-select-${index}`
                               }
                               value={modelDraft.modelId}
-                              onChange={event => {
-                                const modelId = event.target.value
+                              placeholder={t('workbench.local_model_provider_model_placeholder')}
+                              options={providerModels.map(model => {
+                                const selectedInAnotherRow = modelDrafts.some(
+                                  (selectedModel, selectedIndex) =>
+                                    selectedIndex !== index && selectedModel.modelId === model.id
+                                )
+                                const configured = configuredProviderModelIds.has(model.id)
+                                return {
+                                  value: model.id,
+                                  disabled: configured || selectedInAnotherRow,
+                                  label: `${model.displayName}${
+                                    configured
+                                      ? ` · ${t('workbench.local_model_provider_model_configured')}`
+                                      : ''
+                                  }`,
+                                }
+                              })}
+                              onChange={next => {
+                                const modelId = next
                                 const modelDefaults = findLocalModelProviderProfile(
                                   form.providerProfileId
                                 ).modelDefaults?.[modelId]
@@ -1709,31 +1723,9 @@ function LocalModelSettingsSection({
                                   displayName,
                                 })
                               }}
-                              className={LOCAL_MODEL_FIELD_CLASS}
-                            >
-                              <option value="">
-                                {t('workbench.local_model_provider_model_placeholder')}
-                              </option>
-                              {providerModels.map(model => {
-                                const selectedInAnotherRow = modelDrafts.some(
-                                  (selectedModel, selectedIndex) =>
-                                    selectedIndex !== index && selectedModel.modelId === model.id
-                                )
-                                const configured = configuredProviderModelIds.has(model.id)
-                                return (
-                                  <option
-                                    key={model.id}
-                                    value={model.id}
-                                    disabled={configured || selectedInAnotherRow}
-                                  >
-                                    {model.displayName}
-                                    {configured
-                                      ? ` · ${t('workbench.local_model_provider_model_configured')}`
-                                      : ''}
-                                  </option>
-                                )
-                              })}
-                            </select>
+                              menuWidth={300}
+                              field
+                            />
                           </label>
                           {index > 0 && (
                             <button
@@ -1776,29 +1768,26 @@ function LocalModelSettingsSection({
                         <div className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                           <label className="grid gap-1.5 text-xs font-medium text-text-secondary">
                             {t('workbench.local_model_vision_proxy_label')}
-                            <select
-                              data-testid={
+                            <MenuSelect
+                              testId={
                                 index === 0
                                   ? 'local-model-vision-proxy-select'
                                   : `local-model-vision-proxy-select-${index}`
                               }
                               value={modelDraft.visionModelConfigId}
-                              onChange={event =>
+                              placeholder={t('workbench.local_model_vision_proxy_disabled')}
+                              options={visionModelOptions.map(model => ({
+                                value: model.id,
+                                label: model.displayName,
+                              }))}
+                              onChange={next =>
                                 updateModelDraft({
-                                  visionModelConfigId: event.target.value,
+                                  visionModelConfigId: next,
                                 })
                               }
-                              className={LOCAL_MODEL_FIELD_CLASS}
-                            >
-                              <option value="">
-                                {t('workbench.local_model_vision_proxy_disabled')}
-                              </option>
-                              {visionModelOptions.map(model => (
-                                <option key={model.id} value={model.id}>
-                                  {model.displayName}
-                                </option>
-                              ))}
-                            </select>
+                              menuWidth={280}
+                              field
+                            />
                           </label>
                           <div className="flex items-center gap-3">
                             <label className="inline-flex h-9 items-center gap-2 text-sm text-text-secondary">
@@ -1918,11 +1907,15 @@ function LocalModelSettingsSection({
                 <div className="grid items-start gap-3 sm:grid-cols-2">
                   <label className="grid content-start gap-1.5 text-xs font-medium text-text-secondary">
                     {t('workbench.local_model_api_format_label', 'API 格式')}
-                    <select
-                      data-testid="local-model-api-format-select"
+                    <MenuSelect
+                      testId="local-model-api-format-select"
                       value={form.apiFormat}
-                      onChange={event => {
-                        const apiFormat = event.target.value as LocalModelApiFormat
+                      options={LOCAL_MODEL_API_FORMAT_OPTIONS.map(option => ({
+                        value: option.value,
+                        label: t(option.labelKey),
+                      }))}
+                      onChange={next => {
+                        const apiFormat = next as LocalModelApiFormat
                         const previousDefault = defaultLocalModelRequestPath(form.apiFormat)
                         const toolProfile = defaultLocalModelToolProfile(apiFormat)
                         updateForm({
@@ -1943,14 +1936,9 @@ function LocalModelSettingsSection({
                             : {}),
                         })
                       }}
-                      className={LOCAL_MODEL_FIELD_CLASS}
-                    >
-                      {LOCAL_MODEL_API_FORMAT_OPTIONS.map(option => (
-                        <option key={option.value} value={option.value}>
-                          {t(option.labelKey)}
-                        </option>
-                      ))}
-                    </select>
+                      menuWidth={280}
+                      field
+                    />
                     <span className="text-xs font-normal leading-5 text-text-muted">
                       {t(
                         'workbench.local_model_api_format_hint',
@@ -1960,11 +1948,33 @@ function LocalModelSettingsSection({
                   </label>
                   <label className="grid content-start gap-1.5 text-xs font-medium text-text-secondary">
                     {t('workbench.local_model_tool_profile_label', '工具模式')}
-                    <select
-                      data-testid="local-model-tool-profile-select"
+                    <MenuSelect
+                      testId="local-model-tool-profile-select"
                       value={form.toolProfile}
-                      onChange={event => {
-                        const toolProfile = event.target.value as LocalModelToolProfile
+                      options={[
+                        {
+                          value: 'custom',
+                          disabled: form.apiFormat !== 'openai-responses',
+                          label: t(
+                            'workbench.local_model_tool_profile_custom',
+                            '原生 Custom tools'
+                          ),
+                        },
+                        {
+                          value: 'function',
+                          disabled: form.apiFormat === 'openai-responses',
+                          label: t(
+                            'workbench.local_model_tool_profile_function',
+                            'Function tools 转换'
+                          ),
+                        },
+                        {
+                          value: 'shell',
+                          label: t('workbench.local_model_tool_profile_shell', '仅 Shell 编辑'),
+                        },
+                      ]}
+                      onChange={next => {
+                        const toolProfile = next as LocalModelToolProfile
                         updateForm({
                           toolProfile,
                           ...(form.catalogEntry
@@ -1979,18 +1989,9 @@ function LocalModelSettingsSection({
                             : {}),
                         })
                       }}
-                      className={LOCAL_MODEL_FIELD_CLASS}
-                    >
-                      <option value="custom" disabled={form.apiFormat !== 'openai-responses'}>
-                        {t('workbench.local_model_tool_profile_custom', '原生 Custom tools')}
-                      </option>
-                      <option value="function" disabled={form.apiFormat === 'openai-responses'}>
-                        {t('workbench.local_model_tool_profile_function', 'Function tools 转换')}
-                      </option>
-                      <option value="shell">
-                        {t('workbench.local_model_tool_profile_shell', '仅 Shell 编辑')}
-                      </option>
-                    </select>
+                      menuWidth={280}
+                      field
+                    />
                     <span className="text-xs font-normal leading-5 text-text-muted">
                       {t(
                         'workbench.local_model_tool_profile_hint',
@@ -2110,22 +2111,21 @@ function LocalModelSettingsSection({
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="grid gap-1.5 text-xs font-medium text-text-secondary">
                       {t('workbench.local_model_web_search_label')}
-                      <select
-                        data-testid="local-model-web-search-select"
+                      <MenuSelect
+                        testId="local-model-web-search-select"
                         value={form.webSearchMode}
-                        onChange={event =>
+                        options={LOCAL_MODEL_WEB_SEARCH_OPTIONS.map(option => ({
+                          value: option.value,
+                          label: t(option.labelKey),
+                        }))}
+                        onChange={next =>
                           updateForm({
-                            webSearchMode: event.target.value as LocalModelWebSearchMode,
+                            webSearchMode: next as LocalModelWebSearchMode,
                           })
                         }
-                        className={LOCAL_MODEL_FIELD_CLASS}
-                      >
-                        {LOCAL_MODEL_WEB_SEARCH_OPTIONS.map(option => (
-                          <option key={option.value} value={option.value}>
-                            {t(option.labelKey)}
-                          </option>
-                        ))}
-                      </select>
+                        menuWidth={280}
+                        field
+                      />
                     </label>
                     <fieldset className="grid gap-1.5 text-xs font-medium text-text-secondary">
                       <legend className="mb-1.5">
@@ -2146,19 +2146,18 @@ function LocalModelSettingsSection({
                     </fieldset>
                     <label className="grid gap-1.5 text-xs font-medium text-text-secondary sm:col-span-2">
                       {t('workbench.local_model_vision_proxy_label')}
-                      <select
-                        data-testid="local-model-vision-proxy-select"
+                      <MenuSelect
+                        testId="local-model-vision-proxy-select"
                         value={form.visionModelConfigId}
-                        onChange={event => updateForm({ visionModelConfigId: event.target.value })}
-                        className={LOCAL_MODEL_FIELD_CLASS}
-                      >
-                        <option value="">{t('workbench.local_model_vision_proxy_disabled')}</option>
-                        {visionModelOptions.map(model => (
-                          <option key={model.id} value={model.id}>
-                            {model.displayName}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder={t('workbench.local_model_vision_proxy_disabled')}
+                        options={visionModelOptions.map(model => ({
+                          value: model.id,
+                          label: model.displayName,
+                        }))}
+                        onChange={next => updateForm({ visionModelConfigId: next })}
+                        menuWidth={280}
+                        field
+                      />
                       <span className="font-normal leading-5 text-text-muted">
                         {t('workbench.local_model_vision_proxy_hint')}
                       </span>
@@ -2619,16 +2618,22 @@ function DisconnectedCloudCodexSyncSection({
           </div>
 
           <div className="flex min-w-[320px] flex-wrap items-center justify-end gap-2">
-            <select
-              data-testid="runtime-config-sync-source-select"
+            <MenuSelect
+              testId="runtime-config-sync-source-select"
               disabled
-              className="h-8 w-[152px] cursor-not-allowed rounded-md border border-border bg-muted px-2 text-sm text-text-muted"
-              aria-label={t('workbench.runtime_config_sync_source', '认证来源')}
-            >
-              <option value="">
-                {t('workbench.runtime_config_current_device_source', '当前设备')}
-              </option>
-            </select>
+              value=""
+              options={[]}
+              ariaLabel={t('workbench.runtime_config_sync_source', '认证来源')}
+              triggerClassName="h-8 w-[152px] cursor-not-allowed rounded-md border border-border bg-muted px-2 text-sm text-text-muted"
+              trigger={
+                <span className="flex h-8 w-[152px] items-center justify-between gap-2 text-sm text-text-muted">
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    {t('workbench.runtime_config_current_device_source', '当前设备')}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                </span>
+              }
+            />
             <button
               type="button"
               data-testid="runtime-config-sync-auth-button"
@@ -3078,23 +3083,35 @@ export function ModelSettingsPage({
                       className="hidden"
                       onChange={event => void handleFileChange(event)}
                     />
-                    <select
-                      data-testid="runtime-config-sync-source-select"
+                    <MenuSelect
+                      testId="runtime-config-sync-source-select"
                       value={selectedAuthSyncSource}
-                      onChange={event => setSelectedAuthSyncSource(event.target.value)}
+                      options={[
+                        {
+                          value: 'local',
+                          label: t('workbench.runtime_config_current_device_source', '当前设备'),
+                        },
+                        ...onlineDevices.map(device => ({
+                          value: `device:${device.device_id}`,
+                          label: device.name,
+                        })),
+                      ]}
+                      onChange={setSelectedAuthSyncSource}
                       disabled={authSyncBusy}
-                      className="h-8 w-[152px] rounded-md border border-border bg-background px-2 text-sm text-text-primary disabled:cursor-not-allowed disabled:bg-muted disabled:text-text-muted"
-                      aria-label={t('workbench.runtime_config_sync_source', '认证来源')}
-                    >
-                      <option value="local">
-                        {t('workbench.runtime_config_current_device_source', '当前设备')}
-                      </option>
-                      {onlineDevices.map(device => (
-                        <option key={device.device_id} value={`device:${device.device_id}`}>
-                          {device.name}
-                        </option>
-                      ))}
-                    </select>
+                      ariaLabel={t('workbench.runtime_config_sync_source', '认证来源')}
+                      menuWidth={200}
+                      triggerClassName="h-8 w-[152px] rounded-md border border-border bg-background px-2 text-sm text-text-primary disabled:cursor-not-allowed disabled:bg-muted disabled:text-text-muted"
+                      trigger={
+                        <span className="flex h-8 w-[152px] items-center justify-between gap-2 text-sm">
+                          <span className="min-w-0 flex-1 truncate text-left">
+                            {selectedAuthSyncSourceIsLocal || !selectedImportDevice
+                              ? t('workbench.runtime_config_current_device_source', '当前设备')
+                              : selectedImportDevice.name}
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+                        </span>
+                      }
+                    />
                     <button
                       type="button"
                       data-testid="runtime-config-sync-auth-button"

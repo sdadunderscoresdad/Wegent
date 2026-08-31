@@ -1,5 +1,6 @@
 import {
   Brain,
+  ChevronDown,
   Folder,
   FolderPlus,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import { createPortal } from 'react-dom'
 import type { LocalCodexPluginApi } from '@/api/local/codexPlugins'
 import { shouldUseNativeProjectDirectoryPicker } from '@/e2e/automation'
@@ -184,6 +186,13 @@ function LocalProjectEditDialogContent({
     () => getControlsForModel(selectedModel).find(control => control.id === 'reasoning') ?? null,
     [selectedModel]
   )
+  const reasoningValue = modelSelection?.options?.reasoning ?? reasoningControl?.defaultValue ?? ''
+  const reasoningOption = reasoningControl?.options.find(option => option.value === reasoningValue)
+  const reasoningLabel = reasoningOption
+    ? reasoningOption.labelKey
+      ? t(reasoningOption.labelKey, reasoningOption.label)
+      : reasoningOption.label
+    : t('workbench.project_default_reasoning_inherit', '全局推理设置')
   const deviceId =
     projectWork.project.stateDeviceId?.trim() ||
     projectWork.deviceWorkspaces[0]?.deviceId.trim() ||
@@ -542,25 +551,42 @@ function LocalProjectEditDialogContent({
                 <label className="mt-2 flex h-11 items-center rounded-xl border border-border bg-background focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/10">
                   <LayoutDashboard className="mx-3 h-4 w-4 shrink-0 text-text-secondary" />
                   <span className="h-full w-px bg-border" />
-                  <select
-                    data-testid="local-project-auto-join-space-select"
-                    aria-label={t('workbench.project_auto_join_space', '自动加入项目空间')}
+                  <MenuSelect
+                    testId="local-project-auto-join-space-select"
+                    ariaLabel={t('workbench.project_auto_join_space', '自动加入项目空间')}
                     value={autoJoinProjectSpaceKey ?? ''}
                     disabled={submitting || projectSpacesLoading}
-                    onChange={event => setAutoJoinProjectSpaceKey(event.target.value || null)}
-                    className="min-w-0 flex-1 bg-transparent px-3 text-base outline-none"
-                  >
-                    <option value="">
-                      {projectSpacesLoading
-                        ? t('workbench.loading', '加载中...')
-                        : t('workbench.project_auto_join_space_none', '不自动加入')}
-                    </option>
-                    {projectSpaceOptions.map(option => (
-                      <option key={option.key} value={option.key}>
-                        {option.project.name}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      {
+                        value: '',
+                        label: projectSpacesLoading
+                          ? t('workbench.loading', '加载中...')
+                          : t('workbench.project_auto_join_space_none', '不自动加入'),
+                      },
+                      ...projectSpaceOptions.map(option => ({
+                        value: option.key,
+                        label: option.project.name,
+                      })),
+                    ]}
+                    onChange={next => setAutoJoinProjectSpaceKey(next || null)}
+                    fullWidth
+                    rootClassName="min-w-0 flex-1"
+                    triggerClassName="h-11 w-full rounded-none bg-transparent"
+                    trigger={
+                      <span className="flex h-11 w-full min-w-0 items-center justify-between gap-2 px-3 text-base">
+                        <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                          {projectSpacesLoading
+                            ? t('workbench.loading', '加载中...')
+                            : autoJoinProjectSpaceKey
+                              ? (projectSpaceOptions.find(
+                                  option => option.key === autoJoinProjectSpaceKey
+                                )?.project.name ?? '')
+                              : t('workbench.project_auto_join_space_none', '不自动加入')}
+                        </span>
+                        <ChevronDown className="h-4 w-4 shrink-0 text-text-secondary" />
+                      </span>
+                    }
+                  />
                 </label>
               </>
             )}
@@ -599,14 +625,17 @@ function LocalProjectEditDialogContent({
               <label className="flex h-11 items-center rounded-xl border border-border bg-background focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/10">
                 <Brain className="mx-3 h-4 w-4 shrink-0 text-text-secondary" />
                 <span className="h-full w-px bg-border" />
-                <select
-                  id="local-project-model"
-                  data-testid="local-project-model-select"
+                <MenuSelect
+                  testId="local-project-model-select"
                   value={selectedModel ? `${selectedModel.type}:${selectedModel.name}` : ''}
                   disabled={submitting}
-                  onChange={event => {
+                  options={selectableModels.map(model => ({
+                    value: `${model.type}:${model.name}`,
+                    label: getModelDisplayLabel(model),
+                  }))}
+                  onChange={next => {
                     const model = selectableModels.find(
-                      candidate => `${candidate.type}:${candidate.name}` === event.target.value
+                      candidate => `${candidate.type}:${candidate.name}` === next
                     )
                     setModelSelection(
                       model
@@ -618,48 +647,56 @@ function LocalProjectEditDialogContent({
                         : null
                     )
                   }}
-                  className="min-w-0 flex-1 bg-transparent px-3 text-base outline-none"
-                >
-                  <option value="">
-                    {t('workbench.project_default_model_inherit', '跟随全局')}
-                  </option>
-                  {selectableModels.map(model => (
-                    <option
-                      key={`${model.type}:${model.name}`}
-                      value={`${model.type}:${model.name}`}
-                    >
-                      {getModelDisplayLabel(model)}
-                    </option>
-                  ))}
-                </select>
+                  fullWidth
+                  rootClassName="min-w-0 flex-1"
+                  triggerClassName="h-11 w-full rounded-none bg-transparent"
+                  trigger={
+                    <span className="flex h-11 w-full min-w-0 items-center justify-between gap-2 px-3 text-base">
+                      <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                        {selectedModel
+                          ? getModelDisplayLabel(selectedModel)
+                          : t('workbench.project_default_model_inherit', '跟随全局')}
+                      </span>
+                      <ChevronDown className="h-4 w-4 shrink-0 text-text-secondary" />
+                    </span>
+                  }
+                />
               </label>
-              <select
-                data-testid="local-project-reasoning-select"
-                aria-label={t('workbench.reasoning_level', '推理强度')}
-                value={modelSelection?.options?.reasoning ?? reasoningControl?.defaultValue ?? ''}
+              <MenuSelect
+                testId="local-project-reasoning-select"
+                ariaLabel={t('workbench.reasoning_level', '推理强度')}
+                value={reasoningValue}
                 disabled={submitting || !selectedModel || !reasoningControl}
-                onChange={event => {
+                options={
+                  reasoningControl?.options.map(option => ({
+                    value: option.value,
+                    label: option.labelKey ? t(option.labelKey, option.label) : option.label,
+                  })) ?? []
+                }
+                onChange={next => {
                   if (!selectedModel || !modelSelection) return
                   const options: ModelOptions = normalizeModelOptions(selectedModel, {
                     ...modelSelection.options,
-                    reasoning: event.target.value,
+                    reasoning: next,
                   })
                   setModelSelection({ ...modelSelection, options })
                 }}
-                className="h-11 min-w-0 rounded-xl border border-border bg-background px-3 text-base outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:opacity-50"
-              >
-                {!reasoningControl ? (
-                  <option value="">
-                    {t('workbench.project_default_reasoning_inherit', '全局推理设置')}
-                  </option>
-                ) : (
-                  reasoningControl.options.map(option => (
-                    <option key={option.value} value={option.value}>
-                      {option.labelKey ? t(option.labelKey, option.label) : option.label}
-                    </option>
-                  ))
-                )}
-              </select>
+                placeholder={
+                  !reasoningControl
+                    ? t('workbench.project_default_reasoning_inherit', '全局推理设置')
+                    : undefined
+                }
+                menuWidth={200}
+                triggerClassName="h-11 min-w-0 rounded-xl border border-border bg-background px-3 text-base disabled:opacity-50"
+                trigger={
+                  <span className="flex h-11 w-full min-w-0 items-center justify-between gap-2 text-base">
+                    <span className="min-w-0 flex-1 truncate text-left text-text-primary">
+                      {reasoningLabel}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-text-secondary" />
+                  </span>
+                }
+              />
             </div>
             <p className="mt-1 text-sm text-text-secondary">
               {modelSelection
