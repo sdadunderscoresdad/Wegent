@@ -571,10 +571,12 @@ describe('ProjectAutomationView', () => {
     fireEvent.click(
       await screen.findByTestId('execution-node-environment-step-1-option-cloud-device')
     )
-    await screen.findByRole('option', { name: 'DeepSeek V4 Flash Vision' })
-    fireEvent.change(screen.getByTestId('execution-node-model-step-1'), {
-      target: { value: 'deepseek-v4-flash-vision-exp' },
-    })
+    const modelSelect = screen.getByTestId('execution-node-model-step-1')
+    await userEvent.click(modelSelect)
+    await userEvent.click(
+      await screen.findByTestId('execution-node-model-step-1-option-deepseek-v4-flash-vision-exp')
+    )
+    expect(modelSelect).toHaveTextContent('DeepSeek V4 Flash Vision')
     fireEvent.click(screen.getByTestId('automation-save'))
 
     await waitFor(() => expect(projectAutomationApi.update).toHaveBeenCalledOnce())
