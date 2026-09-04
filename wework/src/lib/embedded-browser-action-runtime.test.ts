@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 const actionScript = readFileSync(
-  join(process.cwd(), 'src-tauri/src/embedded_browser_action.js'),
+  join(process.cwd(), 'electron/src/host/browser-runtime/embedded_browser_action.js'),
   'utf8'
 )
 
@@ -114,5 +114,38 @@ describe('embedded browser action runtime', () => {
 
     expect(result.ok).toBe(false)
     expect(result.error?.code).toBe('approval_required')
+  })
+
+  test('previews a click target without dispatching the click', () => {
+    document.body.innerHTML = `
+      <button id="run-agent" type="button">Run agent</button>
+    `
+    const button = document.getElementById('run-agent') as HTMLButtonElement
+    mockRect(button, {
+      x: 40,
+      y: 30,
+      width: 120,
+      height: 40,
+    })
+    let clicked = false
+    button.addEventListener('click', () => {
+      clicked = true
+    })
+
+    const result = runAction({
+      action: 'click',
+      selector: '#run-agent',
+      previewOnly: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.previewOnly).toBe(true)
+    expect(result.target.rect).toEqual({
+      x: 40,
+      y: 30,
+      width: 120,
+      height: 40,
+    })
+    expect(clicked).toBe(false)
   })
 })

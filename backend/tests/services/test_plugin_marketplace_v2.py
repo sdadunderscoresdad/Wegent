@@ -8,6 +8,8 @@ import json
 import stat
 import zipfile
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import HTTPException
@@ -15,7 +17,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.endpoints.installed_plugins import (
-    _can_publish,
     _sync_global_capabilities,
     install_marketplace_plugin,
     report_installed_plugins_on_device,
@@ -204,16 +205,7 @@ def _write_official_source(
     return root
 
 
-def _presigned_upload(
-    stored_packages: dict[str, bytes], package: bytes, key: str
-) -> tuple[str, datetime]:
-    stored_packages[key] = package
-    return f"https://store/{key}", datetime.now(timezone.utc)
-
-
-def _mock_package_storage(
-    monkeypatch, stored_packages: dict[str, bytes], package: bytes | None = None
-) -> None:
+def _mock_package_storage(monkeypatch, stored_packages: dict[str, bytes]) -> None:
     def put_immutable(key: str, data: bytes) -> bool:
         if key in stored_packages:
             if stored_packages[key] != data:
@@ -222,13 +214,10 @@ def _mock_package_storage(
         stored_packages[key] = data
         return True
 
-    if package is not None:
-        monkeypatch.setattr(
-            plugin_package_storage,
-            "presign_upload",
-            lambda key: _presigned_upload(stored_packages, package, key),
-        )
-    monkeypatch.setattr(plugin_package_storage, "get", lambda key: stored_packages[key])
+    def get(key: str) -> bytes:
+        return stored_packages[key]
+
+    monkeypatch.setattr(plugin_package_storage, "get", get)
     monkeypatch.setattr(
         plugin_package_storage,
         "put",
@@ -243,6 +232,22 @@ def _mock_package_storage(
         plugin_package_storage,
         "delete",
         lambda key: stored_packages.pop(key, None),
+    )
+
+
+def _upload_submission(
+    service: PluginMarketplaceService,
+    db: Session,
+    *,
+    user_id: int,
+    submission_id: int,
+    package: bytes,
+) -> None:
+    service.upload_submission_package(
+        db,
+        user_id=user_id,
+        submission_id=submission_id,
+        package=package,
     )
 
 
@@ -293,14 +298,50 @@ def _device_install(test_db, user_id: int) -> tuple[Kind, PluginRelease]:
     return installed, release
 
 
-def test_submission_review_publishes_immutable_release_without_install_copy(
+def test_submission_upload_uses_backend_ticket_and_stores_validated_package(
     test_db, test_user, monkeypatch
 ):
     service = PluginMarketplaceService()
     package = _plugin_zip()
+    stored_packages: dict[str, bytes] = {}
+    _mock_package_storage(monkeypatch, stored_packages)
+    initialized = service.init_submission(
+        test_db,
+        user_id=test_user.id,
+        request=PluginSubmissionInitRequest(
+            slug="backend-upload",
+            displayName="Backend Upload",
+            version="1.0.0",
+            filename="backend-upload.zip",
+            sha256=hashlib.sha256(package).hexdigest(),
+            sizeBytes=len(package),
+        ),
+    )
+
+    service.upload_submission_package(
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
+
+    upload_url = urlsplit(initialized.uploadUrl)
+    assert upload_url.path == (
+        f"/api/plugins/submissions/{initialized.submissionId}/artifact"
+    )
+    assert parse_qs(upload_url.query)["token"]
+    assert list(stored_packages.values()) == [package]
+
+
+def test_restricted_submission_publishes_without_review_or_install_copy(
+    test_db, test_user, monkeypatch
+):
+    release_notifier = Mock(return_value=1)
+    service = PluginMarketplaceService(release_notifier=release_notifier)
+    package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
 
     initialized = service.init_submission(
         test_db,
@@ -314,21 +355,22 @@ def test_submission_review_publishes_immutable_release_without_install_copy(
             sizeBytes=len(package),
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     completed = service.complete_submission(
         test_db,
         user_id=test_user.id,
         submission_id=initialized.submissionId,
     )
-    reviewed = service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=initialized.submissionId,
-        approved=True,
-        note="Verified",
-    )
 
-    assert completed.status == "pending"
-    assert reviewed.status == "approved"
+    assert completed.status == "approved"
+    assert completed.purpose == "restricted_share"
+    release_notifier.assert_called_once_with(test_db, initialized.releaseId)
     catalog = service.list_plugins(test_db, user_id=test_user.id)
     assert [item.displayName for item in catalog.items] == ["GitLab Engineering"]
     assert catalog.items[0].sourceProvider == "user"
@@ -344,7 +386,7 @@ def test_submission_review_publishes_immutable_release_without_install_copy(
     assert installed.spec.pluginId == initialized.pluginId
     assert installed.spec.releaseId == initialized.releaseId
     assert installed.spec.updatePolicy == "auto"
-    assert installed.spec.visibility == "workspace"
+    assert installed.spec.visibility == "personal"
     assert installed.spec.packageRef is not None
     assert (
         test_db.query(SkillBinary).filter(SkillBinary.kind_id == installed_id).first()
@@ -352,11 +394,55 @@ def test_submission_review_publishes_immutable_release_without_install_copy(
     )
 
 
-def test_submission_cannot_be_reviewed_twice(test_db, test_user, monkeypatch):
+def test_task_bound_submission_rejects_another_task_token(
+    test_db: Session,
+    test_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = PluginMarketplaceService()
     package = _plugin_zip()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
+    initialized = service.init_submission(
+        test_db,
+        user_id=test_user.id,
+        request=PluginSubmissionInitRequest(
+            slug="task-bound",
+            displayName="Task Bound",
+            version="1.0.0",
+            filename="task-bound.zip",
+            sha256=hashlib.sha256(package).hexdigest(),
+            sizeBytes=len(package),
+        ),
+        task_binding=(101, 202),
+    )
+
+    service.ensure_submission_task_binding(
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        task_id=101,
+        subtask_id=202,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        service.ensure_submission_task_binding(
+            test_db,
+            user_id=test_user.id,
+            submission_id=initialized.submissionId,
+            task_id=101,
+            subtask_id=203,
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_restricted_submission_cannot_enter_legacy_review(
+    test_db, test_user, monkeypatch
+):
+    service = PluginMarketplaceService()
+    package = _plugin_zip()
+    stored_packages: dict[str, bytes] = {}
+    _mock_package_storage(monkeypatch, stored_packages)
     initialized = service.init_submission(
         test_db,
         user_id=test_user.id,
@@ -369,19 +455,18 @@ def test_submission_cannot_be_reviewed_twice(test_db, test_user, monkeypatch):
             sizeBytes=len(package),
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     service.complete_submission(
         test_db,
         user_id=test_user.id,
         submission_id=initialized.submissionId,
     )
-    service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=initialized.submissionId,
-        approved=True,
-        note="Approved",
-    )
-
     with pytest.raises(HTTPException, match="Pending submission not found"):
         service.review_submission(
             test_db,
@@ -398,7 +483,7 @@ def test_cancelled_submission_can_retry_the_same_version(
     service = PluginMarketplaceService()
     package = _plugin_zip()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     request = PluginSubmissionInitRequest(
         slug="retry-cancelled",
         displayName="Retry Cancelled",
@@ -427,7 +512,7 @@ def test_rejected_submission_can_retry_the_same_version(
     service = PluginMarketplaceService()
     package = _plugin_zip()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     request = PluginSubmissionInitRequest(
         slug="retry-rejected",
         displayName="Retry Rejected",
@@ -455,7 +540,7 @@ def test_expired_upload_can_retry_the_same_version(test_db, test_user, monkeypat
     service = PluginMarketplaceService()
     package = _plugin_zip()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     request = PluginSubmissionInitRequest(
         slug="retry-expired",
         displayName="Retry Expired",
@@ -483,7 +568,7 @@ def test_active_upload_cannot_reuse_the_same_version(test_db, test_user, monkeyp
     service = PluginMarketplaceService()
     package = _plugin_zip()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     request = PluginSubmissionInitRequest(
         slug="active-upload",
         displayName="Active Upload",
@@ -500,13 +585,13 @@ def test_active_upload_cannot_reuse_the_same_version(test_db, test_user, monkeyp
     assert exc_info.value.status_code == 409
 
 
-def test_pending_update_keeps_the_published_release_visible(
+def test_uploading_restricted_update_keeps_the_published_release_visible(
     test_db, test_user, monkeypatch
 ):
     service = PluginMarketplaceService()
     stored_packages: dict[str, bytes] = {}
     package_v1 = _plugin_zip("1.0.0", "GitLab Stable")
-    _mock_package_storage(monkeypatch, stored_packages, package_v1)
+    _mock_package_storage(monkeypatch, stored_packages)
     first = service.init_submission(
         test_db,
         user_id=test_user.id,
@@ -519,19 +604,19 @@ def test_pending_update_keeps_the_published_release_visible(
             sizeBytes=len(package_v1),
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=first.submissionId,
+        package=package_v1,
+    )
     service.complete_submission(
         test_db, user_id=test_user.id, submission_id=first.submissionId
     )
-    service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=first.submissionId,
-        approved=True,
-        note="Initial release",
-    )
 
     package_v2 = _plugin_zip("2.0.0", "GitLab Next")
-    _mock_package_storage(monkeypatch, stored_packages, package_v2)
+    _mock_package_storage(monkeypatch, stored_packages)
     second = service.init_submission(
         test_db,
         user_id=test_user.id,
@@ -544,10 +629,13 @@ def test_pending_update_keeps_the_published_release_visible(
             sizeBytes=len(package_v2),
         ),
     )
-    service.complete_submission(
-        test_db, user_id=test_user.id, submission_id=second.submissionId
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=second.submissionId,
+        package=package_v2,
     )
-
     pending_catalog = service.list_plugins(test_db, user_id=test_user.id)
     assert [(item.displayName, item.version) for item in pending_catalog.items] == [
         ("GitLab Stable", "1.0.0")
@@ -556,12 +644,8 @@ def test_pending_update_keeps_the_published_release_visible(
     assert plugin.status == "published"
     assert plugin.latest_release_id == first.releaseId
 
-    service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=second.submissionId,
-        approved=True,
-        note="Promote update",
+    service.complete_submission(
+        test_db, user_id=test_user.id, submission_id=second.submissionId
     )
     published_catalog = service.list_plugins(test_db, user_id=test_user.id)
     assert [(item.displayName, item.version) for item in published_catalog.items] == [
@@ -569,43 +653,54 @@ def test_pending_update_keeps_the_published_release_visible(
     ]
 
 
-def test_user_submission_cannot_claim_an_official_plugin_slug(test_db, test_user):
-    test_db.add(
-        Plugin(
-            slug="official-plugin",
-            name="official-plugin",
-            display_name="Official Plugin",
-            source_type="native",
-            source_provider="wework",
-            owner_user_id=0,
-            keywords_json=[],
-            interface_json={},
-            status="published",
-        )
+def test_personal_submission_identity_is_independent_from_official_slug(
+    test_db, test_user, monkeypatch
+):
+    official = Plugin(
+        catalog_namespace="wework-official",
+        slug="official-plugin",
+        name="official-plugin",
+        display_name="Official Plugin",
+        source_type="native",
+        source_provider="wework",
+        owner_user_id=0,
+        keywords_json=[],
+        interface_json={},
+        status="published",
     )
+    test_db.add(official)
+    test_db.flush()
+    official_id = official.id
     test_db.commit()
 
     package = _plugin_zip()
-    with pytest.raises(HTTPException, match="Plugin slug is already owned"):
-        PluginMarketplaceService().init_submission(
-            test_db,
-            user_id=test_user.id,
-            request=PluginSubmissionInitRequest(
-                slug="official-plugin",
-                displayName="Claimed",
-                version="9.0.0",
-                filename="claimed.zip",
-                sha256=hashlib.sha256(package).hexdigest(),
-                sizeBytes=len(package),
-            ),
-        )
+    _mock_package_storage(monkeypatch, {})
+    initialized = PluginMarketplaceService().init_submission(
+        test_db,
+        user_id=test_user.id,
+        request=PluginSubmissionInitRequest(
+            slug="official-plugin",
+            displayName="Personal Copy",
+            version="9.0.0",
+            filename="personal.zip",
+            sha256=hashlib.sha256(package).hexdigest(),
+            sizeBytes=len(package),
+        ),
+    )
+
+    personal = test_db.get(Plugin, initialized.pluginId)
+    assert personal.id != official_id
+    assert personal.catalog_namespace == f"personal/{test_user.id}"
+    assert personal.slug == official.slug
 
 
 def test_official_package_build_is_deterministic_and_publish_is_idempotent(
     test_db, test_user, monkeypatch, tmp_path
 ):
     source = _write_official_source(tmp_path / "official-review")
-    publisher = OfficialPluginPublisher()
+    release_notifier = Mock(return_value=1)
+    marketplace_service = PluginMarketplaceService(release_notifier=release_notifier)
+    publisher = OfficialPluginPublisher(marketplace_service=marketplace_service)
     first_build = publisher.build_package(source)
     second_build = publisher.build_package(source)
     stored_packages: dict[str, bytes] = {}
@@ -633,6 +728,7 @@ def test_official_package_build_is_deterministic_and_publish_is_idempotent(
     assert first_build.sha256 == second_build.sha256
     assert first.created is True
     assert second.created is False
+    release_notifier.assert_called_once_with(test_db, first.release.id)
     assert second.release.id == first.release.id
     assert test_db.query(PluginRelease).count() == 1
     plugin = test_db.get(Plugin, first.release.plugin_id)
@@ -727,7 +823,7 @@ def test_catalog_marks_manual_update_available(test_db, test_user, monkeypatch):
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     initialized = service.init_submission(
         test_db,
         user_id=test_user.id,
@@ -740,15 +836,15 @@ def test_catalog_marks_manual_update_available(test_db, test_user, monkeypatch):
             sizeBytes=len(package),
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     service.complete_submission(
         test_db, user_id=test_user.id, submission_id=initialized.submissionId
-    )
-    service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=initialized.submissionId,
-        approved=True,
-        note="",
     )
     service.install(test_db, user_id=test_user.id, plugin_id=initialized.pluginId)
 
@@ -1056,7 +1152,7 @@ def test_submission_rejects_unsafe_files(
     package = package_factory()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     initialized = service.init_submission(
         test_db,
         user_id=test_user.id,
@@ -1070,6 +1166,13 @@ def test_submission_rejects_unsafe_files(
         ),
     )
 
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     with pytest.raises(HTTPException, match=error):
         service.complete_submission(
             test_db,
@@ -1119,39 +1222,32 @@ def test_ready_release_package_metadata_is_immutable(test_db):
     test_db.rollback()
 
 
-def test_rejected_submission_never_enters_catalog(test_db, test_user, monkeypatch):
+def test_legacy_marketplace_submission_never_enters_catalog(
+    test_db, test_user, monkeypatch
+):
     service = PluginMarketplaceService()
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
-    initialized = service.init_submission(
-        test_db,
-        user_id=test_user.id,
-        request=PluginSubmissionInitRequest(
-            slug="rejected-plugin",
-            displayName="Rejected Plugin",
-            version="1.0.0",
-            filename="rejected.zip",
-            sha256=digest,
-            sizeBytes=len(package),
-        ),
-    )
-    service.complete_submission(
-        test_db, user_id=test_user.id, submission_id=initialized.submissionId
-    )
+    _mock_package_storage(monkeypatch, stored_packages)
+    with pytest.raises(HTTPException) as exc_info:
+        service.init_submission(
+            test_db,
+            user_id=test_user.id,
+            request=PluginSubmissionInitRequest(
+                slug="rejected-plugin",
+                displayName="Rejected Plugin",
+                version="1.0.0",
+                filename="rejected.zip",
+                sha256=digest,
+                sizeBytes=len(package),
+                purpose="marketplace_publish",
+            ),
+        )
 
-    reviewed = service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=initialized.submissionId,
-        approved=False,
-        note="Needs changes",
-    )
-
-    assert reviewed.status == "rejected"
+    assert exc_info.value.status_code == 422
     assert service.list_plugins(test_db, user_id=test_user.id).items == []
-    assert test_db.get(PluginRelease, initialized.releaseId).status == "rejected"
+    assert test_db.query(PluginRelease).count() == 0
 
 
 def test_plugin_visibility_requires_an_approved_grant(test_db, test_user):
@@ -1297,11 +1393,12 @@ def test_list_plugins_batches_grant_lookups_instead_of_per_plugin_queries(
 def test_restricted_submission_is_owner_only_until_access_is_granted(
     test_db, test_user, monkeypatch
 ):
-    service = PluginMarketplaceService()
+    release_notifier = Mock(return_value=1)
+    service = PluginMarketplaceService(release_notifier=release_notifier)
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     recipient = User(
         user_name="plugin-recipient",
         password_hash=test_user.password_hash,
@@ -1325,6 +1422,13 @@ def test_restricted_submission_is_owner_only_until_access_is_granted(
             purpose="restricted_share",
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     completed = service.complete_submission(
         test_db,
         user_id=test_user.id,
@@ -1338,6 +1442,7 @@ def test_restricted_submission_is_owner_only_until_access_is_granted(
     assert plugin.visibility == "personal"
     assert plugin.status == "published"
     assert release.status == "ready"
+    release_notifier.assert_called_once_with(test_db, initialized.releaseId)
     assert [
         item.id for item in service.list_plugins(test_db, user_id=test_user.id).items
     ] == [plugin.id]
@@ -1377,7 +1482,7 @@ def test_restricted_access_replacement_revokes_original_install_and_copy(
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     recipient = User(
         user_name="copy-recipient",
         password_hash=test_user.password_hash,
@@ -1399,6 +1504,13 @@ def test_restricted_access_replacement_revokes_original_install_and_copy(
             sizeBytes=len(package),
             purpose="restricted_share",
         ),
+    )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
     )
     service.complete_submission(
         test_db, user_id=test_user.id, submission_id=initialized.submissionId
@@ -2362,22 +2474,6 @@ def test_reset_failed_update_preserves_materialized_release(test_db, test_user):
     assert row.actual_release_id == old_release.id
 
 
-def test_publish_capability_supports_admin_flag_and_user_allowlist(
-    test_user, monkeypatch
-):
-    monkeypatch.setattr(settings, "PLUGIN_PUBLISH_ENABLED", False)
-    monkeypatch.setattr(settings, "PLUGIN_PUBLISH_USER_IDS", [])
-    test_user.role = "user"
-    assert _can_publish(test_user) is False
-
-    monkeypatch.setattr(settings, "PLUGIN_PUBLISH_USER_IDS", [test_user.id])
-    assert _can_publish(test_user) is True
-
-    monkeypatch.setattr(settings, "PLUGIN_PUBLISH_USER_IDS", [])
-    test_user.role = "admin"
-    assert _can_publish(test_user) is True
-
-
 @pytest.mark.asyncio
 async def test_plugin_mutation_only_fails_for_the_required_device(
     test_db, test_user, monkeypatch
@@ -2675,7 +2771,8 @@ def test_upstream_sync_is_incremental_and_records_failure(test_db, monkeypatch):
         "app.services.plugin_marketplace_service.validate_upstream_url",
         lambda _url: None,
     )
-    service = PluginMarketplaceService()
+    release_notifier = Mock(return_value=1)
+    service = PluginMarketplaceService(release_notifier=release_notifier)
     package = _plugin_zip("2.0.0")
     stored_packages: dict[str, bytes] = {}
     upstream = service.create_upstream(
@@ -2706,6 +2803,7 @@ def test_upstream_sync_is_incremental_and_records_failure(test_db, monkeypatch):
 
     assert first.lastSeenVersion == "2.0.0"
     assert second.lastError is None
+    release_notifier.assert_called_once()
     assert (
         test_db.query(PluginRelease)
         .filter(PluginRelease.plugin_id == upstream.pluginId)
@@ -2720,6 +2818,7 @@ def test_upstream_sync_is_incremental_and_records_failure(test_db, monkeypatch):
     )
     downgraded = service.sync_upstream(test_db, upstream_id=upstream.id)
     assert downgraded.lastSeenVersion == "1.5.0"
+    release_notifier.assert_called_once()
     assert test_db.get(Plugin, upstream.pluginId).latest_release_id == latest_release_id
     assert (
         test_db.query(PluginRelease)
@@ -2967,10 +3066,15 @@ def test_configure_controlled_upstream_converts_existing_official_plugin(
     )
 
     test_db.refresh(plugin)
-    assert plugin.source_type == "mirror"
-    assert plugin.source_provider == "wework"
-    assert plugin.display_name == "GitHub"
-    assert plugin.visibility == "public"
+    assert plugin.source_type == "native"
+    assert plugin.visibility == "workspace"
+    official = test_db.get(Plugin, first.pluginId)
+    assert official.id != plugin.id
+    assert official.catalog_namespace == "wework-official"
+    assert official.source_type == "mirror"
+    assert official.source_provider == "wework"
+    assert official.display_name == "GitHub"
+    assert official.visibility == "public"
     assert first.id == second.id
     assert first.syncEnabled is True
     assert first.syncPolicy == "review_required"
@@ -2982,6 +3086,7 @@ def test_configure_controlled_upstream_reclassifies_legacy_codex_mirror(
     test_db, monkeypatch
 ):
     plugin = Plugin(
+        catalog_namespace="wework-official",
         slug="github",
         name="github",
         display_name="GitHub",
@@ -3346,7 +3451,7 @@ def test_visibility_personal_auto_approves_with_targets(
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
     recipient = User(
         user_name="visibility-recipient",
         password_hash=test_user.password_hash,
@@ -3378,6 +3483,13 @@ def test_visibility_personal_auto_approves_with_targets(
             allowCopy=True,
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=initialized.submissionId,
+        package=package,
+    )
     completed = service.complete_submission(
         test_db,
         user_id=test_user.id,
@@ -3392,60 +3504,40 @@ def test_visibility_personal_auto_approves_with_targets(
     assert [item.id for item in shared] == [plugin.id]
 
 
-def test_visibility_public_waits_for_review_and_publishes(
-    test_db, test_user, monkeypatch
-):
+def test_legacy_submission_cannot_publish_publicly(test_db, test_user, monkeypatch):
     service = PluginMarketplaceService()
     package = _plugin_zip()
     digest = hashlib.sha256(package).hexdigest()
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package)
+    _mock_package_storage(monkeypatch, stored_packages)
 
-    initialized = service.init_submission(
-        test_db,
-        user_id=test_user.id,
-        request=PluginSubmissionInitRequest(
-            slug="gitlab-engineering",
-            displayName="GitLab Engineering",
-            version="1.0.0",
-            filename="gitlab.zip",
-            sha256=digest,
-            sizeBytes=len(package),
-            visibility="public",
-        ),
-    )
-    completed = service.complete_submission(
-        test_db,
-        user_id=test_user.id,
-        submission_id=initialized.submissionId,
-    )
-    plugin = test_db.get(Plugin, initialized.pluginId)
-    assert completed.status == "pending"
-    assert completed.purpose == "marketplace_publish"
-    assert plugin.status == "pending_review"
-    assert plugin.visibility == "public"
+    with pytest.raises(HTTPException) as exc:
+        service.init_submission(
+            test_db,
+            user_id=test_user.id,
+            request=PluginSubmissionInitRequest(
+                slug="gitlab-engineering",
+                displayName="GitLab Engineering",
+                version="1.0.0",
+                filename="gitlab.zip",
+                sha256=digest,
+                sizeBytes=len(package),
+                visibility="public",
+            ),
+        )
 
-    reviewed = service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=initialized.submissionId,
-        approved=True,
-        note="ok",
-    )
-    test_db.refresh(plugin)
-    assert reviewed.status == "approved"
-    assert plugin.status == "published"
-    assert plugin.visibility == "public"
+    assert exc.value.status_code == 422
+    assert test_db.query(Plugin).count() == 0
 
 
-def test_personal_to_workspace_upgrade_applies_on_review(
+def test_legacy_submission_cannot_upgrade_personal_plugin_to_workspace(
     test_db, test_user, monkeypatch
 ):
     service = PluginMarketplaceService()
     package_v1 = _plugin_zip("1.0.0")
     package_v2 = _plugin_zip("1.1.0")
     stored_packages: dict[str, bytes] = {}
-    _mock_package_storage(monkeypatch, stored_packages, package_v1)
+    _mock_package_storage(monkeypatch, stored_packages)
 
     first = service.init_submission(
         test_db,
@@ -3460,6 +3552,13 @@ def test_personal_to_workspace_upgrade_applies_on_review(
             visibility="personal",
         ),
     )
+    _upload_submission(
+        service,
+        test_db,
+        user_id=test_user.id,
+        submission_id=first.submissionId,
+        package=package_v1,
+    )
     service.complete_submission(
         test_db, user_id=test_user.id, submission_id=first.submissionId
     )
@@ -3467,38 +3566,25 @@ def test_personal_to_workspace_upgrade_applies_on_review(
     assert plugin.visibility == "personal"
     assert plugin.status == "published"
 
-    _mock_package_storage(monkeypatch, stored_packages, package_v2)
-    second = service.init_submission(
-        test_db,
-        user_id=test_user.id,
-        request=PluginSubmissionInitRequest(
-            slug="gitlab-engineering",
-            displayName="GitLab Engineering",
-            version="1.1.0",
-            filename="gitlab-v2.zip",
-            sha256=hashlib.sha256(package_v2).hexdigest(),
-            sizeBytes=len(package_v2),
-            visibility="workspace",
-        ),
-    )
-    service.complete_submission(
-        test_db, user_id=test_user.id, submission_id=second.submissionId
-    )
-    test_db.refresh(plugin)
+    _mock_package_storage(monkeypatch, stored_packages)
+    with pytest.raises(HTTPException) as exc:
+        service.init_submission(
+            test_db,
+            user_id=test_user.id,
+            request=PluginSubmissionInitRequest(
+                slug="gitlab-engineering",
+                displayName="GitLab Engineering",
+                version="1.1.0",
+                filename="gitlab-v2.zip",
+                sha256=hashlib.sha256(package_v2).hexdigest(),
+                sizeBytes=len(package_v2),
+                visibility="workspace",
+            ),
+        )
+
+    assert exc.value.status_code == 422
     assert plugin.visibility == "personal"
     assert plugin.status == "published"
-
-    service.review_submission(
-        test_db,
-        reviewer_user_id=test_user.id,
-        submission_id=second.submissionId,
-        approved=True,
-        note="promote",
-    )
-    test_db.refresh(plugin)
-    assert plugin.visibility == "workspace"
-    assert plugin.status == "published"
-    assert plugin.latest_release_id == second.releaseId
 
 
 def test_reconcile_stale_installed_catalog_refs_after_reimport(test_db, test_user):

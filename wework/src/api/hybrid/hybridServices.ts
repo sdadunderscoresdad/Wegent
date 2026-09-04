@@ -1,6 +1,4 @@
 import { createBackendWorkbenchServices } from '@/api/backend/backendServices'
-import { invoke } from '@tauri-apps/api/core'
-import { info as writeInfoLog } from '@tauri-apps/plugin-log'
 import {
   createCloudRuntimeIpcClient,
   RUNTIME_TRANSCRIPT_ACK_TIMEOUT_MS,
@@ -24,14 +22,16 @@ import {
 import { requestCloudModelCatalogSync } from '@/features/model-settings/cloudModelCatalogSyncRequest'
 import { isAppDeviceRegistration, isCurrentAppDeviceId } from '@/lib/app-device-registration'
 import { isCloudDevice, isRemoteDevice, isUsableDevice } from '@/lib/device-capabilities'
+import { readElectronLocalFile } from '@/lib/electron-local-file'
 import { logRuntimeTaskCreateStage } from '@/lib/runtime-create-diagnostics'
+import { getWorkbenchDeviceIds } from '@/lib/workbench-device'
+import type { LocalExecutorEvent } from '@/desktop/localExecutor'
 import {
   EMPTY_RUNTIME_WORK,
   mergeDeviceLists,
   mergeRuntimeWorkLists as mergeRuntimeWorkPair,
 } from '@/features/workbench/workbenchCloudStatus'
 import { supportsCloudExecution } from '@/features/cloud-connection/modelExecution'
-import { resolveCloudVisionSidecarReference } from '@/features/workbench/runtimeModelSelection'
 import type {
   Attachment,
   ArchivedConversationItem,
@@ -67,14 +67,10 @@ import type {
 } from '@/types/api'
 import type { Automation } from '@/types/automation'
 import type { DeviceInfo } from '@/types/devices'
+import { mergeProjectPluginCatalogs } from '@/features/plugins/projectPluginCatalog'
 
 const LOCAL_DEVICE_ID = 'local-device'
 const CLOUD_BACKGROUND_CACHE_TTL_MS = 30_000
-
-interface LocalFilePayload {
-  name: string
-  bytes: number[]
-}
 
 async function uploadLocalAttachmentToCloud(
   attachment: Attachment,
@@ -85,10 +81,10 @@ async function uploadLocalAttachmentToCloud(
     throw new Error(`Attachment ${attachment.filename} has no local file path`)
   }
 
-  const files = await invoke<LocalFilePayload[]>('read_dropped_files', {
-    paths: [localPath],
-  })
-  const payload = files[0]
+  const payload = {
+    name: attachment.filename,
+    bytes: Array.from(await readElectronLocalFile(localPath)),
+  }
   if (!payload) {
     throw new Error(`Attachment file is unavailable: ${attachment.filename}`)
   }
@@ -105,7 +101,7 @@ export interface HybridWorkbenchServicesOptions {
   socketBaseUrl: string
   socketPath: string
   token: string
-  user?: User
+  user: User
 }
 
 function runtimeAddressDebug(address: RuntimeTaskAddress): Record<string, unknown> {
@@ -144,22 +140,8 @@ function annotateLocalModels(models: UnifiedModel[]): UnifiedModel[] {
   return models
 }
 
-function annotateCloudModels(models: UnifiedModel[]): UnifiedModel[] {
-  const compatibleModels = models.filter(supportsCloudExecution)
-  return compatibleModels.map(model => {
-    const config = recordValue(model.config)
-    if (!Object.hasOwn(config, 'visionSidecarModel')) return model
-    const visionSidecarModel = resolveCloudVisionSidecarReference(
-      config.visionSidecarModel,
-      compatibleModels
-    )
-    if (visionSidecarModel) {
-      return { ...model, config: { ...config, visionSidecarModel } }
-    }
-    const sanitizedConfig = { ...config }
-    delete sanitizedConfig.visionSidecarModel
-    return { ...model, config: sanitizedConfig }
-  })
+function cloudExecutableModels(models: UnifiedModel[]): UnifiedModel[] {
+  return models.filter(supportsCloudExecution)
 }
 
 function normalizedModelId(model: UnifiedModel): string {
@@ -332,6 +314,27 @@ function cloudDeviceIdFromData(data?: Record<string, unknown> | null): string | 
   return stringField(address, 'deviceId') ?? stringField(address, 'device_id')
 }
 
+function projectCloudRuntimeEventDeviceId(
+  event: LocalExecutorEvent,
+  devices: DeviceInfo[]
+): LocalExecutorEvent {
+  const eventDeviceId = cloudDeviceIdFromData(event.payload)
+  if (!eventDeviceId) return event
+
+  const device = devices.find(candidate => getWorkbenchDeviceIds(candidate).includes(eventDeviceId))
+  const logicalDeviceId = device?.device_id.trim()
+  if (!logicalDeviceId || logicalDeviceId === eventDeviceId) return event
+
+  return {
+    ...event,
+    payload: {
+      ...event.payload,
+      deviceId: logicalDeviceId,
+      device_id: logicalDeviceId,
+    },
+  }
+}
+
 export function createHybridWorkbenchServices(
   options: HybridWorkbenchServicesOptions
 ): WorkbenchServices {
@@ -401,10 +404,7 @@ export function createHybridWorkbenchServices(
           models: response.data.map(modelIdentityForLog),
         }
         console.info('[Wework] Cloud model catalog loaded', modelCatalogLog)
-        void writeInfoLog(
-          `[Wework] Cloud model catalog loaded ${JSON.stringify(modelCatalogLog)}`
-        ).catch(() => undefined)
-        rememberedCloudModels = annotateCloudModels(response.data)
+        rememberedCloudModels = cloudExecutableModels(response.data)
         cloudModelsLoaded = true
         notifyWorkbenchModelsChanged()
       })
@@ -482,6 +482,7 @@ export function createHybridWorkbenchServices(
       {
         resolveDeviceId: async data => cloudDeviceIdFromData(data) ?? logicalDeviceId,
         cloudModelGateway,
+        user: options.user,
         transportLabel: 'Cloud',
         syncConfiguredModelCatalog: true,
         requestModelCatalogSync: requestCloudModelCatalogSync,
@@ -795,6 +796,24 @@ export function createHybridWorkbenchServices(
         throw new Error('Remote device startup command is unavailable')
       }
       return cloudServices.deviceApi.createDockerRemoteDeviceCommand(data)
+    },
+  }
+  const projectSpaceDeviceApi: WorkbenchServices['deviceApi'] = {
+    ...hybridDeviceApi,
+    async listDevices(requestOptions) {
+      const localDevices = await listLocalDevices(requestOptions?.signal)
+      let cloudDevices: DeviceInfo[] = []
+      try {
+        cloudDevices = await listCloudDevices(requestOptions?.signal)
+      } catch (error) {
+        console.warn(
+          '[Wework] Failed to load cloud devices for project execution configuration',
+          error
+        )
+      }
+      return mergeDeviceLists(localDevices, cloudDevices) as Awaited<
+        ReturnType<WorkbenchServices['deviceApi']['listDevices']>
+      >
     },
   }
 
@@ -1256,7 +1275,10 @@ export function createHybridWorkbenchServices(
       const deviceId = cloudDeviceIdFromData(params)
       return cloudRuntimeIpc.request(method, params, deviceId)
     },
-    subscribe: cloudRuntimeIpc.subscribe,
+    subscribe: handler =>
+      cloudRuntimeIpc.subscribe(event => {
+        handler(projectCloudRuntimeEventDeviceId(event, rememberedCloudDevices))
+      }),
   })
   const hybridChatStream: WorkbenchServices['chatStream'] = {
     subscribe(handlers) {
@@ -1296,9 +1318,18 @@ export function createHybridWorkbenchServices(
     },
   }
   const cloudProjectSpaceApi = createCloudProjectSpaceApi(cloudServices.deliveryApi!)
+  const projectPluginApi: NonNullable<WorkbenchServices['pluginApi']> = {
+    async listPlugins(deviceId: string) {
+      const cloudPlugins = await cloudServices.pluginApi?.listPlugins(deviceId).catch(() => [])
+      if (!isLocalDeviceId(deviceId)) return cloudPlugins ?? []
+      const localPlugins = await localServices.pluginApi?.listPlugins(deviceId).catch(() => [])
+      return mergeProjectPluginCatalogs(localPlugins ?? [], cloudPlugins ?? [])
+    },
+  }
 
   return {
     ...cloudServices,
+    branchNameApi: localServices.branchNameApi,
     aitableApi: localServices.aitableApi,
     dwsApi: localServices.dwsApi,
     localProjectChatAgentApi: localServices.localProjectChatAgentApi,
@@ -1311,15 +1342,24 @@ export function createHybridWorkbenchServices(
       defaultLocation: 'cloud',
     },
     projectSpaceDetailServices: {
-      local: localServices.projectSpaceDetailServices?.local,
-      cloud: cloudServices.projectSpaceDetailServices?.cloud,
+      local: localServices.projectSpaceDetailServices?.local
+        ? {
+            ...localServices.projectSpaceDetailServices.local,
+            pluginApi: projectPluginApi,
+          }
+        : undefined,
+      cloud: cloudServices.projectSpaceDetailServices?.cloud
+        ? {
+            ...cloudServices.projectSpaceDetailServices.cloud,
+            deviceApi: projectSpaceDeviceApi,
+            pluginApi: projectPluginApi,
+          }
+        : undefined,
     },
+    pluginApi: projectPluginApi,
     teamApi: {
-      // Wegent Teams are backend CRDs. The local service only exposes the
-      // synthetic id=0 workbench Team, which is valid as the local default but
-      // can never be persisted as an automation executor.
+      // Wegent Teams are exposed only for explicitly selected Wegent execution.
       listTeams: cloudServices.teamApi.listTeams,
-      getDefaultWorkbenchTeam: localServices.teamApi.getDefaultWorkbenchTeam,
     },
     skillApi: localServices.skillApi,
     projectApi: {
@@ -1348,7 +1388,6 @@ export function createHybridWorkbenchServices(
     userApi: cloudServices.userApi,
     cloudBackgroundApi: {
       listTeams: cloudServices.teamApi.listTeams,
-      getDefaultWorkbenchTeam: cloudServices.teamApi.getDefaultWorkbenchTeam,
       listDevices: requestOptions => listCloudDevices(requestOptions?.signal),
       listRuntimeWork: requestOptions => listCloudRuntimeWork(requestOptions?.signal),
     },
@@ -1362,6 +1401,13 @@ export function createHybridWorkbenchServices(
       resolveDevice: resolveExecutorDevice,
     }),
     chatStream: hybridChatStream,
+    async recoverRuntimeConnections() {
+      await Promise.all([
+        localServices.recoverRuntimeConnections?.(),
+        cloudServices.recoverRuntimeConnections?.(),
+        cloudRuntimeIpc.reconnect(),
+      ])
+    },
   }
 }
 

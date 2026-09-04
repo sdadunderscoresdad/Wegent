@@ -4,7 +4,9 @@
 
 """Typed runtime task RPC over the existing local executor Socket.IO channel."""
 
+import asyncio
 import base64
+import copy
 import gzip
 import json
 import logging
@@ -15,10 +17,22 @@ from socketio.exceptions import BadNamespaceError, DisconnectedError
 from socketio.exceptions import TimeoutError as SocketTimeoutError
 
 from app.core.socketio import get_sio
+from app.db.session import get_db_session
+from app.schemas.device import DeviceType
+from app.services.device.remote_control_policy import (
+    REMOTE_CONTROL_DISABLED_MESSAGE,
+    remote_control_is_enabled,
+)
 from app.services.device.runtime_route import (
     RuntimeRouteError,
     runtime_route_resolver,
 )
+from app.services.device.runtime_task_create_protocol import (
+    RuntimeTaskCreateProtocolError,
+    negotiate_runtime_task_create_payload,
+)
+from app.services.user_runtime_config import user_runtime_config_service
+from shared.telemetry.context import get_request_id
 from shared.telemetry.decorators import trace_async
 
 logger = logging.getLogger(__name__)
@@ -38,6 +52,108 @@ RETRYABLE_RUNTIME_RPC_CODES = frozenset(
         "runtime_rpc_timeout",
     }
 )
+REMOTE_RUNTIME_DEVICE_TYPES = frozenset({DeviceType.CLOUD, DeviceType.REMOTE})
+RUNTIME_MODEL_CONFIG_METHODS = frozenset(
+    {
+        "runtime.text.generate",
+        "runtime.tasks.create",
+        "runtime.tasks.send",
+        "runtime.tasks.rollback",
+        "runtime.tasks.interrupt_and_send",
+        "runtime.tasks.supervisor.set",
+        "runtime.automations.create",
+        "runtime.automations.update",
+    }
+)
+RUNTIME_MODEL_CONFIG_KEYS = frozenset({"model_config", "modelConfig"})
+
+
+def _load_remote_runtime_proxy_url(user_id: int) -> str:
+    with get_db_session() as db:
+        return user_runtime_config_service.get_proxy_url_for_execution(
+            db,
+            user_id=user_id,
+        )
+
+
+def _runtime_model_configs(value: Any) -> list[dict[str, Any]]:
+    configs: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for item in value:
+            configs.extend(_runtime_model_configs(item))
+        return configs
+    if not isinstance(value, dict):
+        return configs
+
+    for key, item in value.items():
+        if key in RUNTIME_MODEL_CONFIG_KEYS and isinstance(item, dict):
+            configs.append(item)
+            continue
+        configs.extend(_runtime_model_configs(item))
+    return configs
+
+
+def _set_runtime_proxy(model_config: dict[str, Any], proxy_url: str) -> None:
+    model_config.pop("proxy_url", None)
+    model_config.pop("proxyUrl", None)
+    if proxy_url:
+        model_config["proxy"] = {"url": proxy_url}
+    else:
+        model_config.pop("proxy", None)
+
+    runtime_config = model_config.pop("runtimeConfig", None)
+    if not isinstance(runtime_config, dict):
+        runtime_config = model_config.get("runtime_config")
+    runtime_config = dict(runtime_config) if isinstance(runtime_config, dict) else {}
+    codex_config = runtime_config.get("codex")
+    codex_config = dict(codex_config) if isinstance(codex_config, dict) else {}
+    codex_config["use_proxy"] = bool(proxy_url)
+    codex_config["proxy_configured"] = bool(proxy_url)
+    runtime_config["codex"] = codex_config
+    model_config["runtime_config"] = runtime_config
+
+
+def _uses_backend_cloud_model_gateway(model_config: dict[str, Any]) -> bool:
+    return model_config.get("wework_model_kind") == "cloud"
+
+
+async def _enforce_remote_runtime_proxy(
+    *,
+    user_id: int,
+    device_type: DeviceType,
+    method: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if (
+        device_type not in REMOTE_RUNTIME_DEVICE_TYPES
+        or method not in RUNTIME_MODEL_CONFIG_METHODS
+    ):
+        return payload
+
+    next_payload = copy.deepcopy(payload)
+    model_configs = _runtime_model_configs(next_payload)
+    if not model_configs:
+        return payload
+
+    proxy_url = await asyncio.to_thread(_load_remote_runtime_proxy_url, user_id)
+    cloud_model_config_count = 0
+    for model_config in model_configs:
+        if _uses_backend_cloud_model_gateway(model_config):
+            cloud_model_config_count += 1
+            _set_runtime_proxy(model_config, "")
+        else:
+            _set_runtime_proxy(model_config, proxy_url)
+    logger.info(
+        "[RuntimeRpcService] Applied account proxy policy: "
+        "user_id=%s method=%s configured=%s model_config_count=%s "
+        "cloud_model_config_count=%s",
+        user_id,
+        method,
+        bool(proxy_url),
+        len(model_configs),
+        cloud_model_config_count,
+    )
+    return next_payload
 
 
 class RuntimeRpcError(RuntimeError):
@@ -80,13 +196,32 @@ class RuntimeRpcService:
     ) -> dict[str, Any]:
         """Call `runtime:rpc` on an online local executor and return its result."""
 
+        request_id = get_request_id()
+        started_at = time.perf_counter()
         normalized_timeout = self._normalize_timeout(timeout_seconds)
+        logger.info(
+            "[RuntimeRpcService] Runtime RPC started: request_id=%s "
+            "user_id=%s submitted_device_id=%s method=%s",
+            request_id or "-",
+            user_id,
+            device_id,
+            method,
+        )
         try:
             route = await runtime_route_resolver.resolve(
                 user_id=user_id,
                 submitted_device_id=device_id,
             )
         except RuntimeRouteError as exc:
+            logger.warning(
+                "[RuntimeRpcService] Runtime RPC route failed: request_id=%s "
+                "user_id=%s submitted_device_id=%s method=%s code=%s",
+                request_id or "-",
+                user_id,
+                device_id,
+                method,
+                exc.code,
+            )
             raise RuntimeRpcError(
                 str(exc),
                 code=exc.code,
@@ -94,13 +229,76 @@ class RuntimeRpcService:
                 details=exc.details,
             ) from exc
 
+        if not remote_control_is_enabled(route.device_type):
+            raise RuntimeRpcError(
+                REMOTE_CONTROL_DISABLED_MESSAGE,
+                code="remote_control_disabled",
+                retryable=False,
+                details={"deviceId": route.logical_device_id},
+            )
+
+        if method == "runtime.tasks.create":
+            try:
+                payload = negotiate_runtime_task_create_payload(
+                    payload,
+                    route.online_info.get("runtime_features"),
+                )
+            except RuntimeTaskCreateProtocolError as exc:
+                logger.warning(
+                    "[RuntimeRpcService] Runtime RPC negotiation failed: "
+                    "request_id=%s user_id=%s logical_device_id=%s "
+                    "method=%s features=%s",
+                    request_id or "-",
+                    user_id,
+                    route.logical_device_id,
+                    method,
+                    sorted(exc.features),
+                )
+                raise RuntimeRpcError(
+                    str(exc),
+                    code="unsupported_runtime_task_create_features",
+                    retryable=False,
+                    details={
+                        "deviceId": route.logical_device_id,
+                        "features": list(exc.features),
+                    },
+                ) from exc
+
+        try:
+            payload = await _enforce_remote_runtime_proxy(
+                user_id=user_id,
+                device_type=route.device_type,
+                method=method,
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[RuntimeRpcService] Failed to resolve account proxy policy: "
+                "request_id=%s user_id=%s logical_device_id=%s method=%s",
+                request_id or "-",
+                user_id,
+                route.logical_device_id,
+                method,
+            )
+            raise RuntimeRpcError(
+                "Failed to resolve cloud device proxy configuration",
+                code="runtime_proxy_config_failed",
+                retryable=False,
+                details={"deviceId": route.logical_device_id},
+            ) from exc
+
         sio = get_sio()
-        request = {"method": method, "payload": payload}
-        started_at = time.perf_counter()
+        request = {
+            "method": method,
+            "payload": payload,
+        }
+        if request_id:
+            request["request_id"] = request_id
         logger.info(
-            "[RuntimeRpcService] Sending runtime RPC: user_id=%s "
+            "[RuntimeRpcService] Sending runtime RPC: request_id=%s user_id=%s "
             "logical_device_id=%s runtime_device_id=%s method=%s "
             "timeout_seconds=%s payload_keys=%s",
+            request_id or "-",
             user_id,
             route.logical_device_id,
             route.runtime_device_id,
@@ -119,9 +317,10 @@ class RuntimeRpcService:
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
             logger.warning(
-                "[RuntimeRpcService] Runtime RPC failed: user_id=%s "
+                "[RuntimeRpcService] Runtime RPC failed: request_id=%s user_id=%s "
                 "logical_device_id=%s runtime_device_id=%s method=%s "
                 "elapsed_ms=%s error_type=%s",
+                request_id or "-",
                 user_id,
                 route.logical_device_id,
                 route.runtime_device_id,
@@ -144,9 +343,28 @@ class RuntimeRpcService:
 
         try:
             result = self._decode_response(result, method=method)
-        except RuntimeRpcError:
+        except RuntimeRpcError as exc:
+            logger.warning(
+                "[RuntimeRpcService] Runtime RPC response decoding failed: "
+                "request_id=%s user_id=%s logical_device_id=%s method=%s code=%s",
+                request_id or "-",
+                user_id,
+                route.logical_device_id,
+                method,
+                exc.code,
+            )
             raise
         if not isinstance(result, dict):
+            logger.warning(
+                "[RuntimeRpcService] Runtime RPC returned invalid response: "
+                "request_id=%s user_id=%s logical_device_id=%s method=%s "
+                "response_type=%s",
+                request_id or "-",
+                user_id,
+                route.logical_device_id,
+                method,
+                type(result).__name__,
+            )
             raise RuntimeRpcError(
                 "Runtime RPC returned an invalid response",
                 code="runtime_rpc_invalid_response",
@@ -157,12 +375,14 @@ class RuntimeRpcService:
             method=method,
             logical_device_id=route.logical_device_id,
             runtime_device_id=route.runtime_device_id,
+            app_device_id=route.app_device_id,
         )
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         logger.info(
-            "[RuntimeRpcService] Runtime RPC completed: user_id=%s "
+            "[RuntimeRpcService] Runtime RPC completed: request_id=%s user_id=%s "
             "logical_device_id=%s runtime_device_id=%s method=%s "
             "elapsed_ms=%s result_keys=%s",
+            request_id or "-",
             user_id,
             route.logical_device_id,
             route.runtime_device_id,
@@ -180,12 +400,16 @@ class RuntimeRpcService:
         method: str,
         logical_device_id: str,
         runtime_device_id: str,
+        app_device_id: str | None,
     ) -> dict[str, Any]:
         """Keep external Runtime responses on the stable logical device identity."""
 
+        device_aliases = frozenset(
+            device_id for device_id in (runtime_device_id, app_device_id) if device_id
+        )
         projected = dict(result)
         for key in DEVICE_ID_RESPONSE_KEYS:
-            if projected.get(key) == runtime_device_id:
+            if projected.get(key) in device_aliases:
                 projected[key] = logical_device_id
 
         if not method.startswith("runtime.worktrees."):
@@ -194,7 +418,7 @@ class RuntimeRpcService:
         return cls._project_nested_device_ids(
             projected,
             logical_device_id=logical_device_id,
-            runtime_device_id=runtime_device_id,
+            device_aliases=device_aliases,
         )
 
     @classmethod
@@ -203,14 +427,14 @@ class RuntimeRpcService:
         value: Any,
         *,
         logical_device_id: str,
-        runtime_device_id: str,
+        device_aliases: frozenset[str],
     ) -> Any:
         if isinstance(value, list):
             return [
                 cls._project_nested_device_ids(
                     item,
                     logical_device_id=logical_device_id,
-                    runtime_device_id=runtime_device_id,
+                    device_aliases=device_aliases,
                 )
                 for item in value
             ]
@@ -219,13 +443,13 @@ class RuntimeRpcService:
 
         projected: dict[str, Any] = {}
         for key, item in value.items():
-            if key in DEVICE_ID_RESPONSE_KEYS and item == runtime_device_id:
+            if key in DEVICE_ID_RESPONSE_KEYS and item in device_aliases:
                 projected[key] = logical_device_id
                 continue
             projected[key] = cls._project_nested_device_ids(
                 item,
                 logical_device_id=logical_device_id,
-                runtime_device_id=runtime_device_id,
+                device_aliases=device_aliases,
             )
         return projected
 

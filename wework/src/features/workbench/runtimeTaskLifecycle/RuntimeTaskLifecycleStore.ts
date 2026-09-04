@@ -6,7 +6,11 @@ import type {
   RuntimeWorkListResponse,
 } from '@/types/api'
 import type { RuntimePaneTranscript } from '@/types/workbench'
-import { normalizeRuntimeTaskSummary, shouldReplaceRuntimeTaskProjection } from './projection'
+import {
+  isRuntimeTaskAuthoritativeCompletion,
+  normalizeRuntimeTaskSummary,
+  shouldReplaceRuntimeTaskProjection,
+} from './projection'
 import { RuntimeTaskMachine, getRuntimeTaskLifecycleKey } from './RuntimeTaskMachine'
 import type {
   RuntimeTaskLifecycleEvent,
@@ -31,6 +35,7 @@ const EMPTY_STORE_SNAPSHOT: RuntimeTaskLifecycleStoreSnapshot = {
 const RUNTIME_TASK_LIFECYCLE_READ_METHODS = new Set<PropertyKey>([
   'subscribe',
   'getSnapshot',
+  'getCurrentTask',
   'getTask',
   'selectTask',
 ])
@@ -62,6 +67,11 @@ export class RuntimeTaskLifecycleStore {
   }
 
   getSnapshot = (): RuntimeTaskLifecycleStoreSnapshot => this.snapshot
+
+  getCurrentTask(): RuntimeTaskLifecycleSnapshot | null {
+    if (!this.currentTaskKey) return null
+    return this.snapshot.tasks.get(this.currentTaskKey) ?? null
+  }
 
   getTask(address: RuntimeTaskAddress | null | undefined): RuntimeTaskLifecycleSnapshot | null {
     if (!address) return null
@@ -133,7 +143,7 @@ export class RuntimeTaskLifecycleStore {
   ): void {
     if (transcript.running === true) {
       const current = this.getTask(address)
-      if (current && current.turn.outcome !== null && !current.derived.isRunning) return
+      if (shouldIgnoreStaleRunningTranscript(current)) return
       this.executorStarted(address)
       return
     }
@@ -190,7 +200,7 @@ export class RuntimeTaskLifecycleStore {
 
   sendRequested(
     address: RuntimeTaskAddress,
-    options: { workspaceCreationKind?: 'worktree' } = {}
+    options: { workspaceCreationKind?: string } = {}
   ): void {
     this.dispatch(address, {
       type: 'send_requested',
@@ -250,12 +260,15 @@ export class RuntimeTaskLifecycleStore {
       turn => turn.status === 'pending' || turn.status === 'streaming'
     )
     const hasStreamingTurn = Boolean(streamingTurn)
+    const current = this.getTask(address)
+    const ignoreStaleRunningTranscript = shouldIgnoreStaleRunningTranscript(current)
     const ignoreStaleIdleTranscript =
       transcript.running === false &&
       options.preserveActiveTurn === true &&
-      (this.getTask(address)?.derived.isRunning ?? false)
+      (current?.derived.isRunning ?? false)
 
     if (hasStreamingTurn) {
+      if (ignoreStaleRunningTranscript) return
       this.executorStarted(address)
       this.dispatch(address, {
         type: 'turn_recovered',
@@ -263,8 +276,7 @@ export class RuntimeTaskLifecycleStore {
         turnId: streamingTurn?.id,
       })
     } else if (transcript.running === true) {
-      const current = this.getTask(address)
-      if (current && current.turn.outcome !== null && !current.derived.isRunning) return
+      if (ignoreStaleRunningTranscript) return
       this.executorStarted(address)
     } else if (transcript.running === false && !ignoreStaleIdleTranscript) {
       this.executorSettled(address)
@@ -559,6 +571,17 @@ export function runtimeTaskLifecycleTransitionChanged(
     expected.turn.outcome !== current.turn.outcome ||
     expected.goalStatus !== current.goalStatus ||
     expected.continuable !== current.continuable
+  )
+}
+
+function shouldIgnoreStaleRunningTranscript(current: RuntimeTaskLifecycleSnapshot | null): boolean {
+  return Boolean(
+    current &&
+    !current.derived.isRunning &&
+    (current.turn.outcome !== null ||
+      (current.goalStatus !== 'active' &&
+        current.task !== null &&
+        isRuntimeTaskAuthoritativeCompletion(current.task)))
   )
 }
 

@@ -13,11 +13,12 @@
 'use client'
 
 import React, { useState } from 'react'
-import { SlidersHorizontal } from 'lucide-react'
+import { ChevronRight, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/hooks/useTranslation'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { AspectRatioOption, ResolutionOption } from '@/apis/models'
+import { getVideoParamVisibility } from '@/features/tasks/utils/teamModeSpec'
 import { formatVideoDuration } from '@/features/tasks/utils/videoDuration'
 
 export interface VideoSettingsPopoverProps {
@@ -37,6 +38,10 @@ export interface VideoSettingsPopoverProps {
   resolutionOptions?: ResolutionOption[]
   // State
   disabled?: boolean
+  showDuration?: boolean
+  hiddenVideoParams?: string[]
+  triggerVariant?: 'default' | 'menu-item'
+  iconOnly?: boolean
 }
 
 // Aspect ratio icon dimensions for visual representation
@@ -75,9 +80,21 @@ export function VideoSettingsPopover({
   availableResolutions,
   resolutionOptions,
   disabled = false,
+  showDuration = true,
+  hiddenVideoParams = [],
+  triggerVariant = 'default',
+  iconOnly = false,
 }: VideoSettingsPopoverProps) {
   const { t } = useTranslation('chat')
   const [isOpen, setIsOpen] = useState(false)
+  const {
+    showRatio,
+    showDuration: showVideoDuration,
+    showResolution,
+    showSettings,
+  } = getVideoParamVisibility(hiddenVideoParams, showDuration)
+
+  if (!showSettings) return null
 
   // Build summary text for trigger button
   const selectedRatioLabel =
@@ -87,7 +104,11 @@ export function VideoSettingsPopover({
       ?.label ?? selectedResolution.toUpperCase()
   const autoDurationLabel = t('video.duration_auto')
   const selectedDurationLabel = formatVideoDuration(selectedDuration, autoDurationLabel)
-  const summaryText = `${selectedRatioLabel} · ${selectedDurationLabel} · ${selectedResolutionLabel}`
+  const summaryText = [
+    ...(showRatio ? [selectedRatioLabel] : []),
+    ...(showVideoDuration ? [selectedDurationLabel] : []),
+    ...(showResolution ? [selectedResolutionLabel] : []),
+  ].join(' · ')
   const displayedRatios = ratioOptions?.length
     ? ratioOptions
     : availableRatios.map(value => ({ label: value, value }))
@@ -101,15 +122,34 @@ export function VideoSettingsPopover({
         <button
           type="button"
           disabled={disabled}
+          data-testid="video-settings-trigger"
+          aria-label={iconOnly ? summaryText : undefined}
+          title={iconOnly ? summaryText : undefined}
           className={cn(
-            'flex items-center gap-1.5 min-w-0 rounded-full pl-2.5 pr-3 py-2.5 h-9',
-            'border border-border bg-base text-text-primary hover:bg-hover',
+            'flex min-w-0 items-center text-text-primary hover:bg-hover',
+            triggerVariant === 'menu-item'
+              ? 'min-h-14 w-full gap-3 px-3 py-2.5 text-left'
+              : iconOnly
+                ? 'h-9 w-9 justify-center rounded-full border border-border bg-base p-0'
+                : 'h-9 gap-1.5 rounded-full border border-border bg-base py-2.5 pl-2.5 pr-3',
             'transition-colors focus:outline-none focus:ring-0',
             'disabled:cursor-not-allowed disabled:opacity-50'
           )}
         >
-          <SlidersHorizontal className="h-4 w-4 flex-shrink-0" />
-          <span className="truncate text-xs min-w-0">{summaryText}</span>
+          <SlidersHorizontal className="h-4 w-4 flex-shrink-0 text-text-muted" />
+          {triggerVariant === 'menu-item' ? (
+            <>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-text-primary">
+                  {t('video.settings_title')}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-text-muted">{summaryText}</span>
+              </span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" aria-hidden="true" />
+            </>
+          ) : (
+            !iconOnly && <span className="min-w-0 truncate text-xs">{summaryText}</span>
+          )}
         </button>
       </PopoverTrigger>
 
@@ -123,7 +163,7 @@ export function VideoSettingsPopover({
       >
         <div className="space-y-4">
           {/* Aspect Ratio Section */}
-          <div>
+          <div hidden={!showRatio}>
             <h4 className="text-sm font-medium text-text-primary mb-2">
               {t('video.ratio_section')}
             </h4>
@@ -132,6 +172,7 @@ export function VideoSettingsPopover({
                 <button
                   key={option.value}
                   type="button"
+                  data-testid={`video-ratio-option-${option.value}`}
                   onClick={() => onRatioChange(option.value)}
                   className={cn(
                     'flex flex-col items-center gap-1 px-3 py-2 rounded-lg',
@@ -148,32 +189,34 @@ export function VideoSettingsPopover({
             </div>
           </div>
 
-          {/* Duration Section */}
-          <div>
-            <h4 className="text-sm font-medium text-text-primary mb-2">
-              {t('video.duration_section')}
-            </h4>
-            <div className="flex gap-2">
-              {availableDurations.map(duration => (
-                <button
-                  key={duration}
-                  type="button"
-                  onClick={() => onDurationChange(duration)}
-                  className={cn(
-                    'flex-1 py-2 rounded-lg border transition-colors text-sm',
-                    selectedDuration === duration
-                      ? 'border-primary bg-primary/5 text-primary'
-                      : 'border-border bg-surface hover:bg-hover text-text-secondary'
-                  )}
-                >
-                  {formatVideoDuration(duration, autoDurationLabel)}
-                </button>
-              ))}
+          {showVideoDuration && (
+            <div>
+              <h4 className="text-sm font-medium text-text-primary mb-2">
+                {t('video.duration_section')}
+              </h4>
+              <div className="flex gap-2">
+                {availableDurations.map(duration => (
+                  <button
+                    key={duration}
+                    type="button"
+                    data-testid={`video-duration-option-${duration}`}
+                    onClick={() => onDurationChange(duration)}
+                    className={cn(
+                      'flex-1 py-2 rounded-lg border transition-colors text-sm',
+                      selectedDuration === duration
+                        ? 'border-primary bg-primary/5 text-primary'
+                        : 'border-border bg-surface hover:bg-hover text-text-secondary'
+                    )}
+                  >
+                    {formatVideoDuration(duration, autoDurationLabel)}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Resolution Section */}
-          <div>
+          <div hidden={!showResolution}>
             <h4 className="text-sm font-medium text-text-primary mb-2">
               {t('video.resolution_section')}
             </h4>
@@ -184,6 +227,7 @@ export function VideoSettingsPopover({
                   <button
                     key={value}
                     type="button"
+                    data-testid={`video-resolution-option-${value}`}
                     onClick={() => onResolutionChange(value)}
                     title={'tooltip' in option ? option.tooltip : undefined}
                     className={cn(

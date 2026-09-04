@@ -7,13 +7,13 @@ import {
   connectLocalExecutorToBackend,
   copyLocalExecutorDebugInfo,
   disconnectLocalExecutorFromBackend,
-  ensureLocalExecutorStarted,
+  ensureLocalExecutorAvailable,
   readLocalExecutorLog,
-} from '@/tauri/localExecutor'
+} from '@/desktop/localExecutor'
 import { LocalRuntimeInitializer } from './LocalRuntimeInitializer'
 
 const runtimeTokenPostMock = vi.hoisted(() => vi.fn())
-const startDragging = vi.fn().mockResolvedValue(undefined)
+const desktopHostInvokeMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/http', () => ({
   createHttpClient: vi.fn(() => ({
@@ -21,31 +21,24 @@ vi.mock('@/api/http', () => ({
   })),
 }))
 
-vi.mock('@/tauri/localExecutor', () => ({
+vi.mock('@/api/dsh/desktopHost', () => ({
+  invokeDesktopHost: desktopHostInvokeMock,
+}))
+
+vi.mock('@/desktop/localExecutor', () => ({
   connectLocalExecutorToBackend: vi.fn(),
   copyLocalExecutorDebugInfo: vi.fn(),
   disconnectLocalExecutorFromBackend: vi.fn(),
-  ensureLocalExecutorStarted: vi.fn(),
+  ensureLocalExecutorAvailable: vi.fn(),
   readLocalExecutorLog: vi.fn(),
-}))
-
-vi.mock('@tauri-apps/api/window', () => ({
-  getCurrentWindow: () => ({ startDragging }),
 }))
 
 const copyDebugMock = vi.mocked(copyLocalExecutorDebugInfo)
 const connectMock = vi.mocked(connectLocalExecutorToBackend)
 const disconnectMock = vi.mocked(disconnectLocalExecutorFromBackend)
-const ensureMock = vi.mocked(ensureLocalExecutorStarted)
+const ensureMock = vi.mocked(ensureLocalExecutorAvailable)
 const readLogMock = vi.mocked(readLocalExecutorLog)
 const SLOW_STARTUP_WARNING_MS = 10000
-
-function enableTauri() {
-  Object.defineProperty(window, '__TAURI_INTERNALS__', {
-    configurable: true,
-    value: {},
-  })
-}
 
 function MountProbe({ onMount }: { onMount: () => void }) {
   useEffect(() => {
@@ -57,20 +50,24 @@ function MountProbe({ onMount }: { onMount: () => void }) {
 
 describe('LocalRuntimeInitializer', () => {
   beforeEach(() => {
-    enableTauri()
+    window.__WEWORK_RUNTIME_CONFIG__ = {
+      ...window.__WEWORK_RUNTIME_CONFIG__,
+      desktopHost: 'electron',
+    }
     vi.stubEnv('DEV', false)
     connectMock.mockReset()
     copyDebugMock.mockReset()
     disconnectMock.mockReset()
     ensureMock.mockReset()
     readLogMock.mockReset()
+    desktopHostInvokeMock.mockReset()
+    desktopHostInvokeMock.mockResolvedValue(undefined)
     runtimeTokenPostMock.mockReset()
     runtimeTokenPostMock.mockResolvedValue({
       auth_token: 'runtime-task-token',
       token_type: 'bearer',
       expires_in: 86400,
     })
-    startDragging.mockClear()
   })
 
   afterEach(() => {
@@ -89,6 +86,8 @@ describe('LocalRuntimeInitializer', () => {
 
     expect(screen.getByTestId('local-runtime-initializer')).toBeInTheDocument()
     expect(screen.getByText('正在整理你的工作台')).toBeInTheDocument()
+    expect(document.querySelector('.local-runtime-setup-card')).not.toBeInTheDocument()
+    expect(document.querySelector('.local-runtime-step-dot')).not.toBeInTheDocument()
     expect(screen.queryByText(/执行器|daemon/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('main-app')).not.toBeInTheDocument()
 
@@ -108,6 +107,7 @@ describe('LocalRuntimeInitializer', () => {
           socketBaseUrl: 'wss://socket.example.com',
           isConnected: true,
           token: 'token-a',
+          registrationDeviceType: 'app',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -121,6 +121,7 @@ describe('LocalRuntimeInitializer', () => {
         socketBaseUrl: 'wss://socket.example.com',
         authToken: 'token-a',
         runtimeAuthToken: 'runtime-task-token',
+        deviceType: 'app',
       })
     )
     expect(ensureMock.mock.invocationCallOrder[0]).toBeLessThan(
@@ -148,6 +149,7 @@ describe('LocalRuntimeInitializer', () => {
           socketBaseUrl: 'https://backend.example.com',
           isConnected: true,
           token: 'token-a',
+          registrationDeviceType: 'app',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -163,6 +165,7 @@ describe('LocalRuntimeInitializer', () => {
           socketBaseUrl: 'wss://socket.example.com',
           isConnected: true,
           token: 'token-a',
+          registrationDeviceType: 'app',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -178,6 +181,7 @@ describe('LocalRuntimeInitializer', () => {
         socketBaseUrl: 'wss://socket.example.com',
         authToken: 'token-a',
         runtimeAuthToken: 'runtime-task-token',
+        deviceType: 'app',
       })
     )
   })
@@ -191,6 +195,7 @@ describe('LocalRuntimeInitializer', () => {
         initialCloudConnection={{
           isConnected: false,
           token: null,
+          registrationDeviceType: 'app',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -216,6 +221,7 @@ describe('LocalRuntimeInitializer', () => {
           socketBaseUrl: 'wss://socket.example.com',
           isConnected: true,
           token: 'token-a',
+          registrationDeviceType: 'remote',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -242,6 +248,7 @@ describe('LocalRuntimeInitializer', () => {
           socketBaseUrl: 'wss://socket.example.com',
           isConnected: true,
           token: 'token-a',
+          registrationDeviceType: 'remote',
         }}
       >
         <div data-testid="main-app">Main app</div>
@@ -278,7 +285,7 @@ describe('LocalRuntimeInitializer', () => {
     )
     readLogMock.mockResolvedValue({
       path: '~/.wework/logs/executor.log',
-      content: 'executor waiting for stdio via Tauri runtime detail',
+      content: 'executor waiting for stdio via Electron runtime detail',
       truncated: true,
       lineCount: 20,
       transport: 'stdio',
@@ -302,7 +309,7 @@ describe('LocalRuntimeInitializer', () => {
     })
     Object.defineProperty(navigator, 'userAgent', {
       configurable: true,
-      value: 'Mozilla/5.0 Tauri/2.0',
+      value: 'Mozilla/5.0 Electron/37.0',
     })
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
@@ -376,7 +383,6 @@ describe('LocalRuntimeInitializer', () => {
     )
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Executor log lines: last 20'))
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining('executor waiting for stdio'))
-    expect(writeText).toHaveBeenCalledWith(expect.not.stringMatching(/tauri/i))
     expect(screen.getByTestId('local-runtime-copy-debug-button')).toHaveTextContent('已复制')
 
     await act(async () => {
@@ -448,11 +454,7 @@ describe('LocalRuntimeInitializer', () => {
     const dragRegion = within(screen.getByTestId('local-runtime-titlebar-drag-region')).getByTestId(
       'macos-titlebar-drag-region'
     )
-    expect(dragRegion).toHaveAttribute('data-tauri-drag-region')
-
-    fireEvent.mouseDown(dragRegion, { button: 0 })
-
-    await waitFor(() => expect(startDragging).toHaveBeenCalledTimes(1))
+    expect(dragRegion).toHaveClass('electron-titlebar-drag-region')
   })
 
   test('does not remount children when the startup screen is dismissed', async () => {
@@ -513,6 +515,9 @@ describe('LocalRuntimeInitializer', () => {
 
     expect(await screen.findByTestId('local-runtime-error')).toHaveTextContent('stdio unavailable')
     expect(screen.getByText('~/.wework/logs/executor.log')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(desktopHostInvokeMock).toHaveBeenCalledWith('renderer.startupFailed')
+    )
 
     await userEvent.click(screen.getByTestId('local-runtime-retry-button'))
 
@@ -533,8 +538,11 @@ describe('LocalRuntimeInitializer', () => {
     )
   })
 
-  test('does not block non-tauri runtimes', () => {
-    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  test('does not block browser runtimes', () => {
+    window.__WEWORK_RUNTIME_CONFIG__ = {
+      ...window.__WEWORK_RUNTIME_CONFIG__,
+      desktopHost: 'browser',
+    }
 
     render(
       <LocalRuntimeInitializer>

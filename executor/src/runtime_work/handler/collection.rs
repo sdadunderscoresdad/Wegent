@@ -12,6 +12,17 @@ enum ActiveTurnStopState {
     Stopped,
 }
 
+fn request_execution_stop(control: &mut ActiveLocalExecution) {
+    if control.stop_requested {
+        return;
+    }
+    let (spent_cancel, spent_cancel_rx) = oneshot::channel();
+    drop(spent_cancel_rx);
+    let cancel = std::mem::replace(&mut control.cancel, spent_cancel);
+    control.stop_requested = true;
+    let _ = cancel.send(());
+}
+
 impl RuntimeWorkRpcHandler {
     pub(super) async fn collect_links(&self, archived: bool) -> Vec<RuntimeTaskLink> {
         let started_at = Instant::now();
@@ -713,7 +724,20 @@ impl RuntimeWorkRpcHandler {
     }
 
     pub(super) fn upsert_local_task(&self, link: RuntimeTaskLink) {
+        self.project_runtime_link_status(&link);
         self.store.upsert_task(link);
+    }
+
+    pub(super) fn running_task_count(&self) -> Value {
+        let running_count = self
+            .active_local_executions
+            .lock()
+            .expect("active local execution map lock should not be poisoned")
+            .len();
+        json!({
+            "success": true,
+            "runningCount": running_count,
+        })
     }
 
     pub(super) fn start_local_task_execution(
@@ -762,6 +786,9 @@ impl RuntimeWorkRpcHandler {
             apply_local_execution_state(link, true, None);
             link.completed_at = None;
         });
+        if let Some(link) = self.local_task_link(&local_task_id) {
+            self.project_runtime_link_status_now(&link);
+        }
         Ok(execution_id)
     }
 
@@ -778,7 +805,7 @@ impl RuntimeWorkRpcHandler {
             let Some(control) = active.get(local_task_id) else {
                 return false;
             };
-            if control.execution_id != execution_id || control.stop_requested {
+            if control.execution_id != execution_id {
                 return false;
             }
             if !self.clear_worktree_execution_lease(local_task_id, control) {
@@ -789,25 +816,116 @@ impl RuntimeWorkRpcHandler {
         true
     }
 
-    pub(super) fn settle_cancelled_local_task_execution(
+    pub(super) fn is_current_local_task_execution(
         &self,
         local_task_id: &str,
         execution_id: u64,
-    ) {
+    ) -> bool {
+        self.active_local_executions
+            .lock()
+            .expect("active local execution map lock should not be poisoned")
+            .get(local_task_id)
+            .is_some_and(|control| control.execution_id == execution_id)
+    }
+
+    pub(super) fn is_local_task_execution_accepting_notifications(
+        &self,
+        local_task_id: &str,
+        execution_id: u64,
+    ) -> bool {
+        self.active_local_executions
+            .lock()
+            .expect("active local execution map lock should not be poisoned")
+            .get(local_task_id)
+            .is_some_and(|control| control.execution_id == execution_id && !control.stop_requested)
+    }
+
+    pub(super) fn request_active_turn_stop(&self, local_task_id: &str) -> bool {
+        let mut active = self
+            .active_local_executions
+            .lock()
+            .expect("active local execution map lock should not be poisoned");
+        let Some(control) = active.get_mut(local_task_id) else {
+            return false;
+        };
+        request_execution_stop(control);
+        true
+    }
+
+    pub(super) fn force_settle_local_task_execution(
+        &self,
+        local_task_id: &str,
+        thread_id: Option<String>,
+        status: &str,
+        reason: &str,
+    ) -> bool {
         {
             let mut active = self
                 .active_local_executions
                 .lock()
                 .expect("active local execution map lock should not be poisoned");
             let Some(control) = active.get_mut(local_task_id) else {
-                return;
+                return false;
+            };
+            request_execution_stop(control);
+            if !self.clear_worktree_execution_lease(local_task_id, control) {
+                log_executor_event(
+                    "runtime work forced settlement ignored execution lease conflict",
+                    &[
+                        ("local_task_id", local_task_id.to_owned()),
+                        ("execution_id", control.execution_id.to_string()),
+                        ("reason", reason.to_owned()),
+                    ],
+                );
+            }
+            active.remove(local_task_id);
+        }
+        self.store.update_task(local_task_id, |link| {
+            if thread_id.is_some() {
+                link.thread_id = thread_id;
+            }
+            link.updated_at = now_ms();
+            link.completed_at = Some(link.updated_at);
+            link.status = status.to_owned();
+            apply_local_execution_state(link, false, None);
+            if link.thread_id.is_some() {
+                clear_runtime_handle_messages(&mut link.runtime_handle);
+            }
+        });
+        if let Some(link) = self.local_task_link(local_task_id) {
+            self.project_runtime_link_status_now(&link);
+        }
+        self.schedule_worktree_prune();
+        log_executor_event(
+            "runtime work local execution force settled",
+            &[
+                ("local_task_id", local_task_id.to_owned()),
+                ("status", status.to_owned()),
+                ("reason", reason.to_owned()),
+            ],
+        );
+        true
+    }
+
+    pub(super) fn settle_cancelled_local_task_execution(
+        &self,
+        local_task_id: &str,
+        execution_id: u64,
+    ) -> bool {
+        {
+            let mut active = self
+                .active_local_executions
+                .lock()
+                .expect("active local execution map lock should not be poisoned");
+            let Some(control) = active.get_mut(local_task_id) else {
+                return false;
             };
             if control.execution_id != execution_id || !control.stop_requested {
-                return;
+                return false;
             }
             control.stop_acknowledged = true;
             if !self.clear_worktree_execution_lease(local_task_id, control) {
-                return;
+                return false;
             }
             active.remove(local_task_id);
         }
@@ -817,7 +935,11 @@ impl RuntimeWorkRpcHandler {
             link.status = "cancelled".to_owned();
             apply_local_execution_state(link, false, None);
         });
+        if let Some(link) = self.local_task_link(local_task_id) {
+            self.project_runtime_link_status_now(&link);
+        }
         self.schedule_worktree_prune();
+        true
     }
 
     fn clear_worktree_execution_lease(
@@ -913,6 +1035,45 @@ impl RuntimeWorkRpcHandler {
         None
     }
 
+    pub(super) async fn wait_for_running_side_source_turn(&self, thread_id: &str) {
+        let Some(source) = self.local_task_by_thread_id(thread_id) else {
+            return;
+        };
+        if !self.is_active_local_task(&source.local_task_id)
+            || self.active_codex_turn(&source.local_task_id).is_some()
+        {
+            return;
+        }
+
+        log_executor_event(
+            "runtime side source turn awaiting",
+            &[
+                ("local_task_id", source.local_task_id.clone()),
+                ("thread_id", thread_id.to_owned()),
+            ],
+        );
+        while self.is_active_local_task(&source.local_task_id) {
+            if self.active_codex_turn(&source.local_task_id).is_some() {
+                log_executor_event(
+                    "runtime side source turn ready",
+                    &[
+                        ("local_task_id", source.local_task_id),
+                        ("thread_id", thread_id.to_owned()),
+                    ],
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(ACTIVE_CODEX_TURN_WAIT_MS)).await;
+        }
+        log_executor_event(
+            "runtime side source turn settled before start",
+            &[
+                ("local_task_id", source.local_task_id),
+                ("thread_id", thread_id.to_owned()),
+            ],
+        );
+    }
+
     pub(super) fn clear_active_codex_turn(&self, local_task_id: &str, execution_id: u64) {
         let mut active = self
             .active_local_executions
@@ -965,13 +1126,7 @@ impl RuntimeWorkRpcHandler {
         let Some(control) = active.get_mut(local_task_id) else {
             return ActiveTurnStopState::Missing;
         };
-        if !control.stop_requested {
-            let (spent_cancel, spent_cancel_rx) = oneshot::channel();
-            drop(spent_cancel_rx);
-            let cancel = std::mem::replace(&mut control.cancel, spent_cancel);
-            control.stop_requested = true;
-            let _ = cancel.send(());
-        }
+        request_execution_stop(control);
         if !control.stop_acknowledged {
             control.stop_acknowledged = match control.stopped.try_recv() {
                 Ok(()) => true,
@@ -1017,9 +1172,9 @@ impl RuntimeWorkRpcHandler {
         execution_id: u64,
         thread_id: Option<String>,
         status: &str,
-    ) {
+    ) -> bool {
         if !self.finish_local_task_execution(local_task_id, execution_id) {
-            return;
+            return false;
         }
         self.store.update_task(local_task_id, |link| {
             if thread_id.is_some() {
@@ -1035,9 +1190,13 @@ impl RuntimeWorkRpcHandler {
                 clear_runtime_handle_messages(&mut link.runtime_handle);
             }
         });
+        if let Some(link) = self.local_task_link(local_task_id) {
+            self.project_runtime_link_status_now(&link);
+        }
         if status != "running" {
             self.schedule_worktree_prune();
         }
+        true
     }
 
     pub(super) fn sync_runtime_task_goal_from_notification(

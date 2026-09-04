@@ -8,15 +8,17 @@ import { AboutSettingsPage } from './AboutSettingsPage'
 
 const appVersionMocks = vi.hoisted(() => ({
   getVersion: vi.fn(),
-  isTauriRuntime: vi.fn(() => false),
+  isElectronRuntime: vi.fn(() => false),
 }))
 
-vi.mock('@tauri-apps/api/app', () => ({
-  getVersion: appVersionMocks.getVersion,
+vi.mock('@/api/dsh/desktopHost', () => ({
+  invokeDesktopHost: appVersionMocks.getVersion,
 }))
 
 vi.mock('@/lib/runtime-environment', () => ({
-  isTauriRuntime: appVersionMocks.isTauriRuntime,
+  isDesktopRuntime: appVersionMocks.isElectronRuntime,
+  isElectronRuntime: () => false,
+  isElectronRuntime: appVersionMocks.isElectronRuntime,
 }))
 
 function renderPage(overrides: Partial<AppUpdateContextValue> = {}) {
@@ -27,7 +29,6 @@ function renderPage(overrides: Partial<AppUpdateContextValue> = {}) {
     installedReleaseNotes: null,
     status: 'idle',
     downloadProgress: null,
-    message: null,
     error: null,
     checkNow: vi.fn().mockResolvedValue(null),
     installUpdate: vi.fn().mockResolvedValue(undefined),
@@ -48,13 +49,13 @@ function renderPage(overrides: Partial<AppUpdateContextValue> = {}) {
 describe('AboutSettingsPage', () => {
   afterEach(() => {
     appVersionMocks.getVersion.mockReset()
-    appVersionMocks.isTauriRuntime.mockReset()
-    appVersionMocks.isTauriRuntime.mockReturnValue(false)
+    appVersionMocks.isElectronRuntime.mockReset()
+    appVersionMocks.isElectronRuntime.mockReturnValue(false)
   })
 
   test('shows the package version reported by the running desktop app', async () => {
-    appVersionMocks.isTauriRuntime.mockReturnValue(true)
-    appVersionMocks.getVersion.mockResolvedValue('2.3.4')
+    appVersionMocks.isElectronRuntime.mockReturnValue(true)
+    appVersionMocks.getVersion.mockResolvedValue({ version: '2.3.4' })
 
     renderPage()
 

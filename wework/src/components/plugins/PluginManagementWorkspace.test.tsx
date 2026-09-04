@@ -1,7 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import { invoke, isTauri } from '@tauri-apps/api/core'
 import {
   clearPluginMarketplaceCache,
   pluginMarketplaceCacheKey,
@@ -12,12 +11,6 @@ import '@/i18n'
 import { PluginManagementWorkspace } from './PluginManagementWorkspace'
 import type { InstalledPluginItem } from './PluginManagementRows'
 import type { PluginMarketplaceItem } from '@/types/api'
-
-vi.mock('@tauri-apps/api/core', () => ({
-  convertFileSrc: vi.fn((path: string) => `asset://localhost/${path.replace(/^\/+/, '')}`),
-  invoke: vi.fn(),
-  isTauri: vi.fn(() => false),
-}))
 
 vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
@@ -79,8 +72,6 @@ function cachedInstalledPlugin(): InstalledPluginItem {
 describe('PluginManagementWorkspace cache', () => {
   beforeEach(() => {
     clearPluginMarketplaceCache()
-    vi.mocked(invoke).mockReset()
-    vi.mocked(isTauri).mockReturnValue(false)
     vi.mocked(navigateTo).mockReset()
     window.localStorage.clear()
   })
@@ -94,8 +85,6 @@ describe('PluginManagementWorkspace cache', () => {
       marketplaces: [],
       selectedMarketplaceKey: '',
       deviceId: 'device-1',
-      canPublish: false,
-      canSharePersonalPlugins: true,
       fetchedAt: Date.now(),
     })
 
@@ -155,8 +144,6 @@ describe('PluginManagementWorkspace cache', () => {
       marketplaces: [],
       selectedMarketplaceKey: '',
       deviceId: 'device-1',
-      canPublish: false,
-      canSharePersonalPlugins: true,
       fetchedAt: Date.now(),
     })
 
@@ -175,5 +162,123 @@ describe('PluginManagementWorkspace cache', () => {
     await userEvent.click(screen.getByRole('button', { name: '查看 快速建站 详情' }))
     expect(navigateTo).toHaveBeenCalledWith('/plugins?plugin=wegent-sites&marketplace=wegent')
     expect(screen.queryByTestId('plugin-detail-toggle-267250')).not.toBeInTheDocument()
+  })
+
+  test('routes personal plugin publication to the canonical plugin workspace flow', async () => {
+    const key = pluginMarketplaceCacheKey('/api', 'cloud-token')
+    const installed = cachedInstalledPlugin()
+    installed.id = 'created-1'
+    installed.name = '智能工作台开发助手'
+    installed.origin = 'created'
+    installed.raw.metadata = {
+      name: 'smart-workbench-dev-assistant',
+      namespace: 'default',
+      labels: { id: 'created-1' },
+    }
+    installed.raw.spec.origin = 'created'
+    installed.raw.spec.source = {
+      type: 'local',
+      providerKey: 'local',
+      pluginKey: 'smart-workbench-dev-assistant',
+    }
+    installed.raw.spec.displayName = installed.name
+    setPluginMarketplaceCache({
+      cacheKey: key,
+      marketplaceItems: [],
+      installedPlugins: [installed],
+      marketplaces: [],
+      selectedMarketplaceKey: '',
+      deviceId: 'device-1',
+      fetchedAt: Date.now(),
+    })
+
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>(() => {
+          // Keep background refresh pending; publication must only navigate.
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PluginManagementWorkspace cloudApiBaseUrl="/api" cloudToken="cloud-token" />)
+
+    await userEvent.click(screen.getByTestId('installed-plugin-actions-created-1'))
+    await userEvent.click(screen.getByTestId('installed-plugin-publish-created-1'))
+
+    expect(navigateTo).toHaveBeenCalledWith(
+      '/plugins?plugin=smart-workbench-dev-assistant&marketplace=wework-personal'
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/plugins/submissions'),
+      expect.objectContaining({ method: 'POST' })
+    )
+  })
+
+  test('routes personal plugin access management to the same canonical workspace flow', async () => {
+    const key = pluginMarketplaceCacheKey('/api', 'cloud-token')
+    const installed = cachedInstalledPlugin()
+    installed.id = 'created-owner'
+    installed.name = '团队助手'
+    installed.origin = 'created'
+    installed.raw.metadata = {
+      name: 'team-helper',
+      namespace: 'default',
+      labels: { id: 'created-owner' },
+    }
+    installed.raw.spec.origin = 'created'
+    installed.raw.spec.source = {
+      type: 'local',
+      providerKey: 'local',
+      pluginKey: 'team-helper',
+    }
+    installed.raw.spec.displayName = installed.name
+    const ownedListing = {
+      id: 901,
+      remotePluginId: 'team-helper',
+      name: 'team-helper',
+      displayName: installed.name,
+      description: '',
+      featured: false,
+      installed: true,
+      installedPluginId: 'created-owner',
+      enabled: true,
+      sourceType: 'marketplace' as const,
+      visibility: 'personal' as const,
+      ownerUserId: 1,
+      accessRole: 'owner' as const,
+      components: installed.raw.spec.components,
+      manifest: {},
+      latestReleaseId: 12,
+    } satisfies PluginMarketplaceItem
+    setPluginMarketplaceCache({
+      cacheKey: key,
+      marketplaceItems: [ownedListing],
+      installedPlugins: [installed],
+      marketplaces: [],
+      selectedMarketplaceKey: '',
+      deviceId: 'device-1',
+      fetchedAt: Date.now(),
+    })
+
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>(() => {
+          // Keep background refresh pending; access management must only navigate.
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PluginManagementWorkspace cloudApiBaseUrl="/api" cloudToken="cloud-token" />)
+
+    await userEvent.click(screen.getByTestId('installed-plugin-actions-created-owner'))
+    await userEvent.click(screen.getByTestId('installed-plugin-share-created-owner'))
+
+    expect(navigateTo).toHaveBeenCalledWith(
+      '/plugins?plugin=team-helper&marketplace=wework-personal'
+    )
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/plugins/marketplace/901/access'),
+      expect.anything()
+    )
   })
 })

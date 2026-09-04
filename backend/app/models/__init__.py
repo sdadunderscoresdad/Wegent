@@ -31,12 +31,13 @@ from app.models.delivery import (
 from app.models.dingtalk_doc import DingtalkSyncedNode
 from app.models.im_session import IMPrivateSession, IMSessionMode, IMSessionState
 from app.models.kind import Kind
-from app.models.knowledge import KnowledgeDocument
+from app.models.knowledge import KnowledgeDocument, KnowledgeDocumentExternalSource
 from app.models.knowledge_artifact import KnowledgeArtifactRecord
 from app.models.loop_item_execution import LoopItemExecution
 from app.models.marketplace_resource import MarketplaceResource
 from app.models.namespace import Namespace
 from app.models.namespace_member import NamespaceMember
+from app.models.oauth_refresh_token import OAuthRefreshToken
 from app.models.plugin_marketplace import (
     Plugin,
     PluginDeviceInstallation,
@@ -44,11 +45,24 @@ from app.models.plugin_marketplace import (
     PluginSubmission,
     PluginUpstream,
 )
+from app.models.plugin_publication import (
+    PluginPublicationCheck,
+    PluginPublicationEvent,
+    PluginPublicationIdempotency,
+    PluginPublicationRequest,
+    PluginPublicationRevision,
+    PluginReleaseIdempotency,
+)
 from app.models.project import Project
 from app.models.project_chat_message import ProjectChatMessage
 from app.models.resource_member import MemberStatus, ResourceMember, ResourceRole
 from app.models.share_link import ResourceType, ShareLink
 from app.models.skill_binary import SkillBinary
+from app.models.smart_app_marketplace import (
+    SmartApp,
+    SmartAppRelease,
+    SmartAppSubmission,
+)
 from app.models.subscription import BackgroundExecution
 from app.models.subscription_follow import (
     SubscriptionFollow,
@@ -79,6 +93,7 @@ __all__ = [
     "CloudProject",
     "CloudProjectFile",
     "LoopItemTaskBinding",
+    "LoopItemExecution",
     "LoopItem",
     "LoopItemAttachment",
     "LoopItemCollaborator",
@@ -101,7 +116,9 @@ __all__ = [
     "Namespace",
     "NamespaceMember",
     "APIKey",
+    "OAuthRefreshToken",
     "KnowledgeDocument",
+    "KnowledgeDocumentExternalSource",
     "KnowledgeArtifactRecord",
     "Project",
     "ProjectChatMessage",
@@ -110,6 +127,15 @@ __all__ = [
     "PluginUpstream",
     "PluginSubmission",
     "PluginDeviceInstallation",
+    "PluginPublicationRequest",
+    "PluginPublicationRevision",
+    "PluginPublicationCheck",
+    "PluginPublicationEvent",
+    "PluginPublicationIdempotency",
+    "PluginReleaseIdempotency",
+    "SmartApp",
+    "SmartAppRelease",
+    "SmartAppSubmission",
     "MarketplaceResource",
     "SubscriptionFollow",
     "SubscriptionShareNamespace",

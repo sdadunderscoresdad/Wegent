@@ -8,7 +8,6 @@ import {
   FolderPlus,
   GitCompareArrows,
   Loader2,
-  MessageCircle,
   Monitor,
   RotateCw,
   Search,
@@ -17,13 +16,13 @@ import {
   X,
 } from 'lucide-react'
 import { useContext, useMemo, useRef, useState } from 'react'
+import { CompositedSpinner } from '@/components/common/CompositedSpinner'
 import { ProjectCreateDialog } from '@/components/projects/ProjectCreateDialog'
 import { useTranslation } from '@/hooks/useTranslation'
 import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { isImeEnterEvent } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { getRuntimeTaskReminderItemKey } from '@/features/workbench/runtimeTaskReminders'
-import { runtimeTaskBoardOrigin } from '@/features/workbench/runtimeTaskOrigin'
 import {
   getRuntimeTaskLifecycleKey,
   useRuntimeTaskLifecycleStoreSnapshot,
@@ -44,6 +43,7 @@ import type {
   RuntimeWorkListResponse,
   User,
 } from '@/types/api'
+import type { RefreshWorkLists } from '@/features/workbench/workbenchContextTypes'
 import {
   getRuntimeChatSidebarTaskItems,
   getNextRuntimeSidebarTaskVisibleLimit,
@@ -61,7 +61,6 @@ import {
 } from './runtimeTaskSidebarHelpers'
 import { formatRelativeSidebarTime, useSidebarRelativeTimeRefresh } from './runtimeSidebarTime'
 
-const MOBILE_RUNNING_SPINNER_CLASS = 'h-3.5 w-3.5 shrink-0 animate-spin'
 type ProjectCreateMode = 'scratch' | 'existing' | 'git'
 
 interface MobileDrawerProps {
@@ -96,7 +95,7 @@ interface MobileDrawerProps {
   onRemoveProject?: (projectId: number) => Promise<void>
   onSelectProject: (projectId: number) => void
   onOpenRuntimeTask?: (address: RuntimeTaskAddress) => Promise<void> | void
-  onRefreshWorkLists?: () => Promise<void>
+  onRefreshWorkLists?: RefreshWorkLists
 }
 
 export function MobileDrawer({
@@ -183,7 +182,7 @@ export function MobileDrawer({
         title={label}
         className="ml-2 inline-flex h-7 w-7 shrink-0 items-center justify-center text-text-secondary"
       >
-        <Loader2 className={MOBILE_RUNNING_SPINNER_CLASS} aria-hidden="true" />
+        <CompositedSpinner icon={Loader2} className="h-3.5 w-3.5" />
       </span>
     )
   }
@@ -476,11 +475,6 @@ export function MobileDrawer({
                       const workspaceTitle = getRuntimeTaskWorkspaceTitle(workspace)
                       const queued = isRuntimeTaskQueued(task)
                       const taskAddress = getRuntimeTaskAddress(workspace, task)
-                      const boardOrigin = runtimeTaskBoardOrigin(task)
-                      const boardOriginLabel =
-                        boardOrigin === 'board_comment'
-                          ? t('workbench.runtime_task_origin_board_comment', '看板评论')
-                          : t('workbench.runtime_task_origin_board_task', '看板任务')
                       return (
                         <div
                           key={`${workspace.deviceId}:${task.workspacePath}:${task.taskId}`}
@@ -502,12 +496,6 @@ export function MobileDrawer({
                                 : 'text-text-primary hover:bg-muted',
                             ].join(' ')}
                           >
-                            {boardOrigin ? (
-                              <MessageCircle
-                                className="mr-2 h-4 w-4 shrink-0 text-text-tertiary"
-                                aria-label={boardOriginLabel}
-                              />
-                            ) : null}
                             <span className="min-w-0 flex-1 truncate">{task.title}</span>
                             {queued ? (
                               <span
@@ -685,11 +673,6 @@ export function MobileDrawer({
                                 const workspaceTitle = getRuntimeTaskWorkspaceTitle(workspace)
                                 const queued = isRuntimeTaskQueued(task)
                                 const taskAddress = getRuntimeTaskAddress(workspace, task)
-                                const boardOrigin = runtimeTaskBoardOrigin(task)
-                                const boardOriginLabel =
-                                  boardOrigin === 'board_comment'
-                                    ? t('workbench.runtime_task_origin_board_comment', '看板评论')
-                                    : t('workbench.runtime_task_origin_board_task', '看板任务')
                                 return (
                                   <div
                                     key={`${workspace.deviceId}:${task.workspacePath}:${task.taskId}`}
@@ -711,12 +694,6 @@ export function MobileDrawer({
                                           : 'text-text-primary hover:bg-muted',
                                       ].join(' ')}
                                     >
-                                      {boardOrigin ? (
-                                        <MessageCircle
-                                          className="mr-2 h-4 w-4 shrink-0 text-text-tertiary"
-                                          aria-label={boardOriginLabel}
-                                        />
-                                      ) : null}
                                       <span className="min-w-0 flex-1 truncate">{task.title}</span>
                                       {queued ? (
                                         <span

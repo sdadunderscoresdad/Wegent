@@ -8,12 +8,16 @@ const socket = {
   off: vi.fn(),
 }
 const ensureConnected = vi.fn().mockResolvedValue(undefined)
+const connect = vi.fn().mockResolvedValue(undefined)
+const disconnect = vi.fn()
 const dispose = vi.fn()
 
 vi.mock('@wegent/chat-core', () => ({
   createSocketClient: () => ({
     socket,
     ensureConnected,
+    connect,
+    disconnect,
     dispose,
   }),
 }))
@@ -23,7 +27,9 @@ describe('createCloudRuntimeIpcClient', () => {
     socket.emit.mockReset()
     socket.on.mockReset()
     socket.off.mockReset()
-    ensureConnected.mockClear()
+    ensureConnected.mockReset().mockResolvedValue(undefined)
+    connect.mockClear()
+    disconnect.mockClear()
     dispose.mockClear()
   })
 
@@ -57,7 +63,8 @@ describe('createCloudRuntimeIpcClient', () => {
   })
 
   it('preserves ordinary runtime results', async () => {
-    socket.emit.mockImplementation((_event, _request, acknowledge) => {
+    socket.emit.mockImplementation((_event, request, acknowledge) => {
+      expect(request.id).toMatch(/^cloud-runtime-/)
       acknowledge({ ok: true, result: { success: true } })
     })
     const client = createCloudRuntimeIpcClient({
@@ -69,6 +76,69 @@ describe('createCloudRuntimeIpcClient', () => {
     await expect(client.request('runtime.tasks.list', {}, 'cloud-device')).resolves.toEqual({
       success: true,
     })
+  })
+
+  it('keeps one request id when the cloud socket connection fails', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    ensureConnected.mockRejectedValueOnce(new Error('socket unavailable'))
+    const client = createCloudRuntimeIpcClient({
+      socketBaseUrl: 'https://cloud.example.com',
+      socketPath: '/socket.io',
+      token: 'token',
+    })
+
+    await expect(client.request('runtime.tasks.list', {}, 'cloud-device')).rejects.toThrow(
+      'socket unavailable'
+    )
+    expect(warning).toHaveBeenCalledWith(
+      '[Wework] Cloud runtime RPC connection failed',
+      expect.objectContaining({
+        request_id: expect.stringMatching(/^cloud-runtime-/),
+        method: 'runtime.tasks.list',
+        device_id: 'cloud-device',
+      })
+    )
+    warning.mockRestore()
+  })
+
+  it('does not finish a timed out request when a late acknowledgement arrives', async () => {
+    vi.useFakeTimers()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    let acknowledge: ((ack: { ok: true; result: { success: boolean } }) => void) | undefined
+    socket.emit.mockImplementation((_event, _request, callback) => {
+      acknowledge = callback
+    })
+    const client = createCloudRuntimeIpcClient({
+      socketBaseUrl: 'https://cloud.example.com',
+      socketPath: '/socket.io',
+      token: 'token',
+    })
+
+    try {
+      const request = client.request('runtime.tasks.list', {}, 'cloud-device', 10)
+      const timedOut = expect(request).rejects.toThrow('runtime.tasks.list timed out')
+      await vi.advanceTimersByTimeAsync(10)
+      await timedOut
+
+      acknowledge?.({ ok: true, result: { success: true } })
+
+      expect(warning).toHaveBeenCalledWith(
+        '[Wework] Cloud runtime RPC acknowledgement arrived after settlement',
+        expect.objectContaining({
+          request_id: expect.stringMatching(/^cloud-runtime-/),
+          method: 'runtime.tasks.list',
+        })
+      )
+      expect(debug).not.toHaveBeenCalledWith(
+        '[Wework] Cloud runtime RPC request finished',
+        expect.anything()
+      )
+    } finally {
+      warning.mockRestore()
+      debug.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('uses the requested device command timeout for the relay and acknowledgement', async () => {
@@ -135,5 +205,18 @@ describe('createCloudRuntimeIpcClient', () => {
     await expect(
       client.request('device.execute_command', { timeout_seconds: 900 }, 'device-1')
     ).resolves.toEqual({ success: true })
+  })
+
+  it('replaces the runtime socket after system resume', async () => {
+    const client = createCloudRuntimeIpcClient({
+      socketBaseUrl: 'https://cloud.example.com',
+      socketPath: '/socket.io',
+      token: 'token',
+    })
+
+    await client.reconnect()
+
+    expect(disconnect).toHaveBeenCalledTimes(1)
+    expect(connect).toHaveBeenCalledWith(undefined, true)
   })
 })

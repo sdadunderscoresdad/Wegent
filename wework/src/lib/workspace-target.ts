@@ -12,6 +12,7 @@ import {
   type ProjectWorkspaceRootApi,
 } from '@/lib/project-workspace'
 import { runtimeProjectToProject, runtimeProjectUiId } from '@/lib/runtime-project'
+import { isAbsoluteWorkspacePath } from '@/lib/workspace-paths'
 import { LOCAL_WORKBENCH_DEVICE_ALIAS, resolveLocalWorkbenchDeviceId } from '@/lib/workbench-device'
 import type { WorkspaceTarget } from '@/types/workspace-files'
 
@@ -42,15 +43,21 @@ export interface RuntimeWorkspaceContext {
   workspaceTarget: WorkspaceTarget | null
 }
 
+export interface RuntimeTaskSource {
+  workspace: RuntimeDeviceWorkspace
+  task: RuntimeTaskSummary
+}
+
 export function createLocalFileWorkspaceTarget(
   filePath: string,
   devices: DeviceInfo[]
 ): WorkspaceTarget | null {
   const normalizedPath = filePath.trim().replace(/\\/g, '/')
-  if (!normalizedPath.startsWith('/')) return null
+  if (!isAbsoluteWorkspacePath(normalizedPath)) return null
 
   const separatorIndex = normalizedPath.lastIndexOf('/')
-  const directoryPath = separatorIndex > 0 ? normalizedPath.slice(0, separatorIndex) : '/'
+  const parentPath = separatorIndex > 0 ? normalizedPath.slice(0, separatorIndex) : '/'
+  const directoryPath = /^[a-zA-Z]:$/.test(parentPath) ? `${parentPath}/` : parentPath
   const deviceId = resolveLocalWorkbenchDeviceId(devices, LOCAL_WORKBENCH_DEVICE_ALIAS)
   if (!deviceId) return null
 
@@ -205,6 +212,26 @@ function runtimeTaskMatches(
 
   const taskPath = task.workspacePath || workspace.workspacePath
   return addressPath === taskPath || addressPath === workspace.workspacePath
+}
+
+export function resolveRuntimeTaskSource({
+  currentRuntimeTask,
+  runtimeWork,
+}: Pick<
+  ResolveRuntimeWorkspaceContextOptions,
+  'currentRuntimeTask' | 'runtimeWork'
+>): RuntimeTaskSource | null {
+  if (!currentRuntimeTask) return null
+  for (const workspace of [
+    ...(runtimeWork?.projects.flatMap(project => project.deviceWorkspaces) ?? []),
+    ...(runtimeWork?.chats ?? []),
+  ]) {
+    const task = workspace.tasks.find(item =>
+      runtimeTaskMatches(currentRuntimeTask, workspace, item)
+    )
+    if (task) return { workspace, task }
+  }
+  return null
 }
 
 export function resolveRuntimeWorkspaceContext({

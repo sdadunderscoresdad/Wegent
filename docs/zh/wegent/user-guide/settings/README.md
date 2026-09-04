@@ -19,6 +19,7 @@ sidebar_position: 6
 | [键盘快捷键](./keyboard-shortcuts.md)        | 管理 Wework 桌面版本机快捷键                         |
 | [桌面应用偏好](./desktop-app-preferences.md) | 配置 Wework 桌面版启动、后台运行和托盘行为           |
 | [浏览器设置](./browser-settings.md)          | 配置内置浏览器的链接、隐私和下载行为                 |
+| [工作台标签页](./workspace-tabs.md)          | 配置固定标签页、启动标签页和临时普通标签页           |
 
 ---
 
@@ -67,6 +68,18 @@ Skills 是 Claude Code 的能力扩展包：
 - **上传 Skills**：打包为 ZIP 文件上传
 - **管理 Skills**：查看、下载、更新、删除
 - **使用 Skills**：在 Bot 中引用 Skills
+
+### OAuth Apps 管理
+
+应用开发者可以在 **设置 → 开发者凭据 → OAuth 应用** 中自行创建和管理外部 OAuth Client，用于让外部系统通过 Wegent 证明当前用户身份。`client_id` 在页面创建成功后获得；Confidential Client 的 `client_secret` 只显示一次。
+
+每个 OAuth App 需要配置应用名称、Client 类型，以及一个或多个精确匹配的 Redirect URI。Token 生命周期、TokenIssuer 和 SigningKey 都由 Provider 统一管理，不需要开发者或管理员逐个配置。
+
+开发者只能查看和维护自己创建的 OAuth App。管理员在 **管理后台 → 密钥管理 → OAuth 应用** 中只负责全局查看、停用和删除。
+
+外部 access token 只允许读取 OAuth userinfo，并且只返回用户 `id`、`user_name` 和 `email`；它不能调用 Wegent 业务 API，也不会授予角色、资源权限或 Git 凭据等内部权限。
+
+切换 Client 类型、轮换 secret、禁用或删除 OAuth App 时，现有 refresh token 会失效。完整接入流程见[外部 OAuth 2.0 接入指南](../../developer-guide/external-oauth-integration.md)。
 
 ### 已归档聊天管理
 

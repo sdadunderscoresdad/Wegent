@@ -1,15 +1,21 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { DESKTOP_CHECKPOINTS } from './checkpoints.mjs'
+import {
+  compactInactiveDesktopE2EResults,
+  resolveDesktopE2EResultRoot,
+} from './result-retention.mjs'
+import { prepareDesktopE2EBuild } from '../../scripts/lib/desktop-e2e-build.mjs'
+import { runCommandToLog } from '../../scripts/lib/command-log.mjs'
 
 const HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_PARALLEL_CHECKPOINTS = 1
 const CHECKPOINT_SCENARIO_MODULES = {
+  'cloud-space-mention': './scenarios/cloud-space-mention.scenario.mjs',
   'conversation-state': './scenarios/conversation-mention.scenario.mjs',
   'temporary-chat': './scenarios/temporary-chat.scenario.mjs',
   'embedded-browser': './scenarios/embedded-browser-agent.scenario.mjs',
@@ -20,34 +26,68 @@ const CHECKPOINT_SCENARIO_MODULES = {
   'harness-apps': './scenarios/harness-apps.scenario.mjs',
   'browser-multi-tabs': './scenarios/embedded-browser-multi-tabs.scenario.mjs',
   'browser-toolbar-actions': './scenarios/embedded-browser-toolbar-actions.scenario.mjs',
+  'browser-annotation-core': './scenarios/embedded-browser-annotation.scenario.mjs',
+  'browser-annotation-anchors': './scenarios/embedded-browser-annotation.scenario.mjs',
+  'browser-annotation-design': './scenarios/embedded-browser-annotation.scenario.mjs',
   'rendering-extensions': './scenarios/streaming-text.scenario.mjs',
   'runtime-task-queue': './scenarios/runtime-task-queue.scenario.mjs',
+  'runtime-terminal-convergence': './scenarios/runtime-terminal-convergence.scenario.mjs',
+  'executor-stream-recovery': './scenarios/executor-stream-recovery.scenario.mjs',
   'running-conversation-history': './scenarios/running-conversation-history.scenario.mjs',
   'codex-notification-isolation': './scenarios/codex-notification-isolation.scenario.mjs',
   'context-compaction': './scenarios/context-compaction.scenario.mjs',
+  'computer-use': './scenarios/computer-use.scenario.mjs',
   'split-workbench': './scenarios/split-workbench.scenario.mjs',
+  'release-package-startup': './scenarios/release-package-startup.scenario.mjs',
+  'app-update-differential': './scenarios/app-update-differential.scenario.mjs',
+  'component-update': './scenarios/component-update.scenario.mjs',
+  'native-window-startup': './scenarios/native-window-startup.scenario.mjs',
+  'native-window-chrome': './scenarios/native-window-chrome.scenario.mjs',
+  'renderer-storage': './scenarios/renderer-storage.scenario.mjs',
+  'tray-lifecycle': './scenarios/tray-lifecycle.scenario.mjs',
   'project-automation': './scenarios/project-automation.scenario.mjs',
   'project-assignment-notification': './scenarios/project-assignment-notification.scenario.mjs',
   'offline-local-project-space': './scenarios/offline-local-project-space.scenario.mjs',
+  'cloud-context-resilience': './scenarios/cloud-context-resilience.scenario.mjs',
+  'plugin-development': './scenarios/plugin-development.scenario.mjs',
   'task-attachments': './scenarios/task-attachments.scenario.mjs',
+  'external-content-import': './scenarios/external-content-import.scenario.mjs',
 }
 const SCENARIO_ONLY_CHECKPOINTS = new Set([
+  'cloud-space-mention',
   'change-request-status',
   'claude-runtime',
   'local-file-preview',
   'local-harness',
   'harness-apps',
   'offline-local-project-space',
+  'cloud-context-resilience',
+  'plugin-development',
   'task-attachments',
   'project-assignment-notification',
   'runtime-task-queue',
+  'runtime-terminal-convergence',
+  'executor-stream-recovery',
   'running-conversation-history',
   'codex-notification-isolation',
   'context-compaction',
+  'computer-use',
   'split-workbench',
+  'release-package-startup',
+  'app-update-differential',
+  'component-update',
+  'native-window-startup',
+  'native-window-chrome',
+  'renderer-storage',
+  'tray-lifecycle',
   'temporary-chat',
+  'browser-annotation-core',
+  'browser-annotation-anchors',
+  'browser-annotation-design',
+  'external-content-import',
 ])
 const CLOUD_ONLY_CHECKPOINTS = new Set([
+  'plugin-workspace-publication',
   'cloud-git-worktree',
   'cloud-worktree-capability',
   'cloud-worktree-create',
@@ -57,6 +97,10 @@ const CLOUD_ONLY_CHECKPOINTS = new Set([
   'cloud-worktree-device-restart',
 ])
 const COMPOSITE_CHECKPOINTS = new Map([
+  [
+    'browser-annotation',
+    ['browser-annotation-core', 'browser-annotation-anchors', 'browser-annotation-design'],
+  ],
   [
     'cloud-git-worktree',
     [
@@ -73,7 +117,9 @@ const DEFAULT_DESKTOP_CHECKPOINTS = DESKTOP_CHECKPOINTS.filter(
   checkpoint => !COMPOSITE_CHECKPOINTS.has(checkpoint)
 )
 const scriptDir = dirname(fileURLToPath(import.meta.url))
+const weworkDir = resolve(scriptDir, '..', '..')
 const taskFlowPath = join(scriptDir, 'task-flow.e2e.mjs')
+const isolatedXvfbPath = join(scriptDir, 'run-with-openbox.sh')
 const cliArgs = process.argv.slice(2)
 const requestedArgs = cliArgs[0] === '--' ? cliArgs.slice(1) : cliArgs
 
@@ -142,7 +188,15 @@ function runTaskFlow(args, env, label) {
     const isolateDisplay = process.platform === 'linux' && env.WEWORK_E2E_ISOLATED_XVFB === 'true'
     const command = isolateDisplay ? 'xvfb-run' : process.execPath
     const commandArgs = isolateDisplay
-      ? ['-a', '--server-args=-screen 0 1280x720x24', process.execPath, taskFlowPath, ...args]
+      ? [
+          '-a',
+          '--server-args=-screen 0 1280x720x24',
+          'sh',
+          isolatedXvfbPath,
+          process.execPath,
+          taskFlowPath,
+          ...args,
+        ]
       : [taskFlowPath, ...args]
     const child = spawn(command, commandArgs, {
       env,
@@ -204,12 +258,11 @@ async function readFailureSummary(result) {
   )
 }
 
-async function readBuildManifest(path) {
-  return JSON.parse(await readFile(path, 'utf8'))
-}
-
 function checkpointScenarioEnv(env, checkpoint) {
   const nextEnv = { ...env }
+  if (checkpoint === 'native-window-chrome' || checkpoint === 'browser-multi-tabs') {
+    nextEnv.WEWORK_E2E_BACKGROUND_WINDOW = '0'
+  }
   const module = CHECKPOINT_SCENARIO_MODULES[checkpoint]
   if (module) {
     nextEnv.WEWORK_E2E_DESKTOP_SCENARIO_MODULE = module
@@ -224,18 +277,65 @@ function checkpointScenarioEnv(env, checkpoint) {
   return nextEnv
 }
 
-function existingBuildManifest(env) {
-  if (!env.WEWORK_E2E_APP_BIN || !env.WEWORK_E2E_EXECUTOR_BIN) return null
+async function runDesktopBuild() {
+  const startedAt = Date.now()
+  const logPath = join(weworkDir, 'test-results', 'desktop-e2e', `desktop-build-${process.pid}.log`)
+  console.log(
+    `[desktop-e2e] Building the shared Electron application and executor. Full log: ${logPath}`
+  )
+  const heartbeat = setInterval(() => {
+    console.log(
+      `[desktop-e2e] Desktop build still running: elapsed=${formatDuration(Date.now() - startedAt)}`
+    )
+  }, HEARTBEAT_INTERVAL_MS)
+
+  let result
+  try {
+    result = await runCommandToLog({
+      args: ['run', 'ai:verify:electron:build'],
+      command: process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
+      cwd: weworkDir,
+      env: process.env,
+      logPath,
+    })
+  } finally {
+    clearInterval(heartbeat)
+  }
+
+  if (result.code !== 0) {
+    console.error(
+      `[desktop-e2e] Desktop build failed: ${result.signal ? `signal=${result.signal}` : `exit=${result.code}`}. Full log: ${logPath}`
+    )
+    if (result.tail.trim()) {
+      console.error(`[desktop-e2e] Desktop build output tail:\n${result.tail.trimEnd()}`)
+    }
+    throw new Error(`Desktop E2E build exited with code ${result.code}`)
+  }
+  console.log(
+    `[desktop-e2e] Desktop build passed: duration=${formatDuration(Date.now() - startedAt)}. Full log: ${logPath}`
+  )
+}
+
+async function sharedBuildEnvironment(environment = process.env) {
+  const build = await prepareDesktopE2EBuild({
+    environment,
+    runBuild: runDesktopBuild,
+    weworkDir,
+  })
+  console.log(
+    `[desktop-e2e] shared build ready: app=${build.appBinary}, executor=${build.executorBinary}`
+  )
   return {
-    appBinary: env.WEWORK_E2E_APP_BIN,
-    executorBinary: env.WEWORK_E2E_EXECUTOR_BIN,
+    ...environment,
+    WEWORK_E2E_APP_BIN: build.appBinary,
+    WEWORK_E2E_EXECUTOR_BIN: build.executorBinary,
   }
 }
 
 function requestedCheckpointRange(args) {
   if (args.length !== 2) return null
   const [flag, checkpoint] = args
-  if (flag === '--segment') return [checkpoint]
+  if (flag === '--segment') return expandCompositeCheckpoints([checkpoint])
   if (flag === '--from-segment') {
     const startCheckpoint = COMPOSITE_CHECKPOINTS.get(checkpoint)?.[0] ?? checkpoint
     const startIndex = DEFAULT_DESKTOP_CHECKPOINTS.indexOf(startCheckpoint)
@@ -299,8 +399,9 @@ async function runRequestedArgs() {
   if (checkpoints) return runCheckpoints(checkpoints)
 
   const label = requestedArgs.join(' ') || 'desktop task flow'
+  const env = await sharedBuildEnvironment()
   console.log(`[desktop-e2e] START ${label}`)
-  const result = await runTaskFlow(requestedArgs, process.env, label)
+  const result = await runTaskFlow(requestedArgs, env, label)
   if (result.code === 0) {
     console.log(
       `[desktop-e2e] PASS ${label}: duration=${formatDuration(result.durationMs)}, assertion-errors=none${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
@@ -315,10 +416,7 @@ async function runRequestedArgs() {
 }
 
 async function runParallelCheckpoints(checkpoints) {
-  if (!existingBuildManifest(process.env)) {
-    throw new Error('--parallel-segments requires a prebuilt desktop E2E application and executor')
-  }
-
+  const sharedEnv = await sharedBuildEnvironment()
   const pending = [...checkpoints]
   const failures = []
   const workerCount = Math.min(parallelCheckpointLimit(), pending.length)
@@ -330,7 +428,7 @@ async function runParallelCheckpoints(checkpoints) {
     while (pending.length > 0) {
       const checkpoint = pending.shift()
       if (!checkpoint) return
-      const env = checkpointScenarioEnv({ ...process.env }, checkpoint)
+      const env = checkpointScenarioEnv({ ...sharedEnv }, checkpoint)
       delete env.WEWORK_E2E_CONTROL_SERVER_PORT
       delete env.WEWORK_E2E_MODEL_SERVER_PORT
       console.log(`\n[desktop-e2e] START ${checkpoint}`)
@@ -365,67 +463,37 @@ async function runParallelCheckpoints(checkpoints) {
 }
 
 async function runCheckpoints(checkpoints) {
-  const tempDir = await mkdtemp(join(tmpdir(), 'wework-desktop-e2e-'))
-  const buildManifestPath = join(tempDir, 'build-manifest.json')
-  const { controlServerPort, modelServerPort } = await resolveServerPorts(process.env)
+  const sharedEnv = await sharedBuildEnvironment()
+  const { controlServerPort, modelServerPort } = await resolveServerPorts(sharedEnv)
   const failures = []
-  let buildManifest = existingBuildManifest(process.env)
 
-  try {
-    for (const checkpoint of checkpoints) {
-      const env = checkpointScenarioEnv(
-        {
-          ...process.env,
-          WEWORK_E2E_CONTROL_SERVER_PORT: String(controlServerPort),
-          WEWORK_E2E_MODEL_SERVER_PORT: String(modelServerPort),
-          ...(buildManifest
-            ? {
-                WEWORK_E2E_APP_BIN: buildManifest.appBinary,
-                WEWORK_E2E_EXECUTOR_BIN: buildManifest.executorBinary,
-              }
-            : {
-                WEWORK_E2E_BUILD_MANIFEST: buildManifestPath,
-              }),
-        },
-        checkpoint
+  for (const checkpoint of checkpoints) {
+    const env = checkpointScenarioEnv(
+      {
+        ...sharedEnv,
+        WEWORK_E2E_CONTROL_SERVER_PORT: String(controlServerPort),
+        WEWORK_E2E_MODEL_SERVER_PORT: String(modelServerPort),
+      },
+      checkpoint
+    )
+    console.log(`\n[desktop-e2e] START ${checkpoint}`)
+    const args = CLOUD_ONLY_CHECKPOINTS.has(checkpoint)
+      ? ['--cloud-only', '--segment', checkpoint]
+      : ['--segment', checkpoint]
+    const result = await runTaskFlow(args, env, checkpoint)
+
+    if (result.code === 0) {
+      console.log(
+        `[desktop-e2e] PASS ${checkpoint}: duration=${formatDuration(result.durationMs)}, assertion-errors=none${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
       )
-      console.log(`\n[desktop-e2e] START ${checkpoint}`)
-      const args = CLOUD_ONLY_CHECKPOINTS.has(checkpoint)
-        ? ['--cloud-only', '--segment', checkpoint]
-        : ['--segment', checkpoint]
-      const result = await runTaskFlow(args, env, checkpoint)
-
-      if (!buildManifest && !existingBuildManifest(env)) {
-        try {
-          buildManifest = await readBuildManifest(buildManifestPath)
-          console.log(
-            `[desktop-e2e] shared build ready: app=${buildManifest.appBinary}, executor=${buildManifest.executorBinary}`
-          )
-        } catch (error) {
-          const failure = `Shared E2E build was unavailable: ${error instanceof Error ? error.message : String(error)}`
-          failures.push({ checkpoint, failure, ...result })
-          console.error(
-            `[desktop-e2e] FAIL ${checkpoint}: duration=${formatDuration(result.durationMs)}, error=${failure}${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
-          )
-          break
-        }
-      }
-
-      if (result.code === 0) {
-        console.log(
-          `[desktop-e2e] PASS ${checkpoint}: duration=${formatDuration(result.durationMs)}, assertion-errors=none${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
-        )
-        continue
-      }
-
-      const failure = await readFailureSummary(result)
-      failures.push({ checkpoint, failure, ...result })
-      console.error(
-        `[desktop-e2e] FAIL ${checkpoint}: duration=${formatDuration(result.durationMs)}, ${result.signal ? `signal=${result.signal}` : `exit=${result.code}`}, error=${failure}${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
-      )
+      continue
     }
-  } finally {
-    await rm(tempDir, { force: true, recursive: true })
+
+    const failure = await readFailureSummary(result)
+    failures.push({ checkpoint, failure, ...result })
+    console.error(
+      `[desktop-e2e] FAIL ${checkpoint}: duration=${formatDuration(result.durationMs)}, ${result.signal ? `signal=${result.signal}` : `exit=${result.code}`}, error=${failure}${result.resultDir ? `, evidence=${result.resultDir}` : ''}`
+    )
   }
 
   if (failures.length === 0) {
@@ -444,6 +512,13 @@ async function runCheckpoints(checkpoints) {
 
 async function runAllCheckpoints() {
   await runCheckpoints(DEFAULT_DESKTOP_CHECKPOINTS)
+}
+
+const previousResults = await compactInactiveDesktopE2EResults(
+  resolveDesktopE2EResultRoot(weworkDir)
+)
+if (previousResults.compacted > 0) {
+  console.log(`[desktop-e2e] compacted ${previousResults.compacted} previous result directories`)
 }
 
 if (requestedArgs.length > 0) {

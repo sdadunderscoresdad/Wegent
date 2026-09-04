@@ -177,6 +177,71 @@ async fn codex_app_server_engine_rejects_a_stale_thread_provider_before_turn_sta
     );
 }
 
+async fn codex_shared_app_server_recovers_a_stale_resumed_thread_provider() {
+    let _lock = env_lock().await;
+    let log_path = std::env::temp_dir().join(format!(
+        "wegent-executor-codex-stale-resume-provider-{}.jsonl",
+        std::process::id()
+    ));
+    let fake_codex = write_fake_codex_with_stale_resume_provider(&log_path);
+    let client = CodexAppServerClient::new(fake_codex.display().to_string());
+    let request = ExecutionRequest {
+        task_id: "stale-resume-provider-task".to_owned(),
+        subtask_id: "stale-resume-provider-subtask".to_owned(),
+        prompt: json!("continue"),
+        bot: json!([{"shell_type": "ClaudeCode"}]),
+        model_config: json!({
+            "model": "openai",
+            "model_id": "gpt-5.6-sol",
+            "base_url": "http://127.0.0.1:3456/v1",
+            "api_key": "test-key",
+            "api_format": "responses",
+            "codex_responses_compat_proxy": true
+        }),
+        ..ExecutionRequest::default()
+    };
+
+    let turn = client
+        .run_turn_with_cancel(
+            request,
+            CodexAppServerTurnOptions {
+                resume_thread_id: Some("thread-1".to_owned()),
+                ..CodexAppServerTurnOptions::default()
+            },
+        )
+        .await
+        .expect("stale loaded provider should recover through an idle app-server restart");
+
+    assert_eq!(
+        turn.outcome,
+        ExecutionOutcome::Completed {
+            content: "done".to_owned()
+        }
+    );
+    let messages = read_json_lines(&log_path);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "initialize")
+            .count(),
+        2
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "thread/resume")
+            .count(),
+        2
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["method"] == "turn/start")
+            .count(),
+        1
+    );
+}
+
 async fn codex_app_server_engine_maps_vision_prompt_blocks_to_user_input() {
     let _lock = env_lock().await;
     let log_path = std::env::temp_dir().join(format!(
@@ -417,6 +482,7 @@ async fn codex_app_server_receives_normalized_developer_path() {
     let _lock = env_lock().await;
     let _path = EnvGuard::set("PATH", "/usr/bin:/bin");
     let _extra_paths = EnvGuard::set("WEGENT_EXTRA_PATHS", "/custom/bin:/opt/homebrew/bin");
+    let _runtime_bin = EnvGuard::remove("WEWORK_RUNTIME_BIN");
     let log_path = std::env::temp_dir().join(format!(
         "wegent-executor-codex-path-rpc-{}.jsonl",
         std::process::id()
@@ -729,12 +795,14 @@ async fn codex_app_server_engine_does_not_timeout_running_turn() {
 
 async fn codex_app_server_idle_restart_preserves_in_flight_requests() {
     let _lock = env_lock().await;
-    let fake_codex = write_fake_codex_with_pending_request();
+    let request_marker = unique_dir("codex-pending-request'quoted").join("received");
+    let fake_codex = write_fake_codex_with_pending_request(&request_marker);
     let client = CodexAppServerClient::new(fake_codex.display().to_string());
     let request_client = client.clone();
     let pending_request =
         tokio::spawn(async move { request_client.request("plugin/list", json!({})).await });
 
+    wait_for_path(&request_marker, "pending app-server request should reach Codex").await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if matches!(client.restart_if_no_pending_requests().await, Err(1)) {
@@ -756,12 +824,14 @@ async fn codex_app_server_idle_restart_preserves_in_flight_requests() {
 
 async fn codex_app_server_proxy_restart_settles_in_flight_requests() {
     let _lock = env_lock().await;
-    let fake_codex = write_fake_codex_with_pending_request();
+    let request_marker = unique_dir("codex-proxy-pending-request").join("received");
+    let fake_codex = write_fake_codex_with_pending_request(&request_marker);
     let client = CodexAppServerClient::new(fake_codex.display().to_string());
     let request_client = client.clone();
     let pending_request =
         tokio::spawn(async move { request_client.request("plugin/list", json!({})).await });
 
+    wait_for_path(&request_marker, "pending app-server request should reach Codex").await;
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if matches!(client.restart_if_no_pending_requests().await, Err(1)) {
@@ -1101,6 +1171,69 @@ done
     path
 }
 
+fn write_fake_codex_with_stale_resume_provider(log_path: &Path) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "fake-codex-stale-resume-provider-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let process_count_path = path.with_extension("process-count");
+    let _ = fs::remove_file(log_path);
+    let _ = fs::remove_file(&process_count_path);
+    let content = format!(
+        r#"#!/bin/sh
+LOG_PATH='{}'
+PROCESS_COUNT_PATH='{}'
+process_count=0
+if [ -f "$PROCESS_COUNT_PATH" ]; then
+  process_count=$(cat "$PROCESS_COUNT_PATH")
+fi
+process_count=$((process_count + 1))
+printf '%s\n' "$process_count" > "$PROCESS_COUNT_PATH"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG_PATH"
+  request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{{"id":%s,"result":{{"protocolVersion":1}}}}\n' "$request_id"
+      ;;
+    *'"method":"initialized"'*)
+      ;;
+    *'"method":"thread/unsubscribe"'*)
+      printf '{{"id":%s,"result":{{}}}}\n' "$request_id"
+      ;;
+    *'"method":"thread/resume"'*)
+      if [ "$process_count" -eq 1 ]; then
+        provider='openai'
+      else
+        provider='wework-router'
+      fi
+      printf '{{"id":%s,"result":{{"modelProvider":"%s","thread":{{"id":"thread-1","modelProvider":"%s"}}}}}}\n' "$request_id" "$provider" "$provider"
+      ;;
+    *'"method":"thread/goal/get"'*)
+      printf '{{"id":%s,"result":{{"goal":null}}}}\n' "$request_id"
+      ;;
+    *'"method":"turn/start"'*)
+      printf '{{"id":%s,"result":{{"turn":{{"id":"turn-1","status":"inProgress"}}}}}}\n' "$request_id"
+      printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-1","turnId":"turn-1","item":{{"id":"message-1","type":"agentMessage","phase":"final_answer","text":"done"}}}}}}'
+      printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-1","turn":{{"id":"turn-1","status":"completed"}}}}}}'
+      ;;
+  esac
+done
+"#,
+        log_path.display(),
+        process_count_path.display()
+    );
+    fs::write(&path, content).unwrap();
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+    path
+}
+
 fn write_fake_codex_for_auxiliary_rpc_then_turn(log_path: &Path) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "fake-codex-shared-proxy-{}-{}",
@@ -1149,15 +1282,13 @@ done
     path
 }
 
-fn write_fake_codex_with_pending_request() -> PathBuf {
+fn write_fake_codex_with_pending_request(request_marker: &Path) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "fake-codex-pending-request-{}-{}",
         std::process::id(),
         unique_suffix()
     ));
-    fs::write(
-        &path,
-        r#"#!/bin/sh
+    let content = r#"#!/bin/sh
 while IFS= read -r line; do
   request_id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
@@ -1167,13 +1298,14 @@ while IFS= read -r line; do
     *'"method":"initialized"'*)
       ;;
     *'"method":"plugin/list"'*)
+      touch __REQUEST_MARKER__
       sleep 30
       ;;
   esac
 done
-"#,
-    )
-    .unwrap();
+"#
+    .replace("__REQUEST_MARKER__", &shell_quote(request_marker));
+    fs::write(&path, content).unwrap();
     #[cfg(unix)]
     {
         let mut permissions = fs::metadata(&path).unwrap().permissions();
@@ -1181,6 +1313,10 @@ done
         fs::set_permissions(&path, permissions).unwrap();
     }
     path
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 fn write_fake_codex_logging_start(log_path: &Path, env_keys: &[&str]) -> PathBuf {
@@ -1566,6 +1702,16 @@ fn read_json_lines(path: &Path) -> Vec<Value> {
         .collect::<Vec<_>>()
 }
 
+async fn wait_for_path(path: &Path, message: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect(message);
+}
+
 fn assert_config_arg(args: &[Value], expected: &str) {
     assert!(
         args.windows(2)
@@ -1608,6 +1754,12 @@ impl EnvGuard {
     fn set(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
         Self { key, previous }
     }
 }

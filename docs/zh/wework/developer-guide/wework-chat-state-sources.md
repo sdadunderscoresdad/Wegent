@@ -106,6 +106,11 @@ WebView 或 executor 重建后启动的新 turn 不会让历史 assistant 回复
 空值；在 seed 仍属于当前任务时，空结果不能清除 lifecycle 中的 Goal 状态。这样即使
 stream 结算先于 Goal 持久化完成，active Goal 也能继续约束任务生命周期。
 
+从 URL 恢复 runtime task 时，pane 最初可能只有 device ID 和 task ID，随后才从任务
+列表补全 workspace、thread 和 runtime 信息。Goal 和 transcript 加载请求都必须在
+地址补全后重新发起，但补全前后仍属于同一个稳定任务身份；重新水合不能创建新会话，
+也不能重放已经处理过的 turn 生命周期事件。
+
 ### Claude Code 普通会话执行器
 
 Wework 中的 Claude Code 与 Codex 一样使用普通 runtime task 会话界面，不使用终端
@@ -232,7 +237,7 @@ executor 的 `RuntimeTaskLink.running` 只存在于当前进程内存和 runtime
 
 `BufferedChatInput` 在输入和提交期间保留 pane 级草稿，但外部 `value` 仍是已确认草稿的信源。提交非空草稿后，本地空状态必须绑定到预期的空外部值，不能继续绑定到刚提交的文本；否则队列或引导条把同一文本送回编辑器时，会被误判为旧草稿并显示为空。维护该逻辑时必须覆盖“提交文本 → 外部清空 → 编辑队列条目恢复相同文本”的回归场景。
 
-暂停消息队列后提交新输入时，用户可以选择保留或清空现有队列。选择保留队列后，新输入会先发送，原队列随后继续；确认操作必须同步清空当前 ProseMirror composer 和外部草稿状态，不能只等待 `BufferedChatInput` 的防抖更新，否则已发送文本可能残留在输入框中。
+暂停消息队列后提交新输入时，用户可以选择保留或清空现有队列。选择保留队列后，新输入会先发送，原队列随后继续；队列必须保持暂停，直到生命周期 Store 确认新输入对应的新 turn 已进入 streaming，或已经产生终态 outcome。后一个条件覆盖 turn 启动与结算在一次 React 提交中合并的快速执行，不能只等待活跃态，也不能在发送请求返回后立即恢复，否则原队列可能永远暂停，或被旧的空闲快照与新 turn 并发提交。确认操作还必须同步清空当前 ProseMirror composer 和外部草稿状态，不能只等待 `BufferedChatInput` 的防抖更新，否则已发送文本可能残留在输入框中。
 
 ## 会话引用上下文
 
@@ -293,6 +298,12 @@ assistant 之前。canonical `turns` 是前端 transcript 的唯一输入，不�
 不能把这些内部协议字符作为普通正文显示；只有在同时接入引用元数据和对应交互组件后，
 才能把它们转换为可见引用。
 
+Electron 聊天中的 assistant Markdown 图片可以引用本机绝对路径或 `file://` URL。
+渲染器必须先通过 Electron 文件桥读取文件，再使用 Blob URL 展示，不能让 HTTP 页面
+直接加载 `file://` 资源。图片文件必须在消息渲染时仍然存在；读取失败时显示明确的图片
+错误占位。修改这条链路后，运行 CI 覆盖的 desktop `rendering-extensions` checkpoint，
+其中会从系统临时目录读取真实 PNG，并断言最终图片使用 Blob URL。
+
 ## 引导消息顺序
 
 运行中的 Codex LocalTask 支持把队列消息作为原生引导发送。引导是当前 turn 内的用户输入，不是新的 follow-up turn，所以 UI 必须在发送开始时就把本地用户消息插入到当前 assistant 中间：
@@ -313,6 +324,7 @@ assistant 之前。canonical `turns` 是前端 transcript 的唯一输入，不�
 
 右侧工作区的“临时聊天”用于在当前 Codex 本地线程旁边发起一次短对话。它不是 fork，也不是左侧任务列表中的普通 runtime task：
 
+- 项目空间看板任务弹窗和项目空间任务 Tab 创建新 runtime task 时，必须统一调用 `useProjectRuntimeTaskComposer`，再进入 `createProjectRuntimeTask` 的同一条底层创建链路。`TemporaryChatPanel` 只构造一次带稳定 id 的 optimistic user message，并把同一个消息对象传入创建链路；`sendPreparedRuntimeMessage` 统一负责把该 id 发送给 executor，并将消息写入 `runtimeConversationCache`。入口组件不得各自追加首条消息，否则实时界面会同时保留本地消息和 transcript 消息，刷新后才恢复为一条。
 - 每个临时聊天 tab 都有独立的 `chat:<id>` 实例标识，允许在右侧工作区同时打开多个临时聊天。
 - 创建 runtime 线程前，`TemporaryChatPanel` 以实例标识作为 `conversationKey`。线程创建后，pane workspace state 保存该 tab 的 runtime 地址，消息则由 `runtimeConversationCache` 的实时投影恢复。临时线程不支持 `thread/turns/list`，因此切换主会话导致面板卸载、再切回时，不能依赖 transcript 补回内容。
 - 每个临时聊天的附件选择、上传进度和错误状态也按实例隔离，不能复用主聊天 composer 的附件状态；首条消息必须把该实例的附件显式传给 `createTemporaryRuntimeTask`。
@@ -328,7 +340,7 @@ assistant 之前。canonical `turns` 是前端 transcript 的唯一输入，不�
 
 维护规则：不要用 fallback 在 UI 里把临时聊天补进左侧任务列表，也不要在 executor 中为临时线程伪造 rollout。临时聊天的主路径是 `ephemeral + sideSource + direct_thread_id`。
 
-修改该链路后运行 `pnpm --filter wework e2e:desktop --segment temporary-chat`。独立真实 Tauri 场景会保持 assistant response 运行，断言普通 follow-up 位于“正在思考”之前，并在切换主会话后确认临时聊天的首条消息和 follow-up 都能恢复；关键阶段截图写入 `wework/test-results/desktop-e2e/<run-id>/`。
+修改该链路后运行 `pnpm --filter wework e2e:desktop --segment temporary-chat`。独立真实 Electron 场景会保持 assistant response 运行，断言普通 follow-up 位于“正在思考”之前，并在切换主会话后确认临时聊天的首条消息和 follow-up 都能恢复；关键阶段截图写入 `wework/test-results/desktop-e2e/<run-id>/`。
 
 ## 顶层页面切换
 
@@ -347,6 +359,26 @@ assistant 之前。canonical `turns` 是前端 transcript 的唯一输入，不�
 桌面工作台最多缓存 20 个普通 pane，使用户在并行任务之间切换时保留消息、输入草稿和局部 UI 状态。超出上限后按最近使用顺序淘汰非活跃 pane；正在运行的任务和已固定终端的 pane 不计入普通缓存上限，并保持挂载直到任务结束或终端解除固定。维护此边界时应继续复用 `CachedWorkbenchPaneStack` 的 LRU 与固定机制，不能在布局层增加第二套 pane 缓存。
 
 消息区按 `conversationKey` 保存每个任务的阅读位置。任务切换时，恢复流程会在布局稳定窗口内重复对齐已保存的消息锚点；这段时间由程序触发的 `scroll` 事件不能覆盖快照。用户主动滚轮或触摸滚动时则应立即退出恢复状态。修改这条链路时，必须覆盖“滚到长回复中部 → 切到另一任务 → 切回原任务”的真实桌面 E2E，并保留切换前、切换后和恢复后的截图。
+
+## 项目任务状态同步
+
+Wework runtime task 与项目空间任务绑定后，状态同步只保留一条前端主链路：
+
+1. `RuntimeTaskLifecycleStore` 产出当前 runtime task 的生命周期快照。
+2. `WorkbenchProvider` 将快照转换为 `runtimeTaskTrackingStatus`，并调用 `reconcileProjectTaskTrackingStatus`。
+3. `reconcileProjectTaskTrackingStatus` 根据绑定的项目任务当前状态和执行状态计算唯一目标状态，再通过项目空间存储所有者更新任务。
+4. 固定“任务”标签是这条同步链路的唯一 UI 所有者；切换绑定任务时，仍然重新运行同一个 reconciler，不能直接写状态。
+
+运行态映射到 `in_progress`。成功、失败或取消等终态统一映射到 `in_review`，等待用户确认；归档动作也复用同一个 reconciler 完成最终状态收敛。项目自动化工作流由 Backend runtime event projection 维护，前端不能再调用独立状态 PATCH 与其竞争。
+
+以下路径已经废弃，不得恢复：
+
+- renderer 启动时扫描并回放任务状态；
+- Wework、Backend 或 Executor 暴露 `runtime.tasks.status.replay` 一类回放 RPC；
+- 云端工作流由 renderer 调用 `cloud-context/status` 直接写任务状态；
+- 看板、详情页或其他标签根据局部消息、runtime 列表自行补写任务状态。
+
+修改这条链路后，运行 `pnpm --filter wework e2e:desktop -- --segment task-status-sync`。该真实 Electron checkpoint 会绑定固定任务，分别断言运行中任务只出现在“进行中”列，执行结束后只出现在“等待确认”列。
 
 ## 审核结果
 

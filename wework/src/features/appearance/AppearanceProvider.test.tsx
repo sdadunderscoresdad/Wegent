@@ -6,6 +6,12 @@ import { darkPalette, lightPalette } from './presets'
 import { useAppearance } from './useAppearance'
 import { WEWORK_RESET_FONT_SIZE_EVENT, WEWORK_STEP_FONT_SIZE_EVENT } from '@/lib/keybindings'
 
+const updateAppPreferencesMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/desktop/appPreferences', () => ({
+  updateAppPreferences: updateAppPreferencesMock,
+}))
+
 let mediaQueryMatches = false
 let mediaQueryListener: ((event: MediaQueryListEvent) => void) | null = null
 
@@ -88,9 +94,15 @@ describe('AppearanceProvider', () => {
     document.documentElement.className = ''
     document.documentElement.removeAttribute('style')
     installMatchMedia()
+    updateAppPreferencesMock.mockReset()
+    updateAppPreferencesMock.mockResolvedValue(undefined)
   })
 
   test('applies and persists selected dark mode', async () => {
+    window.__WEWORK_RUNTIME_CONFIG__ = {
+      ...window.__WEWORK_RUNTIME_CONFIG__,
+      desktopHost: 'electron',
+    }
     render(
       <AppearanceProvider>
         <Harness />
@@ -103,6 +115,9 @@ describe('AppearanceProvider', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(document.documentElement.classList.contains('dark')).toBe(true)
     expect(localStorage.getItem('wework.appearance')).toContain('"mode":"dark"')
+    await waitFor(() => {
+      expect(updateAppPreferencesMock).toHaveBeenLastCalledWith({ appearanceMode: 'dark' })
+    })
   })
 
   test('updates system mode when system preference changes', async () => {
@@ -231,7 +246,7 @@ describe('AppearanceProvider', () => {
     )
   })
 
-  test('migrates the old default sidebar colors to the quieter palette', () => {
+  test('migrates the old default dark palette to the neutral palette', () => {
     localStorage.setItem(
       'wework.appearance',
       JSON.stringify({
@@ -239,7 +254,25 @@ describe('AppearanceProvider', () => {
           sidebar: '229 229 231 / 0.72',
         },
         dark: {
-          sidebar: '31 35 41 / 0.82',
+          bgBase: '17 19 22',
+          bgSurface: '28 31 36',
+          bgMuted: '38 42 48',
+          bgHover: '96 165 250 / 0.12',
+          sidebar: '40 40 40 / 0.92',
+          sidebarActive: '52 58 66',
+          sidebarHover: '255 255 255 / 0.08',
+          sidebarTextPrimary: '232 238 246',
+          sidebarTextSecondary: '181 191 205',
+          sidebarTextMuted: '126 138 153',
+          mobileDrawer: '24 39 58',
+          border: '55 61 70',
+          textPrimary: '241 245 249',
+          textSecondary: '203 213 225',
+          textMuted: '148 163 184',
+          primary: '96 165 250',
+          primaryContrast: '11 18 20',
+          popover: '28 31 36',
+          codeBg: '15 23 42',
         },
       })
     )
@@ -253,9 +286,7 @@ describe('AppearanceProvider', () => {
     expect(localStorage.getItem('wework.appearance')).toContain(
       `"sidebar":"${lightPalette.sidebar}"`
     )
-    expect(localStorage.getItem('wework.appearance')).toContain(
-      `"sidebar":"${darkPalette.sidebar}"`
-    )
+    expect(JSON.parse(localStorage.getItem('wework.appearance') ?? '{}').dark).toEqual(darkPalette)
   })
 
   test('normalizes stored background settings and preserves old configuration defaults', () => {

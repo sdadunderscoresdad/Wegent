@@ -101,6 +101,7 @@ async fn agent_process_engine_does_not_inject_project_space_mcp_into_claude_runs
         &format!(
             r#"#!/bin/sh
 printf '%s\n' "$@" > "{}"
+cat >/dev/null
 printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"done"}}]}}}}'
 "#,
             args_file.display()
@@ -289,6 +290,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}
 async fn agent_process_engine_clones_git_workspace_before_running_claude() {
     let _lock = env_lock().lock().await;
     let workspace_root = unique_dir("claude-git-workspace-root");
+    let executor_home = unique_dir("claude-git-executor-home");
     let bin_dir = unique_dir("claude-git-bin");
     let marker = unique_dir("claude-git-marker").join("git-args.txt");
     fs::create_dir_all(&bin_dir).unwrap();
@@ -298,10 +300,17 @@ async fn agent_process_engine_clones_git_workspace_before_running_claude() {
         r#"#!/bin/sh
 if [ ! -d ".git" ]; then exit 30; fi
 if [ ! -f "source.txt" ]; then exit 31; fi
+if [ ! -x "$GIT_ASKPASS" ]; then exit 32; fi
+if [ "$(cat "$WEGENT_GIT_USERNAME_FILE")" != "octocat" ]; then exit 33; fi
+if [ "$(cat "$WEGENT_GIT_TOKEN_FILE")" != "ghp_test_token" ]; then exit 34; fi
+if [ "$GH_TOKEN" != "ghp_test_token" ]; then exit 35; fi
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$(pwd)"
 "#,
     );
     let _workspace = EnvGuard::set("WORKSPACE_ROOT", &workspace_root.display().to_string());
+    let _home = EnvGuard::set("HOME", &executor_home.display().to_string());
+    let _aes_key = EnvGuard::set("GIT_TOKEN_AES_KEY", "12345678901234567890123456789012");
+    let _aes_iv = EnvGuard::set("GIT_TOKEN_AES_IV", "1234567890123456");
     let path_value = format!(
         "{}:{}",
         bin_dir.display(),
@@ -312,6 +321,7 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}
     let engine = AgentProcessEngine::new(planner);
     let request = ExecutionRequest {
         task_id: "85".to_owned(),
+        subtask_id: "8501".to_owned(),
         prompt: json!("run in cloned repo"),
         bot: json!([{"id": 325, "shell_type": "ClaudeCode"}]),
         model_config: json!({"model": "anthropic", "model_id": "claude-sonnet-4"}),
@@ -321,6 +331,19 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}
                 json!("https://github.com/wecode-ai/Wegent.git"),
             ),
             ("branch_name".to_owned(), json!("feature/test")),
+            ("git_domain".to_owned(), json!("github.com")),
+            (
+                "git_auth_transport".to_owned(),
+                json!("encrypted_request_token"),
+            ),
+            (
+                "user".to_owned(),
+                json!({
+                    "git_domain": "github.com",
+                    "git_login": "octocat",
+                    "git_token": "iOuoSwc/HrF6ZhttvtSNeQ=="
+                }),
+            ),
         ]),
         ..ExecutionRequest::default()
     };
@@ -336,6 +359,153 @@ printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}
     );
     let git_args = fs::read_to_string(marker).unwrap();
     assert!(git_args.contains("clone --branch feature/test --single-branch"));
+    assert!(git_args.contains("https://github.com/wecode-ai/Wegent.git"));
+    assert!(!git_args.contains("ghp_test_token"));
+    assert!(!git_args.contains("iOuoSwc/HrF6ZhttvtSNeQ=="));
+    let git_config = fs::read_to_string(expected_cwd.join(".git/config")).unwrap();
+    assert!(git_config.contains("url = https://github.com/wecode-ai/Wegent.git"));
+    assert!(!git_config.contains("ghp_test_token"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agent_process_engine_times_out_git_clone_and_cleans_partial_workspace() {
+    let _lock = env_lock().lock().await;
+    let workspace_root = unique_dir("claude-git-timeout-workspace-root");
+    let bin_dir = unique_dir("claude-git-timeout-bin");
+    let git_environment = unique_dir("claude-git-timeout-marker").join("git-env.txt");
+    let claude_marker = unique_dir("claude-git-timeout-claude").join("ran.txt");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(git_environment.parent().unwrap()).unwrap();
+    let fake_git = bin_dir.join("git");
+    fs::write(
+        &fake_git,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "clone" ]; then
+  DEST="$3"
+  mkdir -p "$DEST/.git"
+  printf '%s\n%s\n%s\n' "$GIT_TERMINAL_PROMPT" "$GIT_HTTP_LOW_SPEED_LIMIT" "$GIT_HTTP_LOW_SPEED_TIME" > '{}'
+  sleep 30 &
+  wait $!
+fi
+exit 20
+"#,
+            git_environment.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&fake_git).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&fake_git, permissions).unwrap();
+    let fake_claude = write_fake_executable(
+        "fake-claude-after-git-timeout",
+        &format!(
+            r#"#!/bin/sh
+mkdir -p '{}'
+touch '{}'
+printf '%s\n' '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"unexpected"}}]}}}}'
+"#,
+            claude_marker.parent().unwrap().display(),
+            claude_marker.display(),
+        ),
+    );
+    let _workspace = EnvGuard::set("WORKSPACE_ROOT", &workspace_root.display().to_string());
+    let _timeout = EnvGuard::set("WEGENT_GIT_CLONE_TIMEOUT_SECONDS", "1");
+    let _low_speed_limit = EnvGuard::set("WEGENT_GIT_HTTP_LOW_SPEED_LIMIT", "2048");
+    let _low_speed_time = EnvGuard::set("WEGENT_GIT_HTTP_LOW_SPEED_TIME_SECONDS", "5");
+    let path_value = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let _path = EnvGuard::set("PATH", &path_value);
+    let planner = AgentCommandPlanner::new(fake_claude.display().to_string(), "codex");
+    let engine = AgentProcessEngine::new(planner);
+    let request = ExecutionRequest {
+        task_id: "87".to_owned(),
+        prompt: json!("do not run after clone timeout"),
+        bot: json!([{"id": 327, "shell_type": "ClaudeCode"}]),
+        model_config: json!({"model": "anthropic", "model_id": "claude-sonnet-4"}),
+        extra: serde_json::Map::from_iter([(
+            "git_url".to_owned(),
+            json!("https://github.com/wecode-ai/Wegent.git"),
+        )]),
+        ..ExecutionRequest::default()
+    };
+
+    let outcome = engine.run(request).await;
+
+    assert!(
+        matches!(
+            outcome,
+            ExecutionOutcome::Failed { ref message }
+                if message.contains("git clone timed out after 1s")
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(fs::read_to_string(git_environment).unwrap(), "0\n2048\n5\n");
+    assert!(!workspace_root.join("87/Wegent").exists());
+    assert!(!claude_marker.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agent_process_engine_rejects_incomplete_existing_git_workspace() {
+    let _lock = env_lock().lock().await;
+    let workspace_root = unique_dir("claude-incomplete-git-workspace-root");
+    let bin_dir = unique_dir("claude-incomplete-git-bin");
+    let git_marker = unique_dir("claude-incomplete-git-marker").join("git-args.txt");
+    let claude_marker = unique_dir("claude-incomplete-git-claude").join("ran.txt");
+    let project_path = workspace_root.join("88/Wegent");
+    fs::create_dir_all(project_path.join(".git")).unwrap();
+    fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_git(&bin_dir, &git_marker);
+    let fake_claude = write_fake_executable(
+        "fake-claude-after-incomplete-git",
+        &format!(
+            r#"#!/bin/sh
+mkdir -p '{}'
+touch '{}'
+"#,
+            claude_marker.parent().unwrap().display(),
+            claude_marker.display(),
+        ),
+    );
+    let _workspace = EnvGuard::set("WORKSPACE_ROOT", &workspace_root.display().to_string());
+    let path_value = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let _path = EnvGuard::set("PATH", &path_value);
+    let planner = AgentCommandPlanner::new(fake_claude.display().to_string(), "codex");
+    let engine = AgentProcessEngine::new(planner);
+    let request = ExecutionRequest {
+        task_id: "88".to_owned(),
+        prompt: json!("do not reuse partial clone"),
+        bot: json!([{"id": 328, "shell_type": "ClaudeCode"}]),
+        model_config: json!({"model": "anthropic", "model_id": "claude-sonnet-4"}),
+        extra: serde_json::Map::from_iter([(
+            "git_url".to_owned(),
+            json!("https://github.com/wecode-ai/Wegent.git"),
+        )]),
+        ..ExecutionRequest::default()
+    };
+
+    let outcome = engine.run(request).await;
+
+    assert!(
+        matches!(
+            outcome,
+            ExecutionOutcome::Failed { ref message }
+                if message.contains("incomplete or invalid repository")
+        ),
+        "{outcome:?}"
+    );
+    assert!(project_path.exists());
+    assert!(!claude_marker.exists());
+    assert!(fs::read_to_string(git_marker).unwrap().contains("-C "));
 }
 
 #[cfg(unix)]
@@ -1166,6 +1336,7 @@ if [ "$1" = "clone" ]; then
   DEST="$2"
   mkdir -p "$DEST/.git"
   printf '%s\n%s\n' "$URL" "$BRANCH" > "$DEST/source.txt"
+  printf '[remote "origin"]\n\turl = %s\n' "$URL" > "$DEST/.git/config"
   exit 0
 fi
 if [ "$1" = "-C" ] && [ "$3" = "config" ]; then

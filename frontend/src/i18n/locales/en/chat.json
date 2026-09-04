@@ -10,6 +10,21 @@
     "expand": "Expand input area",
     "collapse": "Collapse input area"
   },
+  "mobile_composer": {
+    "more": "More",
+    "more_description": "Add content and adjust less common chat settings",
+    "add_content": "Add content",
+    "add_content_description": "Add attachments or conversation context",
+    "configuration": "Chat settings",
+    "configuration_description": "Adjust the agent, model, skills, and workspace",
+    "close": "Close",
+    "no_agent": "No agent selected",
+    "default_model": "Default model",
+    "workspace": "Repository / Branch",
+    "not_selected": "Not selected",
+    "skill_count": "{{count}} skills",
+    "skills_description": "Choose skills available for this conversation"
+  },
   "actions": {
     "send": "Send",
     "clear": "Clear Chat",
@@ -97,6 +112,15 @@
     "disconnected": "Disconnected",
     "reconnecting": "Reconnecting... (attempt {{count}})",
     "reconnected": "Reconnected"
+  },
+  "cards": {
+    "video_director": {
+      "title": "Video generation",
+      "completed": "Video generated",
+      "processing": "Creating your video",
+      "failed": "Video generation failed",
+      "view_detail": "View details"
+    }
   },
   "messages": {
     "assistant": "AI Assistant",
@@ -290,6 +314,7 @@
   "send_shortcut_cmd_enter_mac": "⌘+Enter to send, Enter for new line",
   "send_shortcut_cmd_enter_win": "Ctrl+Enter to send, Enter for new line",
   "quick_launch": {
+    "quick_start": "Quick start",
     "system_functions": "Recommended features",
     "favorite_agents": "My favorites",
     "overwrite_confirm_title": "Replace current input?",
@@ -723,6 +748,7 @@
       "adaptive": "Adaptive"
     },
     "generating": "Generating video...",
+    "loading": "Loading video...",
     "preparing": "Preparing...",
     "progress": "Progress: {{progress}}%",
     "completed": "Video generation completed",
@@ -730,10 +756,19 @@
     "download": "Download Video",
     "reference_image": "Reference Image (Optional)",
     "no_models": "No video models available",
+    "settings_title": "Video settings",
     "ratio_section": "Aspect ratio",
     "duration_section": "Duration",
     "duration_auto": "Auto",
     "resolution_section": "Resolution"
+  },
+  "asyncCards": {
+    "loading": "Loading card...",
+    "pleaseWait": "Please wait while the task is processed",
+    "failed": "The asynchronous task failed",
+    "videoTitle": "Creative video",
+    "viewDetails": "View details",
+    "panelDescription": "Review the current result and continue to the next video stage"
   },
   "image": {
     "title": "Image Generation",
@@ -812,6 +847,10 @@
       "invalidContent": "The title or content is invalid. Check it and try again.",
       "saveFailed": "Failed to save. Try again later."
     }
+  },
+  "externalWebContent": {
+    "videoMetadataOnlyTitle": "The current model does not support video understanding",
+    "videoMetadataOnlyDescription": "To understand the video, switch to a video-understanding model."
   },
   "dingtalkDocs": {
     "tabTitle": "DingTalk Docs",

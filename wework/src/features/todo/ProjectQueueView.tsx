@@ -11,6 +11,9 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import type { CloudLoopItem, CloudLoopItemExecution, CloudProject } from '@/api/deliveries'
 import type { ProjectChatAgent } from '@/api/projectChatAgents'
+import { runtimeProfileIsRunnable, type RuntimeProfile } from '@/api/runtimeProfiles'
+import { CompositedSpinner } from '@/components/common/CompositedSpinner'
+import { MenuSelect } from '@/components/common/MenuSelect'
 import type { WorkbenchServices } from '@/features/workbench/workbenchServices'
 import { useTranslation } from '@/hooks/useTranslation'
 import { cn } from '@/lib/utils'
@@ -37,6 +40,11 @@ type QueueExecution = Pick<
   | 'version'
   | 'created_at'
   | 'updated_at'
+  | 'executor_owner_user_id'
+  | 'runtime_profile_id'
+  | 'runtime_source'
+  | 'can_select_runtime'
+  | 'waiting_runtime_reason'
 > & {
   team_id?: number | null
   executor_type?: string
@@ -107,7 +115,13 @@ function executionInQueue(execution: QueueExecution): boolean {
   return QUEUE_STATES.has(execution.display_state)
 }
 
-function executionToItem(execution: QueueExecution): CloudLoopItem {
+type QueueItem = CloudLoopItem & {
+  runtime_profile_id?: string | null
+  can_select_runtime?: boolean
+  executor_owner_user_id?: number | null
+}
+
+function executionToItem(execution: QueueExecution): QueueItem {
   return {
     id: execution.loop_item_id,
     cloud_project_id: execution.cloud_project_id,
@@ -136,6 +150,9 @@ function executionToItem(execution: QueueExecution): CloudLoopItem {
     can_approve: execution.status === 'pending_approval',
     execution_note: execution.execution_note || null,
     assignment_history: [],
+    runtime_profile_id: execution.runtime_profile_id,
+    can_select_runtime: execution.can_select_runtime,
+    executor_owner_user_id: execution.executor_owner_user_id,
   }
 }
 
@@ -189,9 +206,11 @@ function QueueStateChip({ state }: { state?: string | null }) {
         current.className
       )}
     >
-      <Icon
-        className={cn('h-3 w-3', (state === 'running' || state === 'cancelling') && 'animate-spin')}
-      />
+      {state === 'running' || state === 'cancelling' ? (
+        <CompositedSpinner icon={Icon} className="h-3 w-3" />
+      ) : (
+        <Icon className="h-3 w-3" />
+      )}
       {state ? queueStateLabel(state, t) : ''}
     </span>
   )
@@ -233,6 +252,8 @@ export function ProjectQueueView({
   project,
   projectChatAgentApi,
   executionApi,
+  runtimeProfileApi,
+  runtimeProfiles = [],
   currentUserId,
   onOpenTask,
   embedded = false,
@@ -241,6 +262,8 @@ export function ProjectQueueView({
   project: CloudProject
   projectChatAgentApi?: NonNullable<WorkbenchServices['projectChatAgentApi']>
   executionApi?: ExecutionListApi
+  runtimeProfileApi?: WorkbenchServices['runtimeProfileApi']
+  runtimeProfiles?: RuntimeProfile[]
   currentUserId?: string | number
   onOpenTask?: (item: CloudLoopItem) => void
   embedded?: boolean
@@ -255,6 +278,32 @@ export function ProjectQueueView({
   const [query, setQuery] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const [stoppingExecutionId, setStoppingExecutionId] = useState<number | null>(null)
+  const [selectingRuntimeExecutionId, setSelectingRuntimeExecutionId] = useState<number | null>(
+    null
+  )
+  const runnableRuntimeProfiles = useMemo(
+    () => runtimeProfiles.filter(runtimeProfileIsRunnable),
+    [runtimeProfiles]
+  )
+
+  const selectRuntime = async (item: QueueItem, runtimeProfileId: string) => {
+    if (!runtimeProfileApi || item.execution_id == null) return
+    setSelectingRuntimeExecutionId(item.execution_id)
+    setError(null)
+    try {
+      await runtimeProfileApi.selectExecution(
+        project.id,
+        item.execution_id,
+        runtimeProfileId,
+        item.version
+      )
+      setReloadKey(key => key + 1)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('workbench.runtime_select_failed'))
+    } finally {
+      setSelectingRuntimeExecutionId(null)
+    }
+  }
 
   const stopExecution = async (item: CloudLoopItem) => {
     if (!executionApi?.stop || item.execution_id == null) return
@@ -301,7 +350,9 @@ export function ProjectQueueView({
           if (!active || seq !== loadSeq) return
           const byExecutor = new Map<string, QueueExecution[]>()
           for (const execution of all) {
-            const executorKey = `agent:${execution.agent_id ?? ''}`
+            const executorKey = execution.agent_id
+              ? `agent:${execution.agent_id}`
+              : 'generic-runtime'
             const bucket = byExecutor.get(executorKey) ?? []
             bucket.push(execution)
             byExecutor.set(executorKey, bucket)
@@ -311,6 +362,9 @@ export function ProjectQueueView({
               .filter(executionInQueue)
               .map(executionToItem)
           }
+          queues['generic-runtime'] = (byExecutor.get('generic-runtime') ?? [])
+            .filter(executionInQueue)
+            .map(executionToItem)
         } else {
           for (const agent of nextAgents) {
             const response = await api.listLoopItems(project.id, {
@@ -363,6 +417,14 @@ export function ProjectQueueView({
         title: agent.name,
         items: botQueues[`agent:${agent.id}`] ?? [],
         bot: agent,
+      })
+    }
+    const genericItems = botQueues['generic-runtime'] ?? []
+    if (genericItems.length > 0) {
+      columns.push({
+        key: 'generic-runtime',
+        title: t('workbench.queue_generic_ai'),
+        items: genericItems,
       })
     }
     return columns
@@ -461,7 +523,7 @@ export function ProjectQueueView({
       {error ? <p className="mb-3 text-sm text-red-600">{error}</p> : null}
       {loading ? (
         <div className="flex h-40 items-center justify-center text-sm text-text-muted">
-          <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+          <CompositedSpinner className="mr-2 h-4 w-4" />
           {t('workbench.project_chat_loading')}
         </div>
       ) : (
@@ -504,6 +566,7 @@ export function ProjectQueueView({
                   </p>
                 ) : (
                   column.items.filter(isVisible).map(item => {
+                    const queueItem = item as QueueItem
                     const canStop =
                       Boolean(executionApi?.stop) &&
                       item.execution_id != null &&
@@ -534,6 +597,27 @@ export function ProjectQueueView({
                             {item.execution_note ? (
                               <span className="block truncate text-xs text-amber-600">
                                 {item.execution_note}
+                              </span>
+                            ) : null}
+                            {queueItem.can_select_runtime &&
+                            item.execution_id != null &&
+                            String(queueItem.executor_owner_user_id ?? '') ===
+                              String(currentUserId ?? '') ? (
+                              <span
+                                className="mt-1 block"
+                                onClick={event => event.stopPropagation()}
+                              >
+                                <MenuSelect
+                                  testId={`project-queue-runtime-${item.execution_id}`}
+                                  value={queueItem.runtime_profile_id ?? ''}
+                                  disabled={selectingRuntimeExecutionId === item.execution_id}
+                                  placeholder={t('workbench.runtime_select')}
+                                  onChange={value => void selectRuntime(queueItem, value)}
+                                  options={runnableRuntimeProfiles.map(profile => ({
+                                    value: profile.id,
+                                    label: `${profile.name} · ${profile.model}`,
+                                  }))}
+                                />
                               </span>
                             ) : null}
                           </span>

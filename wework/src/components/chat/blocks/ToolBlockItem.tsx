@@ -2,15 +2,18 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ChevronDown, Clock3, Copy, CopyCheck, FileDiff, Search, Wrench } from 'lucide-react'
 import { useTranslation } from '@/hooks/useTranslation'
+import { readElectronLocalFile } from '@/lib/electron-local-file'
 import { terminalOutputToText } from '@/lib/terminal-text'
 import { navigateTo } from '@/lib/navigation'
+import { isElectronRuntime } from '@/lib/runtime-environment'
 import { track } from '@/telemetry/client'
 import type { TurnFileChangeItem, TurnFileChangesSummary } from '@/types/api'
 import type { ProcessingBlock, ToolBlock } from '@/types/workbench'
 import type { WorkspaceFileOpenOptions } from '@/types/workspace-files'
+import { ActivityShimmerText } from '../ActivityShimmerText'
 import { AssistantMarkdown } from '../AssistantMarkdown'
 import { AssistantPlanCard, type AssistantPlanOpenRequest } from '../AssistantPlanCard'
-import { resolveDirectMarkdownImageSrc } from '../assistantMarkdownLinks'
+import { localMarkdownImagePath, resolveDirectMarkdownImageSrc } from '../assistantMarkdownLinks'
 import { parseUnifiedDiff } from '../parseUnifiedDiff'
 import {
   getToolActivityFilePaths,
@@ -149,9 +152,9 @@ export function ToolBlockItem({
         data-testid="runtime-reconnecting-status"
         role="status"
       >
-        <span className="tool-activity-shimmer">
+        <ActivityShimmerText variant="tool">
           {t('tool_activity.reconnecting', '连接中断，正在重连…')}
-        </span>
+        </ActivityShimmerText>
       </div>
     )
   }
@@ -178,9 +181,13 @@ export function ToolBlockItem({
   const labelContent = (
     <>
       {icon}
-      <span className={`min-w-0 truncate ${isRunning || shimmer ? 'tool-activity-shimmer' : ''}`}>
-        {label}
-      </span>
+      {isRunning || shimmer ? (
+        <ActivityShimmerText variant="tool" className="min-w-0 truncate">
+          {label}
+        </ActivityShimmerText>
+      ) : (
+        <span className="min-w-0 truncate">{label}</span>
+      )}
       {isRunning && <span className="animate-pulse text-xs will-change-opacity">...</span>}
     </>
   )
@@ -320,11 +327,13 @@ function ProcessFileChangesBlockItem({
                 className="group relative z-10 flex min-h-8 w-full max-w-full items-center gap-1.5 text-text-secondary disabled:cursor-default"
               >
                 <FileDiff className="h-4 w-4 shrink-0" strokeWidth={1.7} />
-                <span
-                  className={`min-w-0 truncate ${isRunning || shimmer ? 'tool-activity-shimmer' : ''}`}
-                >
-                  {fileChangeRowLabel(file, t, isRunning)}
-                </span>
+                {isRunning || shimmer ? (
+                  <ActivityShimmerText variant="tool" className="min-w-0 truncate">
+                    {fileChangeRowLabel(file, t, isRunning)}
+                  </ActivityShimmerText>
+                ) : (
+                  <span className="min-w-0 truncate">{fileChangeRowLabel(file, t, isRunning)}</span>
+                )}
                 {!file.binary ? (
                   <FileChangeLineStats file={file} isRunning={isRunning} streamId={block.id} />
                 ) : null}
@@ -943,8 +952,9 @@ function ProcessTextBlockItem({
 
   return (
     <div
-      className="min-w-0 overflow-x-hidden text-chat text-text-secondary"
+      className="min-w-0 overflow-x-hidden text-chat text-text-primary"
       data-processing-block-id={block.id}
+      data-message-selectable-text
       role={isRunning ? 'status' : undefined}
       aria-live={isRunning ? 'polite' : undefined}
       aria-label={isRunning ? t('process_text.running') : undefined}
@@ -1340,7 +1350,7 @@ function stringifyToolValue(value: unknown): string {
 function ImageViewBlockDetail({ block }: { block: ToolBlock }) {
   const { t } = useTranslation('chat')
   const source = getImageViewSource(block)
-  const resolvedSource = source ? resolveDirectMarkdownImageSrc(source) : null
+  const resolvedSource = useResolvedImageViewSource(source)
 
   if (!resolvedSource) return null
 
@@ -1357,6 +1367,41 @@ function ImageViewBlockDetail({ block }: { block: ToolBlock }) {
       />
     </div>
   )
+}
+
+function useResolvedImageViewSource(source?: string): string | null {
+  const electronLocalPath = useMemo(() => {
+    if (!source || !isElectronRuntime()) return null
+    return localMarkdownImagePath(source)
+  }, [source])
+  const [electronImage, setElectronImage] = useState<{
+    path: string
+    url: string
+  } | null>(null)
+
+  useEffect(() => {
+    if (!electronLocalPath) return undefined
+
+    let active = true
+    let objectUrl: string | null = null
+    void readElectronLocalFile(electronLocalPath)
+      .then(bytes => {
+        objectUrl = URL.createObjectURL(new Blob([bytes]))
+        if (active) setElectronImage({ path: electronLocalPath, url: objectUrl })
+        else URL.revokeObjectURL(objectUrl)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [electronLocalPath])
+
+  if (electronLocalPath) {
+    return electronImage?.path === electronLocalPath ? electronImage.url : null
+  }
+  return source ? resolveDirectMarkdownImageSrc(source) : null
 }
 
 function getImageViewSource(block: ToolBlock): string | undefined {

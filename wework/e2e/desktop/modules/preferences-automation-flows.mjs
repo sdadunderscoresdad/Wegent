@@ -27,6 +27,7 @@ import {
   captureVerificationScreenshot,
   normalizeComposerText,
   waitForAttribute,
+  waitForWorkbenchDebugState,
 } from './workspace-flows.mjs'
 
 async function waitForTelemetrySilence(control, options = {}) {
@@ -81,6 +82,58 @@ async function verifyTelemetryPreference(control) {
     control.telemetryRequestCountAfterRevocation,
     'PostHog flushed telemetry after the user revoked consent'
   )
+}
+
+async function verifyCodexCatalogOverride(control, modelId) {
+  const rowSelector = `[data-testid$="-${modelId}"][data-testid^="codex-official-model-row-"]`
+  const editSelector = `[data-testid$="-${modelId}"][data-testid^="codex-catalog-edit-"]`
+  const restoreSelector = `[data-testid$="-${modelId}"][data-testid^="codex-catalog-restore-"]`
+
+  await control.command('navigate', 'body', { value: '/settings/personal/models' })
+  await control.command('waitFor', '[data-testid="model-settings-page"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid^="codex-model-provider-toggle-"]')
+  await control.command('clickWhenEnabled', editSelector)
+  await control.command('waitFor', '[data-testid="codex-catalog-editor-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('fill', '[data-testid="local-model-context-window-input"]', {
+    value: '300001',
+  })
+  await control.command('clickWhenEnabled', '[data-testid="codex-catalog-editor-save"]')
+  await waitForSnapshot(
+    control,
+    snapshot =>
+      !snapshot.testIds.includes('codex-catalog-editor-dialog') &&
+      snapshot.text.includes('已自定义'),
+    'Saving the Codex catalog override did not close the editor and mark the model as customized',
+    WORKBENCH_READY_TIMEOUT_MS,
+    rowSelector
+  )
+  await captureVerificationScreenshot(control, 'settings-codex-catalog-customized.png', rowSelector)
+
+  await control.command('navigate', 'body', { value: '/' })
+  await control.command('navigate', 'body', { value: '/settings/personal/models' })
+  await control.command('waitFor', '[data-testid="model-settings-page"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid^="codex-model-provider-toggle-"]')
+  await control.command('waitFor', rowSelector, {
+    text: '已自定义',
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', restoreSelector)
+  await waitForSnapshot(
+    control,
+    snapshot =>
+      !snapshot.testIds.some(testId => testId.startsWith('codex-catalog-restore-')) &&
+      !snapshot.text.includes('已自定义'),
+    'Restoring the Codex catalog did not remove the persisted customization',
+    WORKBENCH_READY_TIMEOUT_MS,
+    rowSelector
+  )
+  await control.command('navigate', 'body', { value: '/' })
 }
 
 function verifyTelemetryRemainsDisabled(control) {
@@ -181,7 +234,9 @@ async function declineInitialTelemetryConsent(control) {
   await control.command('waitFor', overlaySelector, {
     timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
   })
-  await control.command('click', '[data-testid="telemetry-consent-decline"]')
+  await control.command('clickWhenEnabled', '[data-testid="telemetry-consent-decline"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
   await waitForSnapshot(
     control,
     snapshot => !snapshot.testIds.includes('telemetry-consent-overlay'),
@@ -511,19 +566,27 @@ async function verifyAutomationLifecycle(control, executorHome, homePath) {
       'click',
       '[data-testid="automation-conversation-mode-option-continue_thread"]'
     )
+    await control.command('waitFor', '[data-testid="automation-target-task-select"]', {
+      timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+    })
     await control.command('click', '[data-testid="automation-target-task-select"]')
-    await waitForSnapshot(
+    const targetTaskSnapshot = await waitForSnapshot(
       control,
       snapshot =>
-        snapshot.testIds.includes(
-          `automation-target-task-select-option-local-device:${manualTaskId}`
-        ),
+        snapshot.testIds.filter(
+          testId =>
+            testId.startsWith('automation-target-task-select-option-') &&
+            testId.endsWith(`:${manualTaskId}`)
+        ).length === 1,
       'The existing-task selector did not list the pinned local task'
     )
-    await control.command(
-      'click',
-      `[data-testid="automation-target-task-select-option-local-device:${manualTaskId}"]`
+    const targetTaskOption = targetTaskSnapshot.testIds.find(
+      testId =>
+        testId.startsWith('automation-target-task-select-option-') &&
+        testId.endsWith(`:${manualTaskId}`)
     )
+    assert.ok(targetTaskOption, 'The existing-task selector did not expose a unique pinned task')
+    await control.command('click', `[data-testid="${targetTaskOption}"]`)
     await control.command('click', '[data-testid="automation-repeat-menu"]')
     await control.command('click', '[data-testid="automation-repeat-menu-option-one_time"]')
     const scheduledFor = new Date(Date.now() + 5_000)
@@ -660,18 +723,15 @@ async function verifyCloudAutomationLifecycle(control, cloudDeviceId) {
         testId.startsWith('runtime-local-task-row-') && !initialSnapshot.testIds.includes(testId)
     )
     assert.ok(taskRow, 'The cloud automation run did not expose its runtime task')
-    if (!taskSnapshot.text.includes(`${AUTOMATION_COMPLETION_TEXT}_1`)) {
-      await control.command('click', `[data-testid="${taskRow}"]`)
-      await control.command('waitFor', '[data-testid="message-assistant"]', {
-        text: `${AUTOMATION_COMPLETION_TEXT}_1`,
-        timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
-      })
-    }
-    const debugSnapshot = JSON.parse(await control.command('getWorkbenchDebugSnapshot', 'body'))
-    assert.equal(
-      debugSnapshot.workbench?.currentRuntimeTask?.deviceId,
-      cloudDeviceId,
-      'The cloud automation task ran on the local device'
+    await control.command('click', `[data-testid="${taskRow}"]`)
+    await control.command('waitFor', '[data-testid="message-assistant"]', {
+      text: `${AUTOMATION_COMPLETION_TEXT}_1`,
+      timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+    })
+    await waitForWorkbenchDebugState(
+      control,
+      snapshot => snapshot.workbench?.currentRuntimeTask?.deviceId === cloudDeviceId,
+      'The cloud automation task did not become active on the selected cloud device'
     )
     await captureVerificationScreenshot(control, 'automations-03-cloud-complete.png')
   } finally {
@@ -686,18 +746,87 @@ async function verifySitesPluginAutoInstall(control) {
     'Connecting the cloud account unexpectedly initialized the Sites plugin'
   )
 
-  await control.command('navigate', 'body', { value: '/sites' })
-  await control.command('waitFor', '[data-testid="sites-create-button"]', {
-    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
-  })
+  await navigateToApplications(control)
   await control.command('waitFor', '[data-testid="site-row-prj_e2e_product"]', {
     timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
   })
 
+  await control.command('clickWhenEnabled', '[data-testid="site-more-prj_e2e_product"]')
+  await control.command(
+    'clickWhenEnabled',
+    '[data-testid="site-environment-menu-item-prj_e2e_product"]'
+  )
+  await control.command('waitFor', '[data-testid="environment-variables-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid="environment-add-button"]')
+  await control.command('fill', '[data-testid="environment-key-new-1"]', {
+    value: 'E2E_API_BASE',
+  })
+  await control.command('fill', '[data-testid="environment-value-new-1"]', {
+    value: 'https://api.example.test',
+  })
+  await control.command('clickWhenEnabled', '[data-testid="environment-save-button"]')
+  await waitForSnapshot(
+    control,
+    snapshot =>
+      snapshot.testIds.includes('environment-variables-dialog') &&
+      /已保存|Saved/.test(snapshot.text),
+    'Saving Site environment variables did not update the environment dialog',
+    DEFAULT_STEP_TIMEOUT_MS
+  )
+  assert.deepEqual(
+    control.siteEnvironmentVariables.map(item => [item.key, item.type, item.value]),
+    [['E2E_API_BASE', 'plain', 'https://api.example.test']],
+    'Saving Site environment variables did not persist through the Backend fixture'
+  )
+  await captureVerificationScreenshot(control, 'plugins-05-site-environment.png')
+  await control.command('click', '[data-testid="environment-close-button"]')
+
+  await control.command('clickWhenEnabled', '[data-testid="site-more-prj_e2e_product"]')
+  await control.command(
+    'clickWhenEnabled',
+    '[data-testid="site-collaborators-menu-item-prj_e2e_product"]'
+  )
+  await control.command('waitFor', '[data-testid="site-collaborators-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('fill', '[data-testid="site-collaborator-subject-input"]', {
+    value: 'e2e-collaborator',
+  })
+  await control.command('clickWhenEnabled', '[data-testid="site-collaborator-add"]')
+  await control.command('waitFor', '[data-testid="site-collaborator-remove-e2e-collaborator"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  assert.deepEqual(
+    control.siteCollaborators.map(item => item.subject),
+    ['e2e-collaborator'],
+    'Adding a Site collaborator did not persist through the Backend fixture'
+  )
+  await control.command(
+    'clickWhenEnabled',
+    '[data-testid="site-collaborator-remove-e2e-collaborator"]'
+  )
+  await waitForSnapshot(
+    control,
+    snapshot =>
+      snapshot.testIds.includes('site-collaborators-dialog') &&
+      !snapshot.testIds.includes('site-collaborator-remove-e2e-collaborator'),
+    'Removing a Site collaborator did not update the collaborator dialog',
+    DEFAULT_STEP_TIMEOUT_MS
+  )
+  assert.deepEqual(
+    control.siteCollaborators,
+    [],
+    'Removing a Site collaborator did not persist through the Backend fixture'
+  )
+  await captureVerificationScreenshot(control, 'plugins-06-site-collaborators.png')
+  await control.command('click', '[data-testid="site-collaborators-close"]')
+
   const siteInstallPath = '/api/plugins/builtin/wegent-sites/ensure-installed'
   const siteContinueCanonical =
-    '[E2E Product Site](wegent-sites-project://prj_e2e_product) 请说出你要做的改动'
-  const siteContinueVisible = 'E2E Product Site 请说出你要做的改动'
+    '[$快速建站](plugin://wegent-sites@wegent) [E2E Product Site](wegent-sites-project://prj_e2e_product) 请说出你要做的改动'
+  const siteContinueVisible = '快速建站 E2E Product Site 请说出你要做的改动'
   const continueIdentity = await captureApplicationChatIdentity(control)
   const siteInstallRequestsBeforeContinue = applicationInstallRequestCount(control, siteInstallPath)
   await control.command(
@@ -718,6 +847,7 @@ async function verifySitesPluginAutoInstall(control) {
     1,
     'Continuing a Site did not install the Site plugin on demand'
   )
+  await assertPluginComposerChip(control, 'wegent-sites')
   const siteLinkSelector = `${ACTIVE_COMPOSER_SELECTOR} [data-testid="composer-link-chip"]`
   assert.equal(await control.command('getText', siteLinkSelector), 'E2E Product Site')
   assert.equal(
@@ -731,7 +861,7 @@ async function verifySitesPluginAutoInstall(control) {
     'wegent-sites-project'
   )
   await assertNoSitesCreateError(control)
-  await captureVerificationScreenshot(control, 'plugins-05-site-continue-fresh-task.png')
+  await captureVerificationScreenshot(control, 'plugins-07-site-continue-fresh-task.png')
 
   await navigateToApplications(control)
   const siteCreateIdentity = await captureApplicationChatIdentity(control)
@@ -757,7 +887,7 @@ async function verifySitesPluginAutoInstall(control) {
   )
   await assertPluginComposerChip(control, 'wegent-sites')
   await assertNoSitesCreateError(control)
-  await captureVerificationScreenshot(control, 'plugins-06-site-create-fresh-task.png')
+  await captureVerificationScreenshot(control, 'plugins-08-site-create-fresh-task.png')
 
   await navigateToApplications(control, 'miniapp')
   await control.command('waitFor', '[data-testid="mini-program-row-prj_e2e_mini"]', {
@@ -793,7 +923,7 @@ async function verifySitesPluginAutoInstall(control) {
   )
   await assertPluginComposerChip(control, 'weibo-miniapp-h5-develop-agent')
   await assertNoSitesCreateError(control)
-  await captureVerificationScreenshot(control, 'plugins-07-mini-program-create-fresh-task.png')
+  await captureVerificationScreenshot(control, 'plugins-09-mini-program-create-fresh-task.png')
 }
 
 function applicationInstallRequestCount(control, pathname) {
@@ -812,10 +942,35 @@ function resolvedDraftInputLength(snapshot) {
 }
 
 async function captureApplicationChatIdentity(control) {
-  const snapshot = JSON.parse(await control.command('getWorkbenchDebugSnapshot', 'body'))
-  return {
-    currentProjectId: snapshot.workbench?.currentProject?.id ?? null,
+  const startedAt = Date.now()
+  let candidateProjectId = null
+  let candidateSince = null
+  let hasCandidate = false
+  let lastSnapshot = null
+  while (Date.now() - startedAt < DEFAULT_STEP_TIMEOUT_MS) {
+    const snapshot = JSON.parse(await control.command('getWorkbenchDebugSnapshot', 'body'))
+    lastSnapshot = snapshot
+    const currentProjectId = snapshot.workbench?.currentProject?.id ?? null
+    if (snapshot.workbench?.isBootstrapping === false) {
+      if (!hasCandidate || currentProjectId !== candidateProjectId) {
+        candidateProjectId = currentProjectId
+        candidateSince = Date.now()
+        hasCandidate = true
+      } else if (
+        candidateSince !== null &&
+        Date.now() - candidateSince >= COMPOSER_READY_STABILITY_MS
+      ) {
+        return { currentProjectId }
+      }
+    } else {
+      candidateSince = null
+      hasCandidate = false
+    }
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
   }
+  throw new Error(
+    `The application chat identity did not stabilize: ${JSON.stringify(lastSnapshot)}`
+  )
 }
 
 async function assertFreshApplicationDraft(control, { before, canonical, visible, message }) {
@@ -843,7 +998,7 @@ async function assertFreshApplicationDraft(control, { before, canonical, visible
     }
     await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
   }
-  throw new Error(`${message}: ${JSON.stringify({ actual, snapshot: lastSnapshot })}`)
+  throw new Error(`${message}: ${JSON.stringify({ before, actual, snapshot: lastSnapshot })}`)
 }
 
 async function assertPluginComposerChip(control, pluginName) {
@@ -872,12 +1027,17 @@ async function assertNoSitesCreateError(control) {
 
 async function navigateToApplications(control, tab = 'web') {
   await control.command('navigate', 'body', { value: '/sites' })
+  const tabSelector =
+    tab === 'miniapp'
+      ? '[data-testid="applications-tab-miniapp"]'
+      : '[data-testid="applications-tab-web"]'
+  await control.command('waitFor', tabSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('click', tabSelector)
   await control.command('waitFor', '[data-testid="sites-create-button"]', {
     timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
   })
-  if (tab === 'miniapp') {
-    await control.command('click', '[data-testid="applications-tab-miniapp"]')
-  }
 }
 
 function sitesMarketplacePlugin(installed) {
@@ -922,7 +1082,7 @@ function sitesMarketplacePlugin(installed) {
   }
 }
 
-function installedSitesPlugin() {
+function installedSitesPlugin(deviceId = 'local-device') {
   const marketplacePlugin = sitesMarketplacePlugin(true)
   return {
     apiVersion: 'agent.wecode.io/v1',
@@ -959,7 +1119,7 @@ function installedSitesPlugin() {
     },
     status: {
       state: 'Available',
-      devices: [{ deviceId: 'local-device', state: 'installed' }],
+      devices: [{ deviceId, state: 'installed' }],
     },
   }
 }
@@ -1006,7 +1166,7 @@ function miniProgramMarketplacePlugin(installed) {
   }
 }
 
-function installedMiniProgramPlugin() {
+function installedMiniProgramPlugin(deviceId = 'local-device') {
   const marketplacePlugin = miniProgramMarketplacePlugin(true)
   return {
     apiVersion: 'agent.wecode.io/v1',
@@ -1043,7 +1203,7 @@ function installedMiniProgramPlugin() {
     },
     status: {
       state: 'Available',
-      devices: [{ deviceId: 'local-device', state: 'installed' }],
+      devices: [{ deviceId, state: 'installed' }],
     },
   }
 }
@@ -1051,6 +1211,7 @@ function installedMiniProgramPlugin() {
 export {
   waitForTelemetrySilence,
   verifyTelemetryPreference,
+  verifyCodexCatalogOverride,
   verifyTelemetryRemainsDisabled,
   verifyInitialTelemetryConsent,
   declineInitialTelemetryConsent,

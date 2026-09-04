@@ -196,13 +196,17 @@ impl RuntimeWorkRpcHandler {
             fork_thread_id: None,
             fork_thread_path: None,
             resume_thread_id: None,
-            initial_thread_name: None,
             initial_thread_goal: None,
         })
         .await
     }
 
-    pub(super) fn start_claude_turn(&self, local_task_id: String, request: ExecutionRequest) {
+    pub(super) fn start_claude_turn(
+        &self,
+        local_task_id: String,
+        request: ExecutionRequest,
+        restore_startup: Option<Arc<RestoreStartupGate>>,
+    ) {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (stopped_tx, stopped_rx) = oneshot::channel();
         let execution_id = match self.start_local_task_execution(
@@ -220,6 +224,13 @@ impl RuntimeWorkRpcHandler {
                 return;
             }
         };
+        if let Some(restore_startup) = restore_startup.as_ref() {
+            self.schedule_restore_startup_timeout(
+                local_task_id.clone(),
+                execution_id,
+                Arc::clone(restore_startup),
+            );
+        }
         let handler = self.clone();
         tokio::spawn(async move {
             let _stopped_turn_guard = StoppedTurnGuard::new(stopped_tx);
@@ -236,6 +247,24 @@ impl RuntimeWorkRpcHandler {
                 request: request.clone(),
                 transcript: Arc::clone(&transcript),
             };
+            if let Some(restore_startup) = restore_startup.as_ref() {
+                if !restore_startup.try_activate() {
+                    if let Some(token) = model_proxy_token.as_deref() {
+                        local_model_proxy::unregister_harness(token);
+                    }
+                    return;
+                }
+                log_executor_event(
+                    "runtime restored turn reached active state",
+                    &[("local_task_id", local_task_id.clone())],
+                );
+            }
+            if !handler.is_current_local_task_execution(&local_task_id, execution_id) {
+                if let Some(token) = model_proxy_token.as_deref() {
+                    local_model_proxy::unregister_harness(token);
+                }
+                return;
+            }
             let _ = sink
                 .send(builder.response_created(Some("ClaudeCode")))
                 .await;
@@ -336,6 +365,9 @@ impl RuntimeWorkRpcHandler {
             }
             if let Some(token) = model_proxy_token {
                 local_model_proxy::unregister_harness(&token);
+            }
+            if let Some(restore_startup) = restore_startup.as_ref() {
+                restore_startup.finish();
             }
         });
     }

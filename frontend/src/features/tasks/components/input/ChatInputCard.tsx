@@ -162,6 +162,8 @@ function FrameImageSlot({
           <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
         </div>
       ) : (
+        // Client-created blob URLs intentionally bypass Next image optimization.
+        // eslint-disable-next-line @next/next/no-img-element
         <img src={blobUrl} alt={label} className="h-full w-full object-cover" />
       )}
       <div className="absolute inset-x-0 bottom-0 bg-black/55 px-1 py-0.5 text-center text-[10px] text-white">
@@ -295,6 +297,8 @@ export function ChatInputCard({
   selectedVideoModel,
   onVideoModelChange,
   isVideoModelsLoading,
+  showVideoControlsInChat,
+  hideDurationSelector,
   selectedResolution,
   onResolutionChange,
   availableResolutions,
@@ -342,6 +346,7 @@ export function ChatInputCard({
     !hasMessages &&
     !taskInputMessage.trim() &&
     selectedContexts.some(context => context.type === 'queue_message')
+  const shouldUseCompactInputSpacing = shouldUseCompactQueueSpacing || shouldCollapseSelectors
   const imageAttachments = useMemo(
     () =>
       attachmentState.attachments.filter(attachment => attachment.mime_type.startsWith('image/')),
@@ -636,12 +641,11 @@ export function ChatInputCard({
       {/* Chat Input Card */}
       <div
         data-testid="chat-input-card"
-        className={`relative w-full max-w-[820px] mx-auto rounded-3xl border bg-base shadow-card-hover transition-colors flex flex-col justify-start ${isDragging ? 'border-primary ring-2 ring-primary/20' : 'border-primary/40'}`}
+        className={`relative mx-auto flex min-h-[112px] w-full max-w-[820px] flex-col justify-start rounded-2xl border bg-base shadow-card-hover transition-colors md:min-h-[146px] md:rounded-3xl ${isDragging ? 'border-primary ring-2 ring-primary/20' : 'border-primary/40'}`}
         onDragEnter={onDragEnter}
         onDragLeave={onDragLeave}
         onDragOver={onDragOver}
         onDrop={onDrop}
-        style={{ minHeight: '146px' }}
       >
         {/* Device Selector Tab - positioned at top left inside card, connected to border */}
         {!shouldHideChatInput && (
@@ -759,7 +763,7 @@ export function ChatInputCard({
 
         {/* Chat Input with inline badge */}
         {!shouldHideChatInput && (
-          <div className={`px-4 ${shouldUseCompactQueueSpacing ? 'pt-1.5' : 'pt-3'}`}>
+          <div className={`px-4 ${shouldUseCompactInputSpacing ? 'pt-1.5' : 'pt-3'}`}>
             <ChatInput
               message={taskInputMessage}
               setMessage={setTaskInputMessage}
@@ -772,12 +776,14 @@ export function ChatInputCard({
               tipText={tipText}
               badge={
                 selectedTeam && !isUsingDefaultTeam ? (
-                  <SelectedTeamBadge
-                    team={selectedTeam}
-                    showClearButton={!hasMessages}
-                    onClear={onRestoreDefaultTeam}
-                    onEdit={onEditTeam}
-                  />
+                  <span className="hidden md:contents">
+                    <SelectedTeamBadge
+                      team={selectedTeam}
+                      showClearButton={!hasMessages}
+                      onClear={onRestoreDefaultTeam}
+                      onEdit={onEditTeam}
+                    />
+                  </span>
                 ) : undefined
               }
               isGroupChat={isGroupChat}
@@ -802,7 +808,7 @@ export function ChatInputCard({
               // Expand/collapse props for input height toggle
               isExpanded={isInputExpanded}
               onExpandToggle={handleExpandToggle}
-              compactSpacing={shouldUseCompactQueueSpacing}
+              compactSpacing={shouldUseCompactInputSpacing}
               focusAtEndSignal={focusInputAtEndSignal}
             />
           </div>
@@ -826,6 +832,15 @@ export function ChatInputCard({
             selectedTeam={selectedTeam}
             teams={teams}
             onTeamChange={onTeamChange}
+            onClearTeam={onRestoreDefaultTeam}
+            showClearTeamButton={Boolean(
+              !shouldHideChatInput &&
+              selectedTeam &&
+              !isUsingDefaultTeam &&
+              !hasMessages &&
+              !hideSelectors &&
+              onRestoreDefaultTeam
+            )}
             onTeamsRefresh={onTeamsRefresh}
             selectedModel={selectedModel}
             setSelectedModel={setSelectedModel}
@@ -886,6 +901,8 @@ export function ChatInputCard({
             selectedVideoModel={selectedVideoModel}
             onVideoModelChange={onVideoModelChange}
             isVideoModelsLoading={isVideoModelsLoading}
+            showVideoControlsInChat={showVideoControlsInChat}
+            hideDurationSelector={hideDurationSelector}
             selectedResolution={selectedResolution}
             onResolutionChange={onResolutionChange}
             availableResolutions={availableResolutions}

@@ -4,17 +4,32 @@
 
 import io
 import logging
+from dataclasses import dataclass
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response, StreamingResponse
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
+from app.api.marketplace_upload import read_marketplace_package
 from app.core import security
 from app.core.config import settings
 from app.db.session import get_db_session
 from app.models.plugin_marketplace import Plugin, PluginDeviceInstallation
+from app.models.subtask import SubtaskStatus
+from app.models.task import TaskResource
 from app.models.user import User
 from app.schemas.device import DeviceCapabilitySyncResponse
 from app.schemas.installed_plugin import (
@@ -32,7 +47,6 @@ from app.schemas.installed_plugin import (
     PluginDeviceReportRequest,
     PluginDeviceReportResponse,
     PluginDeviceSyncResponse,
-    PluginMarketplaceCapabilities,
     PluginMarketplaceInstallResponse,
     PluginMarketplaceItem,
     PluginMarketplaceListResponse,
@@ -42,22 +56,116 @@ from app.schemas.installed_plugin import (
     PluginSubmissionInitResponse,
     PluginSubmissionItem,
 )
+from app.services.auth.task_token import TaskTokenInfo, verify_task_token
 from app.services.device.capability_sync_service import (
     DeviceCapabilityResolutionError,
     DeviceCapabilitySyncError,
     device_capability_sync_service,
 )
 from app.services.installed_plugin_service import installed_plugin_service
+from app.services.marketplace_submission_upload import (
+    InvalidMarketplaceSubmissionUploadToken,
+    verify_marketplace_submission_upload_token,
+)
 from app.services.plugin_device_installation_service import (
     plugin_device_installation_service,
+)
+from app.services.plugin_marketplace_identity import (
+    ENTERPRISE_CATALOG_NAMESPACE,
+    OFFICIAL_CATALOG_NAMESPACE,
 )
 from app.services.plugin_marketplace_service import plugin_marketplace_service
 from app.services.plugin_package_parser import MAX_PLUGIN_PACKAGE_SIZE_BYTES
 from app.services.plugin_package_storage import PluginPackageStorageError
+from app.stores.tasks import subtask_store, task_store
+from shared.telemetry.decorators import trace_async
 
 router = APIRouter(tags=["plugins"])
 logger = logging.getLogger(__name__)
 PLUGIN_UPLOAD_CHUNK_SIZE_BYTES = 1024 * 1024
+ACTIVE_PLUGIN_SUBMISSION_SUBTASK_STATUSES = (
+    SubtaskStatus.PENDING,
+    SubtaskStatus.RUNNING,
+    SubtaskStatus.PENDING_CONFIRMATION,
+)
+
+
+@dataclass(frozen=True)
+class PluginSubmissionAuth:
+    user: User
+    task_token: TaskTokenInfo | None = None
+
+
+def _task_token_from_authorization(authorization: str) -> TaskTokenInfo | None:
+    token = security.extract_authorization_token(authorization)
+    if not token:
+        return None
+    try:
+        # Unverified claims only select the parser; verify_task_token authenticates it.
+        if jwt.get_unverified_claims(token).get("type") != "task_token":
+            return None
+    except JWTError:
+        return None
+    return verify_task_token(token)
+
+
+def _get_plugin_submission_auth(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(security.get_current_user_jwt_apikey_tasktoken),
+) -> PluginSubmissionAuth:
+    """Restrict task-token submission access to its live Task execution."""
+    if request.headers.get("X-API-Key", "").strip():
+        return PluginSubmissionAuth(user=current_user)
+
+    token_info = _task_token_from_authorization(
+        request.headers.get("Authorization", "")
+    )
+    if token_info is None:
+        return PluginSubmissionAuth(user=current_user)
+
+    task = task_store.get_by_id_for_update(
+        db,
+        task_id=token_info.task_id,
+        owner_user_id=current_user.id,
+    )
+    subtask = subtask_store.get_basic_by_id_for_update(
+        db,
+        subtask_id=token_info.subtask_id,
+        owner_user_id=current_user.id,
+    )
+    if (
+        task is None
+        or task.kind != "Task"
+        or task.is_active not in TaskResource.is_active_query()
+        or subtask is None
+        or subtask.task_id != token_info.task_id
+        or subtask.user_id != current_user.id
+        or subtask.status not in ACTIVE_PLUGIN_SUBMISSION_SUBTASK_STATUSES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Task token is no longer active",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return PluginSubmissionAuth(user=current_user, task_token=token_info)
+
+
+def _ensure_submission_matches_task_token(
+    db: Session,
+    *,
+    auth: PluginSubmissionAuth,
+    submission_id: int,
+) -> None:
+    if auth.task_token is None:
+        return
+    plugin_marketplace_service.ensure_submission_task_binding(
+        db,
+        user_id=auth.user.id,
+        submission_id=submission_id,
+        task_id=auth.task_token.task_id,
+        subtask_id=auth.task_token.subtask_id,
+    )
 
 
 @router.get("/installed", response_model=InstalledPluginListResponse)
@@ -194,16 +302,6 @@ def report_installed_plugins_on_device(
     )
 
 
-@router.get("/capabilities", response_model=PluginMarketplaceCapabilities)
-def get_plugin_marketplace_capabilities(
-    current_user: User = Depends(security.get_current_user),
-) -> PluginMarketplaceCapabilities:
-    return PluginMarketplaceCapabilities(
-        canPublish=_can_publish(current_user),
-        canSharePersonalPlugins=True,
-    )
-
-
 @router.post(
     "/upload",
     response_model=InstalledPlugin,
@@ -219,7 +317,10 @@ async def upload_plugin(
     if current_user.role != "admin" or not settings.PLUGIN_LEGACY_UPLOAD_ENABLED:
         raise HTTPException(
             status_code=410,
-            detail="Direct cloud upload is retired; create locally or publish a submission",
+            detail=(
+                "Direct cloud upload is retired; create locally or publish a "
+                "submission"
+            ),
         )
     logger.info(
         "Plugin upload requested: user_id=%s filename=%s enabled=%s",
@@ -511,7 +612,16 @@ async def ensure_builtin_plugin_installed(
     current_user: User = Depends(security.get_current_user),
 ) -> PluginMarketplaceInstallResponse:
     """Install a bundled plugin from the v2 marketplace catalog."""
-    item = db.query(Plugin).filter(Plugin.slug == plugin_key).first()
+    item = (
+        db.query(Plugin)
+        .filter(
+            Plugin.catalog_namespace.in_(
+                [ENTERPRISE_CATALOG_NAMESPACE, OFFICIAL_CATALOG_NAMESPACE]
+            ),
+            Plugin.slug == plugin_key,
+        )
+        .first()
+    )
     if not item:
         return await _ensure_legacy_builtin_plugin_installed(
             plugin_key=plugin_key,
@@ -863,19 +973,6 @@ async def _sync_global_capabilities(
     return result
 
 
-def _can_publish(current_user: User) -> bool:
-    return bool(
-        current_user.role == "admin"
-        or settings.PLUGIN_PUBLISH_ENABLED
-        or current_user.id in settings.PLUGIN_PUBLISH_USER_IDS
-    )
-
-
-def _ensure_publish_allowed(current_user: User) -> None:
-    if not _can_publish(current_user):
-        raise HTTPException(status_code=403, detail="Plugin publishing is not enabled")
-
-
 @router.post(
     "/submissions/init",
     response_model=PluginSubmissionInitResponse,
@@ -884,21 +981,76 @@ def _ensure_publish_allowed(current_user: User) -> None:
 def init_plugin_submission(
     request: PluginSubmissionInitRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(security.get_current_user),
+    auth: PluginSubmissionAuth = Depends(_get_plugin_submission_auth),
 ) -> PluginSubmissionInitResponse:
+    current_user = auth.user
     visibility = request.visibility or (
         "personal" if request.purpose == "restricted_share" else "workspace"
     )
-    if visibility in {"workspace", "public"}:
-        _ensure_publish_allowed(current_user)
+    if request.purpose != "restricted_share" or visibility != "personal":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Legacy submissions only support restricted personal sharing; "
+                "use /plugins/publication-requests for enterprise publication"
+            ),
+        )
     try:
         return plugin_marketplace_service.init_submission(
-            db, user_id=current_user.id, request=request
+            db,
+            user_id=current_user.id,
+            request=request,
+            task_binding=(
+                (auth.task_token.task_id, auth.task_token.subtask_id)
+                if auth.task_token
+                else None
+            ),
         )
     except PluginPackageStorageError as exc:
         raise HTTPException(
             status_code=503, detail="Plugin package storage unavailable"
         ) from exc
+
+
+@router.put("/submissions/{submission_id}/artifact", status_code=204)
+@trace_async("upload_plugin_submission_artifact", "marketplace.api")
+async def upload_plugin_submission_artifact(
+    submission_id: int,
+    request: Request,
+    token: str = Query(..., description="Short-lived plugin upload token"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Upload a ticketed plugin package through the Backend origin."""
+    try:
+        claims = verify_marketplace_submission_upload_token(
+            token, expected_kind="plugin"
+        )
+    except InvalidMarketplaceSubmissionUploadToken as exc:
+        raise HTTPException(
+            status_code=403, detail="Invalid or expired plugin upload link"
+        ) from exc
+    if claims.submission_id != submission_id:
+        raise HTTPException(
+            status_code=403, detail="Invalid or expired plugin upload link"
+        )
+
+    package = await read_marketplace_package(
+        request,
+        max_bytes=MAX_PLUGIN_PACKAGE_SIZE_BYTES,
+        resource_name="Plugin",
+    )
+    try:
+        plugin_marketplace_service.upload_submission_package(
+            db,
+            user_id=claims.user_id,
+            submission_id=submission_id,
+            package=package,
+        )
+    except PluginPackageStorageError as exc:
+        raise HTTPException(
+            status_code=503, detail="Plugin package storage unavailable"
+        ) from exc
+    return Response(status_code=204)
 
 
 @router.post(
@@ -908,15 +1060,10 @@ def init_plugin_submission(
 def complete_plugin_submission(
     submission_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(security.get_current_user),
+    auth: PluginSubmissionAuth = Depends(_get_plugin_submission_auth),
 ) -> PluginSubmissionCompleteResponse:
-    existing = plugin_marketplace_service.get_submission(
-        db,
-        user_id=current_user.id,
-        submission_id=submission_id,
-    )
-    if existing.purpose == "marketplace_publish":
-        _ensure_publish_allowed(current_user)
+    current_user = auth.user
+    _ensure_submission_matches_task_token(db, auth=auth, submission_id=submission_id)
     try:
         item = plugin_marketplace_service.complete_submission(
             db, user_id=current_user.id, submission_id=submission_id
@@ -945,8 +1092,10 @@ def complete_plugin_submission(
 def cancel_plugin_submission(
     submission_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(security.get_current_user),
+    auth: PluginSubmissionAuth = Depends(_get_plugin_submission_auth),
 ) -> PluginSubmissionItem:
+    current_user = auth.user
+    _ensure_submission_matches_task_token(db, auth=auth, submission_id=submission_id)
     return plugin_marketplace_service.cancel_submission(
         db,
         user_id=current_user.id,
@@ -958,8 +1107,10 @@ def cancel_plugin_submission(
 def get_plugin_submission(
     submission_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(security.get_current_user),
+    auth: PluginSubmissionAuth = Depends(_get_plugin_submission_auth),
 ) -> PluginSubmissionItem:
+    current_user = auth.user
+    _ensure_submission_matches_task_token(db, auth=auth, submission_id=submission_id)
     return plugin_marketplace_service.get_submission(
         db,
         user_id=current_user.id,

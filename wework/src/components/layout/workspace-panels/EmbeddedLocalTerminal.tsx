@@ -10,10 +10,13 @@ import {
   observeTerminalTheme,
 } from '@/lib/xterm-theme'
 import { appendRuntimeTerminalContext } from '@/lib/runtime-terminal-context'
+import { focusTerminalUnlessComposerFocusRequested } from '@/lib/workbenchComposerFocus'
 import { defaultAppearance, useOptionalAppearance } from '@/features/appearance'
 import { installXtermInputFallback, type XtermInputFallbackController } from './xtermInputFallback'
+import { installXtermMacKeybindings } from './xtermMacKeybindings'
 import { createXtermWebLinksAddon } from './xtermLinks'
 import { installXtermSelectionGuard } from './xtermSelectionGuard'
+import { installXtermTextDrag } from './xtermTextDrag'
 import {
   installXtermRenderRecovery,
   logXtermRenderState,
@@ -141,11 +144,12 @@ export function EmbeddedLocalTerminal({
     const terminalAppearance = appearanceRef.current
     const terminal = new Terminal({
       allowTransparency: showWorkbenchBackground,
-      cursorBlink: true,
+      cursorBlink: import.meta.env.VITE_WEWORK_E2E !== 'true',
       convertEol: true,
       fontFamily: terminalAppearance.codeFont,
       fontSize: terminalAppearance.codeFontSize,
       lineHeight: 1.2,
+      screenReaderMode: import.meta.env.VITE_WEWORK_E2E === 'true',
       scrollback: 2000,
       theme: getTerminalTheme(showWorkbenchBackground),
     })
@@ -156,11 +160,12 @@ export function EmbeddedLocalTerminal({
       noteData: () => undefined,
       dispose: () => undefined,
     }
-    const dataDisposable = terminal.onData(data => {
+    const writeTerminalInput = (data: string) => {
       if (!terminalInputReady) return
       inputFallback.noteData(data)
       void writeLocalTerminal(sessionId, data)
-    })
+    }
+    const dataDisposable = terminal.onData(writeTerminalInput)
     const titleDisposable = terminal.onTitleChange(title => {
       onTitleChangeRef.current?.(title)
     })
@@ -171,14 +176,12 @@ export function EmbeddedLocalTerminal({
     terminal.loadAddon(webLinksAddon)
     terminal.open(container)
     const selectionGuard = installXtermSelectionGuard({ container, terminal })
+    const textDrag = installXtermTextDrag({ container, terminal })
     inputFallback = installXtermInputFallback({
       terminal,
-      writeData: data => {
-        if (!terminalInputReady) return
-        inputFallback.noteData(data)
-        void writeLocalTerminal(sessionId, data)
-      },
+      writeData: writeTerminalInput,
     })
+    installXtermMacKeybindings({ terminal, writeData: writeTerminalInput })
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
     applyTerminalTheme(terminal, container, getTerminalTheme(), showWorkbenchBackground)
@@ -279,6 +282,7 @@ export function EmbeddedLocalTerminal({
         dataDisposable.dispose()
         titleDisposable.dispose()
         selectionGuard.dispose()
+        textDrag.dispose()
         inputFallback.dispose()
         unlisteners.forEach(unlisten => unlisten())
         terminal.dispose()
@@ -318,7 +322,7 @@ export function EmbeddedLocalTerminal({
           terminal,
           terminalKind: 'local',
         })
-        terminal.textarea?.focus({ preventScroll: true })
+        focusTerminalUnlessComposerFocusRequested(terminal.textarea)
         if (terminal.rows > 0 && terminal.cols > 0) {
           const lastSize = lastSizeRef.current
           if (lastSize?.rows !== terminal.rows || lastSize.cols !== terminal.cols) {
@@ -339,6 +343,7 @@ export function EmbeddedLocalTerminal({
   return (
     <div
       data-testid={testIdsEnabled ? 'embedded-local-terminal' : undefined}
+      data-session-id={testIdsEnabled ? sessionId : undefined}
       className={`h-full min-h-0 w-full overflow-hidden px-2 pb-4 pt-2 ${
         showWorkbenchBackground ? 'bg-transparent' : 'bg-background'
       }`}

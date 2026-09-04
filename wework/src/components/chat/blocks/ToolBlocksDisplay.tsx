@@ -4,13 +4,13 @@ import {
   Archive,
   ChevronDown,
   FileText,
-  LoaderCircle,
   MessageCircle,
   Pencil,
   Search,
   SquareTerminal,
   Wrench,
 } from 'lucide-react'
+import { CompositedSpinner } from '@/components/common/CompositedSpinner'
 import { useTranslation } from '@/hooks/useTranslation'
 import type { RequestUserInputResponse } from '@/types/api'
 import type { ProcessingBlock, ToolBlock } from '@/types/workbench'
@@ -20,12 +20,9 @@ import {
   isRequestUserInputBlock,
   type RequestUserInputBlock,
 } from '../requestUserInputMessages'
+import { ActivityShimmerText } from '../ActivityShimmerText'
 import { AssistantThinkingIndicator } from '../AssistantThinkingIndicator'
-import {
-  ToolBlockItem,
-  type FileEditDuration,
-  type FileEditDurationsByBlock,
-} from './ToolBlockItem'
+import { ToolBlockItem, type FileEditDurationsByBlock } from './ToolBlockItem'
 import {
   RequestUserInputCard,
   RequestUserInputSummary,
@@ -49,7 +46,7 @@ import { usePersistentProcessingExpansion } from './processingExpansionState'
 import { WebSearchActivityRows } from './WebSearchSources'
 import { getWebSearchActivityItems } from './webSearchActivity'
 import { getDurationText } from './processingDuration'
-import { getFileInputPaths, isFileEditToolName } from './toolBlockKinds'
+import { getFileEditDurationsBySourceBlock, getFileEditDurationsForRows } from './fileEditDurations'
 
 const EMPTY_HIDDEN_REQUEST_USER_INPUT_IDS = new Set<string>()
 type ProcessingDisplayItem =
@@ -62,7 +59,7 @@ type ProcessingDisplayItem =
 
 interface ToolBlocksDisplayProps {
   blocks: ProcessingBlock[]
-  fileEditDurationBlocks?: ProcessingBlock[]
+  fileEditDurationsBySourceBlock?: FileEditDurationsByBlock
   isStreaming: boolean
   // Wall-clock epoch ms when the turn started (the assistant turn's
   // created_at). Used as the duration anchor so the elapsed time survives a
@@ -88,7 +85,7 @@ interface ToolBlocksDisplayProps {
 
 export function ToolBlocksDisplay({
   blocks,
-  fileEditDurationBlocks,
+  fileEditDurationsBySourceBlock,
   isStreaming,
   startedAt,
   forceExpanded = false,
@@ -187,9 +184,13 @@ export function ToolBlocksDisplay({
       ),
     [displayItems]
   )
+  const sourceFileEditDurations = useMemo(
+    () => fileEditDurationsBySourceBlock ?? getFileEditDurationsBySourceBlock(blocks),
+    [blocks, fileEditDurationsBySourceBlock]
+  )
   const fileEditDurations = useMemo(
-    () => getFileEditDurations(fileEditDurationBlocks ?? blocks, rows),
-    [blocks, fileEditDurationBlocks, rows]
+    () => getFileEditDurationsForRows(sourceFileEditDurations, rows),
+    [rows, sourceFileEditDurations]
   )
   const hasPlanResponse = blocks.some(block => block.type === 'plan' && block.content.trim())
   const hasRequestUserInput = displayItems.some(item => item.type === 'request_user_input')
@@ -436,11 +437,7 @@ function ProcessingSummaryHeader({
       {isRunning || duration ? (
         <span className="ml-auto inline-flex shrink-0 items-center gap-1">
           {isRunning ? (
-            <LoaderCircle
-              className="h-3 w-3 animate-spin text-blue-500 motion-reduce:animate-none"
-              strokeWidth={1.8}
-              aria-hidden="true"
-            />
+            <CompositedSpinner className="h-3 w-3 text-blue-500" strokeWidth={1.8} />
           ) : null}
           {duration}
         </span>
@@ -630,74 +627,6 @@ function LiveProcessingPreviewRow({
       stateKey={stateKey}
     />
   )
-}
-
-function getFileEditDurations(
-  blocks: ProcessingBlock[],
-  rows: ProcessingDisplayRow[]
-): FileEditDurationsByBlock {
-  type FileEditActivity = FileEditDuration & {
-    path: string
-    isRunning: boolean
-  }
-  const edits: FileEditActivity[] = []
-  const sourceDurations = new Map<string, ReadonlyMap<string, FileEditDuration>>()
-  const durations = new Map<string, ReadonlyMap<string, FileEditDuration>>()
-
-  blocks.forEach(block => {
-    if (block.type === 'tool' && isFileEditToolName(block.toolName)) {
-      edits.push(
-        ...getFileInputPaths(block).map(path => ({
-          id: block.id,
-          path: normalizeActivityPath(path),
-          startedAt: block.createdAt,
-          completedAt: block.completedAt,
-          isRunning: block.status !== 'done' && block.status !== 'error',
-        }))
-      )
-      return
-    }
-    if (block.type !== 'file_changes') return
-
-    const blockDurations = new Map<string, FileEditDuration>()
-    block.fileChanges.files.forEach(file => {
-      const filePath = normalizeActivityPath(file.path)
-      const matches = edits.filter(
-        edit =>
-          edit.path === filePath ||
-          edit.path.endsWith(`/${filePath}`) ||
-          filePath.endsWith(`/${edit.path}`)
-      )
-      if (matches.length === 0) return
-      const durationMatch = matches.at(-1)
-      if (!durationMatch) return
-      blockDurations.set(file.path, {
-        id: durationMatch.id,
-        startedAt: durationMatch.startedAt,
-        ...(!durationMatch.isRunning && durationMatch.completedAt !== undefined
-          ? { completedAt: durationMatch.completedAt }
-          : {}),
-      })
-    })
-    if (blockDurations.size > 0) sourceDurations.set(block.id, blockDurations)
-  })
-
-  rows.forEach(row => {
-    if (row.type !== 'block' || row.block.type !== 'file_changes') return
-    const blockDurations = new Map<string, FileEditDuration>()
-    row.sourceBlockIds.forEach(sourceBlockId => {
-      sourceDurations.get(sourceBlockId)?.forEach((duration, path) => {
-        blockDurations.set(path, duration)
-      })
-    })
-    if (blockDurations.size > 0) durations.set(row.block.id, blockDurations)
-  })
-
-  return durations
-}
-
-function normalizeActivityPath(path: string): string {
-  return path.replaceAll('\\', '/').replace(/^\.\//, '')
 }
 
 function isProcessingRowRunning(row: ProcessingDisplayRow): boolean {
@@ -899,9 +828,13 @@ function ContextCompactionIndicator({ block }: { block: ToolBlock }) {
         className={`inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm font-semibold ${textClassName}`}
       >
         <Archive className="h-4 w-4 shrink-0" strokeWidth={1.7} aria-hidden="true" />
-        <span className={`min-w-0 truncate ${isRunning ? 'waiting-thinking-text' : ''}`}>
-          {label}
-        </span>
+        {isRunning ? (
+          <ActivityShimmerText variant="thinking" className="min-w-0 truncate">
+            {label}
+          </ActivityShimmerText>
+        ) : (
+          <span className="min-w-0 truncate">{label}</span>
+        )}
       </span>
       <span className="h-px min-w-6 flex-1 bg-border" aria-hidden="true" />
     </div>

@@ -29,6 +29,10 @@ from app.schemas.device import (
     DeviceInfo,
     DeviceListResponse,
 )
+from app.schemas.git_credentials import (
+    DeviceGitAccountSyncRequest,
+    DeviceGitAccountSyncResponse,
+)
 from app.schemas.project import ProjectConfig
 from app.services.device.command_service import (
     DeviceCommandConfigurationError,
@@ -36,6 +40,15 @@ from app.services.device.command_service import (
     DeviceCommandNotFoundError,
     DeviceCommandUnknownKeyError,
     execute_configured_device_command,
+)
+from app.services.device.git_credentials import (
+    DeviceGitCredentialConflictError,
+    DeviceGitCredentialNotFoundError,
+    DeviceGitCredentialResolutionError,
+    DeviceGitCredentialSyncError,
+    DeviceGitCredentialTargetError,
+    DeviceGitCredentialUnknownResultError,
+    sync_git_accounts_to_device,
 )
 from app.services.device.runtime_rpc_service import RuntimeRpcError, runtime_rpc_service
 from app.services.device_service import device_service
@@ -711,6 +724,7 @@ async def execute_device_command(
             ),
             timeout_seconds=request.timeout_seconds,
             max_output_bytes=request.max_output_bytes,
+            allow_app_device=False,
         )
     except DeviceCommandNotFoundError as exc:
         raise HTTPException(
@@ -748,6 +762,57 @@ async def execute_device_command(
         result.get("duration"),
     )
     return DeviceCommandResponse(**result)
+
+
+@router.put(
+    "/{device_id}/git-accounts",
+    response_model=DeviceGitAccountSyncResponse,
+)
+async def sync_device_git_accounts(
+    device_id: str,
+    request: DeviceGitAccountSyncRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(security.get_current_user),
+) -> DeviceGitAccountSyncResponse:
+    """Reconcile current-user Git credentials to one selected device."""
+
+    try:
+        return DeviceGitAccountSyncResponse(
+            **await sync_git_accounts_to_device(
+                db,
+                user=current_user,
+                device_id=device_id,
+                allow_empty=request.allow_empty,
+            )
+        )
+    except DeviceGitCredentialNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (
+        DeviceGitCredentialTargetError,
+        DeviceGitCredentialConflictError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except DeviceGitCredentialResolutionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except DeviceGitCredentialUnknownResultError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+    except DeviceGitCredentialSyncError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
 
 
 # ==================== Device Session Endpoints ====================
@@ -807,6 +872,7 @@ async def start_device_terminal(
             session_type="terminal",
             path=session_path,
             create_if_missing=not bool(requested_path),
+            allow_app_device=False,
         )
     except DeviceSessionError as exc:
         raise HTTPException(
@@ -852,6 +918,7 @@ async def start_device_code_server(
             session_type="code_server",
             path=session_path,
             create_if_missing=not bool(requested_path),
+            allow_app_device=False,
         )
     except DeviceSessionError as exc:
         raise HTTPException(

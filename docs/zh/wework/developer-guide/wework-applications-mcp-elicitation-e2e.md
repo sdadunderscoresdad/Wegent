@@ -4,7 +4,7 @@ sidebar_position: 37
 
 # 应用入口与 MCP Elicitation 桌面 E2E
 
-本文定义 Wework“应用”入口和 MCP 业务表单的真实桌面端回归方案。测试复用现有桌面 runner 与 checkpoint，不新增本地专用脚本，也不使用浏览器 mock 替代 Tauri、Executor 或 Codex。
+本文定义 Wework“应用”入口和 MCP 业务表单的真实桌面端回归方案。测试复用现有桌面 runner 与 checkpoint，不新增本地专用脚本，也不使用浏览器 mock 替代 Electron、Executor 或 Codex。
 
 ## 覆盖范围
 
@@ -48,6 +48,20 @@ pnpm --filter wework e2e:desktop -- --segment permission-modes
 - 点击后必须同时满足：`standaloneChatKey` 增加 1、`scopeKey` 改变、`currentRuntimeTask` 为 `null`、当前项目不变。
 - 草稿必须做规范化后的完整相等断言，并额外验证结构化 chip 属性；仅断言包含某段文字不够。
 
+### 管理站点环境变量
+
+1. 打开 `E2E Product Site` 行末的更多菜单和“环境变量”。
+2. 新增 `Plain` 变量 `E2E_API_BASE=https://api.example.test` 并保存。
+3. 等待对话框显示保存成功，并断言请求经过真实 Backend 后写入 Sites upstream fixture。
+4. 截图保存成功状态并关闭对话框。
+
+### 管理站点协作者
+
+1. 打开 `E2E Product Site` 行末的更多菜单和“管理协作者”。
+2. 添加 `e2e-collaborator`，等待其出现在列表并断言 upstream fixture 已保存。
+3. 移除同一协作者，等待其从列表消失并断言 upstream fixture 已清空。
+4. 截图最终状态并关闭对话框。
+
 ### 站点列表“继续开发”
 
 1. 打开“应用-站点”。
@@ -56,16 +70,16 @@ pnpm --filter wework e2e:desktop -- --segment permission-modes
 4. 断言可见草稿为：
 
 ```text
-E2E Product Site 请说出你要做的改动
+快速建站 E2E Product Site 请说出你要做的改动
 ```
 
 5. 断言内部草稿为：
 
 ```text
-[E2E Product Site](wegent-sites-project://prj_e2e_product) 请说出你要做的改动
+[$快速建站](plugin://wegent-sites@wegent) [E2E Product Site](wegent-sites-project://prj_e2e_product) 请说出你要做的改动
 ```
 
-6. 断言链接 chip 的 provider、label 和 URL 分别为 `wegent-sites-project`、`E2E Product Site` 和 `wegent-sites-project://prj_e2e_product`。
+6. 断言插件 chip 指向 `wegent-sites@wegent`，并断言链接 chip 的 provider、label 和 URL 分别为 `wegent-sites-project`、`E2E Product Site` 和 `wegent-sites-project://prj_e2e_product`。
 7. 断言首次使用按需安装 `wegent-sites`，页面没有 `sites-create-error`。
 
 ### 创建“站点”
@@ -230,4 +244,4 @@ default_tools_approval_mode = "approve"
 | 表单可见但 fixture 无 `accept`          | Executor 的 enum label 到稳定 enum value 映射与回复路由          |
 | 模型未完成                              | MCP tool output 是否回到下一次模型输入，成功标记是否一致         |
 
-测试结束时由现有 runner 终止 Tauri、Executor、Codex 和 stdio MCP 子进程，并清理隔离 home。fixture 不得读取或写入用户的个人 Codex home。
+测试结束时由现有 runner 终止 Electron、Executor、Codex 和 stdio MCP 子进程，并清理隔离 home。fixture 不得读取或写入用户的个人 Codex home。

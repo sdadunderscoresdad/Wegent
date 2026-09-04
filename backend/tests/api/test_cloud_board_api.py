@@ -6,9 +6,7 @@
 
 import hashlib
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -16,18 +14,15 @@ from app.models.api_key import KEY_TYPE_SERVICE, APIKey
 from app.models.cloud_project import CloudProject
 from app.models.delivery import LoopItem
 from app.models.user import User
-from app.services.project_automations import project_automation_processor
+from app.services.auth import create_task_token
 
 
 def test_personal_api_key_creates_board_and_task(
     test_client: TestClient,
     test_db: Session,
     test_api_key: tuple[str, APIKey],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw_key, api_key = test_api_key
-    process = AsyncMock(return_value=0)
-    monkeypatch.setattr(project_automation_processor, "process", process)
 
     board_response = test_client.post(
         "/api/v1/cloud-projects",
@@ -65,12 +60,6 @@ def test_personal_api_key_creates_board_and_task(
     assert task["tags"] == ["api"]
     assert test_db.get(CloudProject, board["id"]) is not None
     assert test_db.get(LoopItem, task["id"]) is not None
-    process.assert_awaited_once()
-    event = process.await_args.args[1]
-    assert event.event_type == "task.created"
-    assert event.project_id == str(board["id"])
-    assert event.subject_id == task["id"]
-    assert event.actor_user_id == api_key.user_id
 
 
 def test_api_key_task_creation_uses_board_status_validation(
@@ -158,3 +147,43 @@ def test_board_creation_endpoints_document_jwt_and_api_key_authentication(
         security = paths[path]["post"]["security"]
         assert {"OAuth2PasswordBearer": []} in security
         assert {"APIKeyHeader": []} in security
+
+
+def test_runtime_task_token_supports_wework_space_board_flow(
+    test_client: TestClient,
+    test_user: User,
+) -> None:
+    task_token = create_task_token(
+        task_id=0,
+        subtask_id=0,
+        user_id=test_user.id,
+        user_name=test_user.user_name,
+    )
+    headers = {"Authorization": f"Bearer {task_token}"}
+
+    project_response = test_client.post(
+        "/api/v1/cloud-projects",
+        headers=headers,
+        json={"name": "Runtime board"},
+    )
+    assert project_response.status_code == 201
+    project_id = project_response.json()["id"]
+
+    list_response = test_client.get("/api/v1/cloud-projects", headers=headers)
+    assert list_response.status_code == 200
+    assert project_id in {item["id"] for item in list_response.json()["items"]}
+
+    item_response = test_client.post(
+        f"/api/v1/cloud-projects/{project_id}/loop-items",
+        headers=headers,
+        json={"title": "Created from a cloud Runtime"},
+    )
+    assert item_response.status_code == 201
+    item_id = item_response.json()["id"]
+
+    context_response = test_client.get(
+        f"/api/v1/loop-items/{item_id}",
+        headers=headers,
+    )
+    assert context_response.status_code == 200
+    assert context_response.json()["id"] == item_id

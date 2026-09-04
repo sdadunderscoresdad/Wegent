@@ -1,6 +1,6 @@
-import { convertFileSrc } from '@tauri-apps/api/core'
 import type { ResolvedAppearanceMode } from '@/features/appearance/types'
 import type { InstalledPlugin } from '@/types/api'
+import { desktopFileUrl } from '@/components/chat/assistantMarkdownLinks'
 
 /** Legacy host neutral icon — never show as a real package logo; UI uses name initials. */
 const NEUTRAL_PLUGIN_ICON = '/plugin-icons/wework.svg'
@@ -88,11 +88,7 @@ export function resolvePluginAssetUrl(value?: string | null): string {
   if (!source) return ''
   if (!isLocalAssetPath(source)) return source
 
-  try {
-    return convertFileSrc(localPathFromFileUrl(source))
-  } catch {
-    return source
-  }
+  return desktopFileUrl(localPathFromFileUrl(source))
 }
 
 function isRenderablePluginLogoUrl(value: string): boolean {
@@ -150,24 +146,6 @@ export function resolveInstalledPluginLogoUrl(
 ): string {
   const interfaceData = interfaceOverride ?? plugin.spec.interface
   return resolvePluginLogoUrl({
-    pluginKey: plugin.spec.source.pluginKey,
-    logo: resolveInstalledPluginAssetPath(plugin, interfaceData?.logo) || interfaceData?.logo,
-    logoDark:
-      resolveInstalledPluginAssetPath(plugin, interfaceData?.logoDark) || interfaceData?.logoDark,
-    composerIcon:
-      resolveInstalledPluginAssetPath(plugin, interfaceData?.composerIcon) ||
-      interfaceData?.composerIcon,
-    appearanceMode,
-  })
-}
-
-export function resolveInstalledPluginLogo(
-  plugin: InstalledPlugin,
-  appearanceMode: ResolvedAppearanceMode = currentPluginLogoAppearanceMode(),
-  interfaceOverride?: PluginLogoInterfaceFields | null
-): ResolvedPluginLogo {
-  const interfaceData = interfaceOverride ?? plugin.spec.interface
-  return resolvePluginLogo({
     pluginKey: plugin.spec.source.pluginKey,
     logo: resolveInstalledPluginAssetPath(plugin, interfaceData?.logo) || interfaceData?.logo,
     logoDark:

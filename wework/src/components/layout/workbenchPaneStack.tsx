@@ -48,7 +48,7 @@ interface SplitWorkbenchPaneStackProps {
   layout: WorkbenchLayoutState
   validRuntimeKeys: string[]
   retainedResourceKeys?: string[]
-  activeTestId: string
+  activeTestId: string | null
   workbenchVisible: boolean
   resolvePane: (paneKey: string) => WorkbenchPaneIdentity | null
   getPaneTitle: (pane: WorkbenchPaneIdentity) => string
@@ -143,7 +143,9 @@ export function SplitWorkbenchPaneStack({
       const cached = paneCacheRef.current.get(paneKey)
       if (cached) return cached
       const resolved = resolvePane(paneKey)
-      if (resolved) paneCacheRef.current.set(paneKey, resolved)
+      if (resolved && getWorkbenchPaneKey(resolved) === paneKey) {
+        paneCacheRef.current.set(paneKey, resolved)
+      }
       return resolved
     },
     [resolvePane]
@@ -399,7 +401,7 @@ function WorkbenchLayoutRenderer({
   node: WorkbenchLayoutNode
   canonicalLayout: WorkbenchLayoutState
   totalPanes: number
-  activeTestId: string
+  activeTestId: string | null
   dragged: boolean
   dropTarget: DropTarget | null
   resolvePane: (paneKey: string) => WorkbenchPaneIdentity | null
@@ -537,7 +539,7 @@ function WorkbenchPaneView({
   focused: boolean
   focusedView: boolean
   totalPanes: number
-  activeTestId: string
+  activeTestId: string | null
   dragged: boolean
   dropTarget: DropTarget | null
   resolvePane: (paneKey: string) => WorkbenchPaneIdentity | null

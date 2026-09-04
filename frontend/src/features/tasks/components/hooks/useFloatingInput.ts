@@ -19,9 +19,13 @@ export interface FloatingMetrics {
 export interface UseFloatingInputOptions {
   /**
    * Whether there are messages to display.
-   * Floating input is only shown when there are messages.
    */
   hasMessages: boolean
+
+  /**
+   * Whether an empty state still renders the floating input.
+   */
+  inputAlwaysAtBottom?: boolean
 }
 
 export interface UseFloatingInputReturn {
@@ -35,7 +39,7 @@ export interface UseFloatingInputReturn {
    * Ref to attach to the floating input container element.
    * Used to measure height for scroll padding calculation.
    */
-  floatingInputRef: React.RefObject<HTMLDivElement | null>
+  floatingInputRef: React.RefCallback<HTMLDivElement>
 
   /**
    * Ref to attach to the input controls container element.
@@ -73,10 +77,16 @@ export interface UseFloatingInputReturn {
  * This hook extracts multiple useEffect calls from ChatArea into a single,
  * cohesive unit that manages floating input positioning.
  */
-export function useFloatingInput({ hasMessages }: UseFloatingInputOptions): UseFloatingInputReturn {
+export function useFloatingInput({
+  hasMessages,
+  inputAlwaysAtBottom = false,
+}: UseFloatingInputOptions): UseFloatingInputReturn {
   const chatAreaRef = useRef<HTMLDivElement>(null)
-  const floatingInputRef = useRef<HTMLDivElement>(null)
   const inputControlsRef = useRef<HTMLDivElement>(null)
+  const [floatingInputElement, setFloatingInputElement] = useState<HTMLDivElement | null>(null)
+  const floatingInputRef = useCallback((element: HTMLDivElement | null) => {
+    setFloatingInputElement(element)
+  }, [])
 
   // Track previous hasMessages state to detect transitions
   const prevHasMessagesRef = useRef(hasMessages)
@@ -178,25 +188,24 @@ export function useFloatingInput({ hasMessages }: UseFloatingInputOptions): UseF
    * Tracks height changes for scroll padding calculation.
    */
   useEffect(() => {
-    if (!hasMessages || !floatingInputRef.current) {
+    if ((!hasMessages && !inputAlwaysAtBottom) || !floatingInputElement) {
       setInputHeight(0)
       return
     }
 
-    const element = floatingInputRef.current
-    const updateHeight = () => setInputHeight(element.offsetHeight)
+    const updateHeight = () => setInputHeight(floatingInputElement.offsetHeight)
 
     updateHeight()
 
     if (typeof ResizeObserver !== 'undefined') {
       const resizeObserver = new ResizeObserver(updateHeight)
-      resizeObserver.observe(element)
+      resizeObserver.observe(floatingInputElement)
       return () => resizeObserver.disconnect()
     }
 
     window.addEventListener('resize', updateHeight)
     return () => window.removeEventListener('resize', updateHeight)
-  }, [hasMessages])
+  }, [floatingInputElement, hasMessages, inputAlwaysAtBottom])
 
   return {
     chatAreaRef,

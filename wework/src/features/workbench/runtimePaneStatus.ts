@@ -7,7 +7,7 @@ export type RuntimePaneSendPhase = 'idle' | 'submitting' | 'awaiting_assistant'
 
 export interface RuntimePaneStatus {
   sendPhase: RuntimePaneSendPhase
-  workspaceCreationKind?: 'worktree'
+  workspaceCreationKind?: string
   activeAssistantMessage: WorkbenchMessage | null
   taskExecution: {
     known: boolean
@@ -76,7 +76,7 @@ export function deriveRuntimePaneStatus({
     isResponseActive,
     isBusy,
     isWaitingForAssistantIndicator:
-      isSubmitting || isAwaitingAssistant || (running && !isAssistantStreaming),
+      isSubmitting || isAwaitingAssistant || (running && !activeAssistantMessage),
     canSendQueuedMessage: Boolean(currentRuntimeTask) && continuable && !isBusy,
   }
 }

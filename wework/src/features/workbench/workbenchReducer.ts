@@ -8,9 +8,9 @@ import type {
   RuntimeProjectAiSettings,
   RuntimeProjectSpaceRef,
   RuntimeTaskAddress,
+  RuntimeTaskPinRequest,
   RuntimeProjectWork,
   RuntimeWorkListResponse,
-  Team,
   User,
   UserPreferences,
 } from '@/types/api'
@@ -40,7 +40,6 @@ type WorkbenchDeviceStatus = DeviceInfo['status']
 const OPTIMISTIC_TASK_PRESERVE_MS = 2 * 60 * 1000
 export const initialWorkbenchState: WorkbenchState = {
   user: null,
-  defaultTeam: null,
   projects: [],
   devices: [],
   runtimeWork: null,
@@ -59,7 +58,6 @@ export type WorkbenchAction =
   | {
       type: 'bootstrapped'
       user: User
-      defaultTeam: Team | null
       projects: ProjectWithTasks[]
       devices: DeviceInfo[]
       runtimeWork?: RuntimeWorkListResponse | null
@@ -132,7 +130,7 @@ export type WorkbenchAction =
       startFreshChat?: boolean
     }
   | { type: 'user_preferences_updated'; preferences: UserPreferences }
-  | { type: 'blank_chat_committed' }
+  | { type: 'blank_chat_committed'; standaloneChatKey: number }
   | {
       type: 'runtime_task_opened'
       address: RuntimeTaskAddress
@@ -157,6 +155,10 @@ export type WorkbenchAction =
       type: 'runtime_task_title_updated'
       address: RuntimeTaskAddress
       title: string
+    }
+  | {
+      type: 'runtime_task_pinned_updated'
+      request: RuntimeTaskPinRequest
     }
   | {
       type: 'runtime_task_supervisor_updated'
@@ -748,7 +750,7 @@ function runtimeWorkspaceFromMapping(
     id: mapping.id,
     projectId: mapping.projectId,
     deviceId: mapping.deviceId,
-    deviceName: device?.name ?? mapping.deviceId,
+    deviceName: device?.name ?? null,
     deviceStatus: device?.status ?? null,
     workspacePath: mapping.workspacePath,
     workspaceKind: mapping.label ?? 'workspace',
@@ -778,7 +780,7 @@ function runtimeWorkspaceFromOpenedWorkspace(
     id: null,
     projectId: null,
     deviceId,
-    deviceName: device?.name ?? deviceId,
+    deviceName: device?.name ?? null,
     deviceStatus: device?.status ?? null,
     available: device ? device.status !== 'offline' : true,
     workspacePath,
@@ -950,7 +952,6 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return {
         ...state,
         user: action.user,
-        defaultTeam: action.defaultTeam,
         projects: action.projects,
         devices,
         runtimeWork,
@@ -1257,6 +1258,9 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
           : state.user,
       }
     case 'blank_chat_committed':
+      if (state.standaloneChatKey !== action.standaloneChatKey) {
+        return state
+      }
       return {
         ...state,
         standaloneChatKey: state.standaloneChatKey + 1,
@@ -1308,6 +1312,11 @@ export function workbenchReducer(state: WorkbenchState, action: WorkbenchAction)
       return {
         ...state,
         runtimeWork: updateRuntimeWorkTaskTitle(state.runtimeWork, action.address, action.title),
+      }
+    case 'runtime_task_pinned_updated':
+      return {
+        ...state,
+        runtimeWork: updateRuntimeWorkTaskPinned(state.runtimeWork, action.request),
       }
     case 'runtime_task_supervisor_updated':
       return {

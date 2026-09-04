@@ -162,6 +162,7 @@ metadata:
   name: ClaudeSonnet4
   namespace: default
 spec:
+  isVisible: true
   modelGroup: "Primary"
   modelSubGroup: "Fast"
   modelConfig:
@@ -178,6 +179,7 @@ spec:
 | ---------------------- | ------ | -------- | -------------------------------------------------- |
 | `metadata.name`        | string | Yes      | Unique identifier for the Model                    |
 | `metadata.namespace`   | string | Yes      | Namespace, typically `default`                     |
+| `spec.isVisible`       | boolean | No      | Whether a public model appears in regular users' model selectors. Defaults to `true`; `false` preserves existing references and runtime resolution. |
 | `spec.modelGroup`      | string | No       | First-level display group used by model selectors  |
 | `spec.modelSubGroup`   | string | No       | Second-level display group under `spec.modelGroup` |
 | `spec.modelConfig`     | object | Yes      | Model configuration object                         |
@@ -189,7 +191,11 @@ spec:
 
 ### Vision delegation model reference
 
-A text-only model can explicitly reference a model that declares `supportsImage: true` in `modelConfig.visionSidecarModel`. The reference must use the complete resource identity and `apiFormat` returned by the Backend's authorized model list. Wework accepts it only when the exact target remains present, active, accessible, image-capable, and API-format-compatible; it never selects a default vision model from sign-in state or model names. When the reference is absent or rejected, the primary model remains text-only and no image preprocessing or additional model call occurs.
+A text-only model can explicitly reference another image-capable model in `modelConfig.visionSidecarModel`. The reference must use the complete resource identity and `apiFormat` returned by the Backend's authorized model list. The reference is authoritative: Wework only validates its shape, while the Backend's LLM gateway resolves and authorizes the target at call time using the same identity headers. Referencing a model that never declared `supportsImage`, or one that is not distributed to Wework, therefore still works. Wework never selects a default vision model from sign-in state or model names. A malformed reference leaves the primary model text-only with no image preprocessing; a reference whose target is missing or cannot read images replaces that image with an explicit failure message, so the original image never leaks to the text-only primary model.
+
+The Wegent web vision model dropdown only lists candidates that declare `modelCapabilities.supportsImage: true`, so image-capable models should carry that field. When an existing reference points at a model outside that candidate list, the dropdown keeps the reference and marks it as currently unselectable, so saving the model does not discard it.
+
+`apiFormat` must match the upstream protocol the referenced model actually speaks: `openai-responses`, `openai-chat-completions`, or `anthropic-messages`. Most Model CRDs only declare `spec.modelConfig.env.model`, in which case the protocol is inferred from that field (`claude` maps to Anthropic Messages, `openai` maps to OpenAI Chat Completions).
 
 ```yaml
 spec:

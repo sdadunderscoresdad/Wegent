@@ -10,10 +10,13 @@ const ACTIVE_WORKBENCH_SELECTOR =
   '[data-testid="desktop-workbench-main"][data-active-workbench-pane="true"]'
 const BROWSER_INPUT_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-url-input"]`
 const BROWSER_AGENT_STATUS_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-agent-status"]`
-const BROWSER_AGENT_PAUSE_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-agent-pause-button"]`
 const BROWSER_AGENT_RESUME_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-agent-resume-button"]`
 const BROWSER_AGENT_APPROVE_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-agent-approval-approve-button"]`
-const TRANSIENT_NOTICE_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="transient-notice"]`
+const BROWSER_AGENT_CURSOR_SELECTOR =
+  '[data-testid="workspace-browser-agent-cursor"][data-visible="true"]'
+const BROWSER_AGENT_TAB_ICON_SELECTOR =
+  '[data-testid^="right-workspace-browser-tab-"][aria-selected="true"] [data-testid$="-agent-icon"]'
+const TRANSIENT_NOTICE_SELECTOR = '[data-testid="transient-notice"]'
 const WORKBENCH_BROWSER_LABEL_SELECTOR =
   '[data-testid="desktop-workbench-content"][data-embedded-browser-label]'
 const BROWSER_LABEL = 'workspace-browser'
@@ -46,24 +49,11 @@ const BROWSER_CLEAR_DATA_SELECTOR = '[data-testid="workspace-browser-clear-data-
 const BROWSER_CLEAR_COOKIES_SELECTOR = '[data-testid="workspace-browser-clear-cookies-item"]'
 const BROWSER_CLEAR_CACHE_SELECTOR = '[data-testid="workspace-browser-clear-cache-item"]'
 const BROWSER_NATIVE_VIEW_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-native-view"]`
-const BROWSER_ANNOTATE_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-annotate-button"]`
-const BROWSER_ANNOTATION_CLOSE_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-annotation-close-button"]`
-const BROWSER_ANNOTATION_CLEAR_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-annotation-clear-button"]`
-const BROWSER_ANNOTATION_COUNT_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-annotation-count"]`
-const BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-annotation-original-view-button"]`
-const BROWSER_ANNOTATION_DISCARD_CONFIRM_SELECTOR =
-  '[data-testid="workspace-browser-annotation-discard-confirm-button"]'
 const BROWSER_CLEAR_STARTED_TEXT = '开始清除浏览数据'
 const BROWSER_CLEAR_COMPLETED_TEXT = '浏览数据已清除'
-const ANNOTATION_FIXTURE_PATH = '/embedded-browser-annotation-fixture'
-const ANNOTATION_SECOND_FIXTURE_PATH = '/embedded-browser-annotation-second-fixture'
-const ANNOTATION_READY_TEXT = 'Embedded Browser Annotation Fixture'
-const ANNOTATION_SECOND_READY_TEXT = 'Embedded Browser Annotation Second Fixture'
-const ANNOTATION_TARGET_TEXT = 'Annotation target text'
-const ANNOTATION_COMMENT = 'Make this target more prominent'
-const ANNOTATION_NAVIGATION_COMMENT = 'This comment must not survive navigation'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoDir = resolve(scriptDir, '..', '..', '..', '..')
+let desktopScenarioExecutorBinary = null
 
 async function readBrowserPanelLabel(control, scopeSelector, timeoutMs) {
   const selector = `${scopeSelector} ${WORKBENCH_BROWSER_LABEL_SELECTOR}`
@@ -173,35 +163,6 @@ function browserDataCacheFixtureHtml() {
 </html>`
 }
 
-function annotationFixtureHtml({ secondPage = false } = {}) {
-  const heading = secondPage ? ANNOTATION_SECOND_READY_TEXT : ANNOTATION_READY_TEXT
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>${heading}</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 0; padding: 48px; }
-      h1 { margin: 0 0 32px; font-size: 24px; }
-      #annotation-target {
-        display: block;
-        width: 280px;
-        padding: 16px;
-        border: 1px solid #9ca3af;
-        border-radius: 6px;
-        background: #f8fafc;
-        color: #111827;
-        font-size: 16px;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>${heading}</h1>
-    <button id="annotation-target" type="button">${ANNOTATION_TARGET_TEXT}</button>
-  </body>
-</html>`
-}
-
 async function waitForBridgeIdentity(executorHome, timeoutMs) {
   const runtimePath = join(executorHome, 'runtime', BRIDGE_RUNTIME_FILE)
   const startedAt = Date.now()
@@ -216,20 +177,6 @@ async function waitForBridgeIdentity(executorHome, timeoutMs) {
     await new Promise(resolve => setTimeout(resolve, 100))
   }
   throw new Error('Timed out waiting for authenticated embedded browser bridge runtime')
-}
-
-async function writeStaleBridgeRuntime(identity) {
-  await writeFile(
-    identity.runtimePath,
-    `${JSON.stringify({
-      schemaVersion: 1,
-      pid: process.pid,
-      address: '127.0.0.1:9',
-      token: 'stale-upgrade-token',
-      startedAtUnixMs: Date.now() - 60_000,
-    })}\n`,
-    'utf8'
-  )
 }
 
 async function callBridge(identity, payload, label = BROWSER_LABEL) {
@@ -260,6 +207,35 @@ async function withTimeout(promise, timeoutMs, message) {
       timer = setTimeout(() => reject(new Error(message)), timeoutMs)
     }),
   ]).finally(() => clearTimeout(timer))
+}
+
+async function assertNoticeCenteredInBrowserPanel(control) {
+  const [noticeMetrics] = JSON.parse(
+    await control.command('getElementMetrics', TRANSIENT_NOTICE_SELECTOR)
+  )
+  const [panelMetrics] = JSON.parse(
+    await control.command(
+      'getElementMetrics',
+      `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="workspace-browser-panel"]`
+    )
+  )
+  const noticeCenter = noticeMetrics.left + noticeMetrics.width / 2
+  const panelCenter = panelMetrics.left + panelMetrics.width / 2
+
+  assert.ok(
+    Math.abs(noticeCenter - panelCenter) <= 1,
+    `Browser notice was not centered in the browser panel: ${JSON.stringify({
+      noticeMetrics,
+      panelMetrics,
+    })}`
+  )
+  assert.ok(
+    noticeMetrics.left >= panelMetrics.left && noticeMetrics.right <= panelMetrics.right,
+    `Browser notice exceeded the browser panel width: ${JSON.stringify({
+      noticeMetrics,
+      panelMetrics,
+    })}`
+  )
 }
 
 async function waitForControlValue(control, selector, expected, timeoutMs, message) {
@@ -294,9 +270,6 @@ async function waitForVisibleSingleElement(control, selector, timeoutMs, message
     appShell: JSON.parse(await control.command('getElementMetrics', '[data-testid="app-shell"]')),
     appShellHeight: await control.command('getInlineStyle', '[data-testid="app-shell"]', {
       value: 'height',
-    }),
-    tauriViewportHeight: await control.command('getAttribute', '[data-testid="app-shell"]', {
-      value: 'data-tauri-viewport-height',
     }),
     routeHost: JSON.parse(
       await control.command('getElementMetrics', '[data-testid="app-route-host"]')
@@ -356,6 +329,7 @@ async function waitForRuntimeTaskId(control, timeoutMs) {
 
 async function withBrowserMcp(identity, label, callback) {
   const executorPath =
+    desktopScenarioExecutorBinary ||
     process.env.WEWORK_E2E_EXECUTOR_BIN ||
     join(
       repoDir,
@@ -368,8 +342,6 @@ async function withBrowserMcp(identity, label, callback) {
     cwd: repoDir,
     env: {
       ...process.env,
-      WEWORK_EMBEDDED_BROWSER_BRIDGE_URL: identity.baseUrl,
-      WEWORK_EMBEDDED_BROWSER_BRIDGE_TOKEN: identity.token,
       WEWORK_EMBEDDED_BROWSER_BRIDGE_RUNTIME_FILE: identity.runtimePath,
       WEWORK_EMBEDDED_BROWSER_LABEL: label,
     },
@@ -472,6 +444,9 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
   let cacheResourceRequests = 0
 
   return {
+    setExecutorBinary(path) {
+      desktopScenarioExecutorBinary = path
+    },
     async handleHttp(request, response, url) {
       if (request.method === 'GET' && url.pathname === REDIRECT_PATH) {
         response.writeHead(302, { location: FIXTURE_PATH })
@@ -497,16 +472,6 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
         response.end(`window.__weworkBrowserDataCacheResource = ${cacheResourceRequests}`)
         return true
       }
-      if (request.method === 'GET' && url.pathname === ANNOTATION_FIXTURE_PATH) {
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        response.end(annotationFixtureHtml())
-        return true
-      }
-      if (request.method === 'GET' && url.pathname === ANNOTATION_SECOND_FIXTURE_PATH) {
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-        response.end(annotationFixtureHtml({ secondPage: true }))
-        return true
-      }
       if (request.method !== 'GET' || url.pathname !== FIXTURE_PATH) return false
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(fixtureHtml())
@@ -517,8 +482,6 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       await ensureExperimentalFeaturesEnabled(control)
       const fixtureUrl = `${control.url}${FIXTURE_PATH}`
       const redirectUrl = `${control.url}${REDIRECT_PATH}`
-      const annotationFixtureUrl = `${control.url}${ANNOTATION_FIXTURE_PATH}`
-      const annotationSecondFixtureUrl = `${control.url}${ANNOTATION_SECOND_FIXTURE_PATH}`
       control.setScenario('embedded_browser_setup')
       await control.command(
         'waitFor',
@@ -549,7 +512,12 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
         'The fresh local task did not expose its task-scoped embedded browser label'
       )
       const bridgeIdentity = await waitForBridgeIdentity(executorHome, uiTimeoutMs)
-      const bridgeCall = payload => callBridge(bridgeIdentity, { label: browserLabel, ...payload })
+      const bridgeCall = payload =>
+        withTimeout(
+          callBridge(bridgeIdentity, { label: browserLabel, ...payload }),
+          (payload.timeoutMs ?? uiTimeoutMs) + 5_000,
+          `Timed out waiting for embedded browser bridge action: ${payload.action}`
+        )
       const firstTaskTabTestId = await control.command(
         'getAttribute',
         '[data-tab-kind="task"][aria-selected="true"]',
@@ -662,7 +630,7 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       )
       assert.match(
         inactiveTaskClassName,
-        /(?:^|\s)invisible(?:\s|$)/,
+        /(?:^|\s)hidden(?:\s|$)/,
         'Inactive task browser calls made the task surface visible'
       )
       await control.command('click', `[data-testid="${firstTaskTabTestId}"]`)
@@ -859,9 +827,17 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
         text: 'WEWORK_AGENT_STATUS_E2E_NEVER_APPEARS',
         timeoutMs: 4_000,
       })
-      await control.command('waitFor', BROWSER_AGENT_STATUS_SELECTOR, { timeoutMs: uiTimeoutMs })
-      await control.command('waitFor', BROWSER_AGENT_PAUSE_SELECTOR, { timeoutMs: uiTimeoutMs })
-      await control.command('click', BROWSER_AGENT_PAUSE_SELECTOR)
+      await control.command('waitFor', BROWSER_AGENT_TAB_ICON_SELECTOR, {
+        timeoutMs: uiTimeoutMs,
+      })
+      assert.equal(
+        Number(await control.command('getElementCount', BROWSER_AGENT_STATUS_SELECTOR)),
+        0,
+        'Running agent state should use the tab icon instead of a separate status bar'
+      )
+      await control.command('setEmbeddedBrowserAgentControlPaused', 'body', {
+        value: JSON.stringify({ label: browserLabel, paused: true }),
+      })
       await control.command('waitFor', BROWSER_AGENT_RESUME_SELECTOR, { timeoutMs: uiTimeoutMs })
       const pausedClick = await withTimeout(
         bridgeCall({
@@ -961,12 +937,34 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
         text: BROWSER_CLEAR_STARTED_TEXT,
         timeoutMs: uiTimeoutMs,
       })
+      await assertNoticeCenteredInBrowserPanel(control)
       await control.command('waitFor', TRANSIENT_NOTICE_SELECTOR, {
         text: BROWSER_CLEAR_COMPLETED_TEXT,
         timeoutMs: 35_000,
       })
       await bridgeCall({ action: 'close', timeoutMs: 8_000 })
+      await waitForElementCount(
+        control,
+        BROWSER_NATIVE_VIEW_SELECTOR,
+        0,
+        uiTimeoutMs,
+        'The browser host remained mounted after the bridge close completed'
+      )
+      await waitForControlValue(
+        control,
+        BROWSER_INPUT_SELECTOR,
+        '',
+        uiTimeoutMs,
+        'The browser address bar did not settle after the bridge close'
+      )
       await control.command('fill', BROWSER_INPUT_SELECTOR, { value: cacheFixtureUrl })
+      await waitForControlValue(
+        control,
+        BROWSER_INPUT_SELECTOR,
+        cacheFixtureUrl,
+        uiTimeoutMs,
+        'The browser address bar lost the cache fixture URL before submission'
+      )
       await control.command('submit', BROWSER_INPUT_SELECTOR)
       await control.command('waitFor', BROWSER_NATIVE_VIEW_SELECTOR, { timeoutMs: uiTimeoutMs })
       await bridgeCall({
@@ -976,354 +974,6 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       })
       assert.equal(cacheResourceRequests, 2, 'Cache clear did not force a resource request')
 
-      await bridgeCall({ action: 'open', url: annotationFixtureUrl, timeoutMs: 8_000 })
-      await bridgeCall({
-        action: 'waitFor',
-        options: { condition: { textVisible: ANNOTATION_READY_TEXT } },
-        timeoutMs: 5_000,
-      })
-      await control.command('waitFor', BROWSER_ANNOTATE_SELECTOR, {
-        enabled: true,
-        timeoutMs: uiTimeoutMs,
-      })
-      await control.command('click', BROWSER_ANNOTATE_SELECTOR)
-      await control.command('waitFor', BROWSER_ANNOTATION_CLOSE_SELECTOR, {
-        timeoutMs: uiTimeoutMs,
-      })
-
-      const createAnnotation = await bridgeCall({
-        action: 'evaluate',
-        expression: `(() => {
-          const target = document.querySelector('#annotation-target')
-          const blocker = document.querySelector('[data-wework-annotation="blocker"]')
-          if (!target || !blocker) return false
-          const rect = target.getBoundingClientRect()
-          blocker.dispatchEvent(new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            clientX: rect.x + rect.width / 2,
-            clientY: rect.y + rect.height / 2,
-          }))
-          return Boolean(document.querySelector('[data-wework-annotation="editor"]'))
-        })()`,
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        createAnnotation.ok,
-        true,
-        `Annotation target click failed: ${JSON.stringify(createAnnotation)}`
-      )
-      assert.equal(createAnnotation.value, true, 'Annotation target click did not open the editor')
-      const fillAnnotationComment = await bridgeCall({
-        action: 'fill',
-        selector: '[data-wework-annotation="comment-input"]',
-        text: ANNOTATION_COMMENT,
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        fillAnnotationComment.ok,
-        true,
-        `Annotation comment fill failed: ${JSON.stringify(fillAnnotationComment)}`
-      )
-      const submitAnnotation = await bridgeCall({
-        action: 'click',
-        selector: '[data-wework-annotation="submit"]',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        submitAnnotation.ok,
-        true,
-        `Annotation submit failed: ${JSON.stringify(submitAnnotation)}`
-      )
-      await control.command('waitFor', BROWSER_ANNOTATION_COUNT_SELECTOR, {
-        text: '1',
-        timeoutMs: uiTimeoutMs,
-      })
-
-      const annotationMarker = await bridgeCall({
-        action: 'click',
-        selector: '[data-wework-annotation="marker"]',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        annotationMarker.ok,
-        true,
-        `Annotation marker click failed: ${JSON.stringify(annotationMarker)}`
-      )
-      const openAdjustments = await bridgeCall({
-        action: 'click',
-        selector: '[data-wework-annotation="adjust-toggle"]',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        openAdjustments.ok,
-        true,
-        `Annotation adjustment editor did not open: ${JSON.stringify(openAdjustments)}`
-      )
-      const fillAnnotationColor = await bridgeCall({
-        action: 'fill',
-        selector: '[data-wework-annotation="adjustment-color"]',
-        text: '#ef4444',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        fillAnnotationColor.ok,
-        true,
-        `Annotation color fill failed: ${JSON.stringify(fillAnnotationColor)}`
-      )
-      const saveAnnotation = await bridgeCall({
-        action: 'click',
-        selector: '[data-wework-annotation="save"]',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        saveAnnotation.ok,
-        true,
-        `Annotation adjustment save failed: ${JSON.stringify(saveAnnotation)}`
-      )
-      const annotationSnapshotResult = await bridgeCall({
-        action: 'evaluate',
-        expression: 'window.__WEWORK_BROWSER_ANNOTATION__?.getSnapshot?.() ?? null',
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        annotationSnapshotResult.ok,
-        true,
-        `Annotation snapshot evaluation failed: ${JSON.stringify(annotationSnapshotResult)}`
-      )
-      assert.equal(annotationSnapshotResult.value?.annotations?.length, 1)
-      assert.equal(annotationSnapshotResult.value.annotations[0]?.comment, ANNOTATION_COMMENT)
-      assert.ok(
-        annotationSnapshotResult.value.annotations[0]?.adjustments?.some(
-          adjustment => adjustment.property === 'color' && adjustment.after === '#ef4444'
-        ),
-        `Annotation snapshot omitted saved color adjustment: ${JSON.stringify(annotationSnapshotResult.value)}`
-      )
-      const targetColor = await bridgeCall({
-        action: 'evaluate',
-        expression: "document.querySelector('#annotation-target')?.style.color || ''",
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        targetColor.ok,
-        true,
-        `Target color evaluation failed: ${JSON.stringify(targetColor)}`
-      )
-      assert.equal(
-        targetColor.value,
-        'rgb(239, 68, 68)',
-        'Annotation adjustment did not update the target'
-      )
-      await control.command('waitFor', BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR, {
-        timeoutMs: uiTimeoutMs,
-      })
-      const originalViewPressedBefore = await control.command(
-        'getAttribute',
-        BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR,
-        { value: 'aria-pressed' }
-      )
-      assert.equal(
-        originalViewPressedBefore,
-        'false',
-        'Hold-to-view-original button should start unpressed'
-      )
-      await control.command('pointerDownOnly', BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR)
-      const originalViewPressedDuring = await control.command(
-        'getAttribute',
-        BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR,
-        { value: 'aria-pressed' }
-      )
-      assert.equal(
-        originalViewPressedDuring,
-        'true',
-        'Hold-to-view-original button did not stay pressed while held'
-      )
-      const originalViewTargetColor = await bridgeCall({
-        action: 'evaluate',
-        expression: "document.querySelector('#annotation-target')?.style.color || ''",
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        originalViewTargetColor.ok,
-        true,
-        `Original view target color evaluation failed: ${JSON.stringify(originalViewTargetColor)}`
-      )
-      assert.equal(
-        originalViewTargetColor.value,
-        '',
-        'Hold-to-view-original did not restore the original target style'
-      )
-      await control.command('pointerUp', BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR)
-      await control.command('click', BROWSER_ANNOTATION_COUNT_SELECTOR)
-      const originalViewPressedAfter = await control.command(
-        'getAttribute',
-        BROWSER_ANNOTATION_ORIGINAL_VIEW_SELECTOR,
-        { value: 'aria-pressed' }
-      )
-      assert.equal(
-        originalViewPressedAfter,
-        'false',
-        'Hold-to-view-original button changed pressed state after focus loss'
-      )
-      const replayedTargetColor = await bridgeCall({
-        action: 'evaluate',
-        expression: "document.querySelector('#annotation-target')?.style.color || ''",
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        replayedTargetColor.ok,
-        true,
-        `Replayed target color evaluation failed: ${JSON.stringify(replayedTargetColor)}`
-      )
-      assert.equal(
-        replayedTargetColor.value,
-        'rgb(239, 68, 68)',
-        'Annotation adjustment did not replay after releasing original view'
-      )
-      const annotationScreenshot =
-        process.platform === 'darwin'
-          ? await bridgeCall({ action: 'screenshot', timeoutMs: 8_000 })
-          : null
-
-      await control.command('click', BROWSER_ANNOTATION_CLEAR_SELECTOR)
-      await control.command('waitFor', BROWSER_ANNOTATION_DISCARD_CONFIRM_SELECTOR, {
-        timeoutMs: uiTimeoutMs,
-      })
-      await control.command('click', BROWSER_ANNOTATION_DISCARD_CONFIRM_SELECTOR)
-      await waitForElementCount(
-        control,
-        BROWSER_ANNOTATION_COUNT_SELECTOR,
-        0,
-        uiTimeoutMs,
-        'Annotation count remained visible after clearing annotations'
-      )
-      const clearedAnnotationSnapshot = await bridgeCall({
-        action: 'evaluate',
-        expression: 'window.__WEWORK_BROWSER_ANNOTATION__?.getSnapshot?.() ?? null',
-        timeoutMs: 5_000,
-      })
-      assert.equal(clearedAnnotationSnapshot.ok, true)
-      assert.equal(
-        clearedAnnotationSnapshot.value?.annotations?.length,
-        0,
-        `Annotation clear did not empty the page runtime: ${JSON.stringify(clearedAnnotationSnapshot)}`
-      )
-      const clearedTargetColor = await bridgeCall({
-        action: 'evaluate',
-        expression: "document.querySelector('#annotation-target')?.style.color || ''",
-        timeoutMs: 5_000,
-      })
-      assert.equal(clearedTargetColor.ok, true)
-      assert.equal(
-        clearedTargetColor.value,
-        '',
-        'Annotation clear did not restore the target style'
-      )
-
-      const createNavigationAnnotation = await bridgeCall({
-        action: 'evaluate',
-        expression: `(() => {
-          const target = document.querySelector('#annotation-target')
-          const blocker = document.querySelector('[data-wework-annotation="blocker"]')
-          if (!target || !blocker) return false
-          const rect = target.getBoundingClientRect()
-          blocker.dispatchEvent(new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            clientX: rect.x + rect.width / 2,
-            clientY: rect.y + rect.height / 2,
-          }))
-          return Boolean(document.querySelector('[data-wework-annotation="editor"]'))
-        })()`,
-        timeoutMs: 5_000,
-      })
-      assert.equal(createNavigationAnnotation.ok, true)
-      assert.equal(createNavigationAnnotation.value, true)
-      const fillNavigationComment = await bridgeCall({
-        action: 'fill',
-        selector: '[data-wework-annotation="comment-input"]',
-        text: ANNOTATION_NAVIGATION_COMMENT,
-        timeoutMs: 5_000,
-      })
-      assert.equal(fillNavigationComment.ok, true)
-      const submitNavigationAnnotation = await bridgeCall({
-        action: 'click',
-        selector: '[data-wework-annotation="submit"]',
-        timeoutMs: 5_000,
-      })
-      assert.equal(submitNavigationAnnotation.ok, true)
-      await control.command('waitFor', BROWSER_ANNOTATION_COUNT_SELECTOR, {
-        text: '1',
-        timeoutMs: uiTimeoutMs,
-      })
-
-      await bridgeCall({ action: 'open', url: annotationSecondFixtureUrl, timeoutMs: 8_000 })
-      await bridgeCall({
-        action: 'waitFor',
-        options: { condition: { textVisible: ANNOTATION_SECOND_READY_TEXT } },
-        timeoutMs: 5_000,
-      })
-      await waitForElementCount(
-        control,
-        BROWSER_ANNOTATION_CLOSE_SELECTOR,
-        0,
-        uiTimeoutMs,
-        'Annotation mode did not exit after browser navigation'
-      )
-      await control.command('waitFor', BROWSER_ANNOTATE_SELECTOR, {
-        enabled: true,
-        timeoutMs: uiTimeoutMs,
-      })
-      await control.command('click', BROWSER_ANNOTATE_SELECTOR)
-      await control.command('waitFor', BROWSER_ANNOTATION_CLOSE_SELECTOR, {
-        timeoutMs: uiTimeoutMs,
-      })
-      const reenteredAnnotationSnapshot = await bridgeCall({
-        action: 'evaluate',
-        expression: 'window.__WEWORK_BROWSER_ANNOTATION__?.getSnapshot?.() ?? null',
-        timeoutMs: 5_000,
-      })
-      assert.equal(reenteredAnnotationSnapshot.ok, true)
-      assert.equal(
-        reenteredAnnotationSnapshot.value?.annotations?.length,
-        0,
-        `Annotation state leaked into a new page session: ${JSON.stringify(reenteredAnnotationSnapshot)}`
-      )
-      assert.equal(
-        reenteredAnnotationSnapshot.value?.scope?.url,
-        annotationSecondFixtureUrl,
-        'Re-entered annotation mode did not bind to the current page URL'
-      )
-      await control.command('click', BROWSER_ANNOTATION_CLOSE_SELECTOR)
-      await waitForElementCount(
-        control,
-        BROWSER_ANNOTATION_CLOSE_SELECTOR,
-        0,
-        uiTimeoutMs,
-        'Annotation mode did not exit when the close control was used'
-      )
-      const restoreFixture = await bridgeCall({
-        action: 'open',
-        url: fixtureUrl,
-        timeoutMs: 8_000,
-      })
-      assert.equal(
-        restoreFixture.ok,
-        true,
-        `Could not restore the embedded browser fixture after annotation checks: ${JSON.stringify(restoreFixture)}`
-      )
-      const restoredFixtureReady = await bridgeCall({
-        action: 'waitFor',
-        options: { condition: { textVisible: READY_TEXT } },
-        timeoutMs: 5_000,
-      })
-      assert.equal(
-        restoredFixtureReady.ok,
-        true,
-        `The embedded browser fixture did not reload after annotation checks: ${JSON.stringify(restoredFixtureReady)}`
-      )
-
-      await writeStaleBridgeRuntime(bridgeIdentity)
       const mcpResult = await withBrowserMcp(bridgeIdentity, browserLabel, async callTool => {
         const openText = await callTool('browser_open_and_inspect', {
           url: redirectUrl,
@@ -1369,7 +1019,6 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
         assert.equal(clickJson.action, 'click')
         assert.equal(clickJson.ok, true)
         assert.equal(clickJson.effect.domChanged, true)
-
         const waitText = await callTool('browser_wait_and_inspect', {
           condition: { textVisible: CLICKED_TEXT },
           inspectOptions: { interactiveOnly: false, includeTextBlocks: true, maxNodes: 80 },
@@ -1481,14 +1130,40 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       })
       assert.ok(afterFillInspect.inspectText.includes(DIRECT_FILLED_TEXT))
 
-      const clickResult = await bridgeCall({
+      const clickPromise = bridgeCall({
         action: 'click',
         ref: buttonNode.ref,
         timeoutMs: 5_000,
       })
+      await control.command('waitFor', BROWSER_AGENT_CURSOR_SELECTOR, {
+        timeoutMs: uiTimeoutMs,
+      })
+      await control.command('waitFor', BROWSER_AGENT_TAB_ICON_SELECTOR, {
+        timeoutMs: uiTimeoutMs,
+      })
+      const cursorStyle = await control.command('getAttribute', BROWSER_AGENT_CURSOR_SELECTOR, {
+        value: 'style',
+      })
+      assert.ok(
+        cursorStyle.includes('translate3d'),
+        `The host AI cursor did not move to the click target: ${cursorStyle}`
+      )
+      const clickResult = await clickPromise
       assert.equal(clickResult.ok, true, `Click failed: ${JSON.stringify(clickResult)}`)
       assert.equal(clickResult.effect.domChanged, true)
-
+      await new Promise(resolve => setTimeout(resolve, 1_000))
+      const cursorVisibleAfterClick = await control.command(
+        'getAttribute',
+        BROWSER_AGENT_CURSOR_SELECTOR,
+        {
+          value: 'data-visible',
+        }
+      )
+      assert.equal(
+        cursorVisibleAfterClick,
+        'true',
+        'The host AI cursor disappeared immediately after the click'
+      )
       const finalInspect = await bridgeCall({
         action: 'inspect',
         options: { interactiveOnly: false, includeTextBlocks: true, maxNodes: 80 },
@@ -1510,6 +1185,20 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       assert.ok(deleteApproval.approval?.approvalId)
       await control.command('waitFor', BROWSER_AGENT_APPROVE_SELECTOR, { timeoutMs: uiTimeoutMs })
       await control.command('click', BROWSER_AGENT_APPROVE_SELECTOR)
+      const approvalResolutionStartedAt = Date.now()
+      let approvalButtonCount = 1
+      while (Date.now() - approvalResolutionStartedAt < uiTimeoutMs) {
+        approvalButtonCount = Number(
+          await control.command('getElementCount', BROWSER_AGENT_APPROVE_SELECTOR)
+        )
+        if (approvalButtonCount === 0) break
+        await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
+      }
+      assert.equal(
+        approvalButtonCount,
+        0,
+        'Browser approval remained pending after the user approved it'
+      )
 
       const approvedDeleteResult = await bridgeCall({
         action: 'click',
@@ -1714,15 +1403,7 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
       zipBytes.set([0x50, 0x4b, 0x03, 0x04])
       await writeFile(localZipPath, zipBytes)
       const localZipUrl = pathToFileURL(localZipPath).href
-      await control.command('fill', BROWSER_INPUT_SELECTOR, { value: localZipUrl })
-      await waitForControlValue(
-        control,
-        BROWSER_INPUT_SELECTOR,
-        localZipUrl,
-        uiTimeoutMs,
-        'Browser URL input did not receive local zip URL before submit'
-      )
-      await control.command('submit', BROWSER_INPUT_SELECTOR)
+      await control.command('submit', BROWSER_INPUT_SELECTOR, { value: localZipUrl })
       await control.command('waitFor', TRANSIENT_NOTICE_SELECTOR, {
         text: LOCAL_TOAST_TEXT,
         timeoutMs: uiTimeoutMs,
@@ -1744,15 +1425,6 @@ export function createDesktopScenario({ executorHome, resultDir, uiTimeoutMs }) 
             deleteEffect: approvedDeleteResult.effect,
             waitReason: waitResult.reason,
             screenshot: screenshotResult,
-            annotation: {
-              comment: annotationSnapshotResult.value.annotations[0]?.comment,
-              colorAdjustment: annotationSnapshotResult.value.annotations[0]?.adjustments?.find(
-                adjustment => adjustment.property === 'color'
-              ),
-              screenshot: annotationScreenshot,
-              clearedAnnotationCount: clearedAnnotationSnapshot.value.annotations.length,
-              reenteredScope: reenteredAnnotationSnapshot.value.scope,
-            },
             capabilities: capabilities.p2,
             localFileInspectId: localFileInspect.inspectId,
             localFileUrl: pathToFileURL(localHtmlPath).href,

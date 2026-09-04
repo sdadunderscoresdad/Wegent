@@ -399,6 +399,97 @@ describe('runtimeConversationTurns', () => {
     expect(merged[0].items.map(item => item.id)).toEqual(['client-user-1', 'live-process'])
   })
 
+  test('reconciles a provider alias that repeats the canonical assistant item', () => {
+    const content = 'WEWORK_DESKTOP_E2E_GOAL_IDLE_INITIAL_COMPLETE'
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'runtime-provisional-turn',
+        items: [
+          {
+            id: 'assistant-item-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T04:57:46.000Z',
+          },
+        ],
+        status: 'done',
+      },
+      {
+        id: 'provider-turn-1',
+        items: [
+          {
+            id: 'assistant-item-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T04:57:46.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'provider-turn-1',
+        items: [
+          {
+            id: 'assistant-item-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T04:57:46.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    const merged = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged).toHaveLength(1)
+    expect(projectRuntimeConversationTurns(merged).map(message => message.content)).toEqual([
+      content,
+    ])
+  })
+
+  test('reconciles streamed and transcript assistant text aliases with different item ids', () => {
+    const content = 'WEWORK_DESKTOP_E2E_GOAL_IDLE_INITIAL_COMPLETE'
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'provider-turn-1',
+        items: [
+          {
+            id: 'streamed-assistant-item',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T07:20:37.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'provider-turn-1',
+        items: [
+          {
+            id: 'canonical-assistant-item',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T07:20:37.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    const merged = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.items).toEqual(snapshot[0]?.items)
+    expect(projectRuntimeConversationTurns(merged).map(message => message.content)).toEqual([
+      content,
+    ])
+  })
+
   test('does not synthesize a Codex turn from a terminal event', () => {
     const turns = reduceRuntimeConversationTurns(
       [
@@ -680,6 +771,90 @@ describe('runtimeConversationTurns', () => {
       content: '内存检查完成。',
       blocks: [expect.objectContaining({ id: 'cpu-progress' })],
     })
+  })
+
+  test('ignores a matching process block that arrives after terminal assistant content', () => {
+    const turns = reduceRuntimeConversationTurns(
+      [
+        {
+          id: 'turn-1',
+          items: [
+            {
+              id: 'assistant-item-1',
+              type: 'assistant_text',
+              content: '处理完成。',
+              createdAt: '2026-08-21T00:00:00.000Z',
+            },
+          ],
+          status: 'done',
+        },
+      ],
+      {
+        type: 'block_created',
+        subtaskId: 'turn-1',
+        block: {
+          id: 'assistant-item-1',
+          subtaskId: 'turn-1',
+          type: 'text',
+          content: '处理完成。',
+          status: 'done',
+          createdAt: Date.parse('2026-08-21T00:00:00.000Z'),
+        },
+      }
+    )
+
+    expect(turns[0].items).toEqual([
+      expect.objectContaining({
+        id: 'assistant-item-1',
+        type: 'assistant_text',
+        content: '处理完成。',
+      }),
+    ])
+  })
+
+  test('places a late processing block before terminal assistant content', () => {
+    const turns = reduceRuntimeConversationTurns(
+      [
+        {
+          id: 'turn-1',
+          items: [
+            {
+              id: 'assistant-item-1',
+              type: 'assistant_text',
+              content: '处理完成。',
+              createdAt: '2026-08-21T00:00:01.000Z',
+            },
+          ],
+          status: 'done',
+        },
+      ],
+      {
+        type: 'block_created',
+        subtaskId: 'turn-1',
+        block: {
+          id: 'file-changes-1',
+          subtaskId: 'turn-1',
+          type: 'file_changes',
+          status: 'done',
+          createdAt: Date.parse('2026-08-21T00:00:00.000Z'),
+          fileChanges: {
+            version: 1,
+            status: 'active',
+            artifact_id: 'artifact-1',
+            device_id: 'device-1',
+            workspace_path: '/workspace/project',
+            file_count: 1,
+            additions: 1,
+            deletions: 0,
+            files: [],
+            reverted_at: null,
+            revertible: false,
+          },
+        },
+      }
+    )
+
+    expect(turns[0].items.map(item => item.id)).toEqual(['file-changes-1', 'assistant-item-1'])
   })
 
   test('keeps a completed final text block before subsequently applied guidance', () => {
@@ -1051,6 +1226,137 @@ describe('runtimeConversationTurns', () => {
     ])
   })
 
+  test('reconciles completed assistant text when the snapshot uses a different item id', () => {
+    const content = 'WEWORK_DESKTOP_E2E_GOAL_IDLE_INITIAL_COMPLETE'
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'streamed-assistant-item',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T07:20:37.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'canonical-assistant-item',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-25T07:20:37.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    const merged = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged[0].items).toEqual(snapshot[0].items)
+    expect(projectRuntimeConversationTurns(merged).map(message => message.content)).toEqual([
+      content,
+    ])
+  })
+
+  test('matches duplicate completed assistant text one-to-one', () => {
+    const content = 'Repeated completion'
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'live-message-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:00.000Z',
+          },
+          {
+            id: 'live-message-2',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:01.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'snapshot-message-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    const merged = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged[0].items).toHaveLength(2)
+    expect(merged[0].items.map(item => item.id)).toEqual(['live-message-2', 'snapshot-message-1'])
+    expect(projectRuntimeConversationTurns(merged).map(message => message.content)).toEqual([
+      `${content}\n\n${content}`,
+    ])
+  })
+
+  test('matches duplicate completed assistant text one-to-one', () => {
+    const content = 'Repeated completion'
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'live-message-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:00.000Z',
+          },
+          {
+            id: 'live-message-2',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:01.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'snapshot-message-1',
+            type: 'assistant_text',
+            content,
+            createdAt: '2026-08-01T00:00:00.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    const merged = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged[0].items).toHaveLength(2)
+    expect(merged[0].items.map(item => item.id)).toEqual(['live-message-2', 'snapshot-message-1'])
+    expect(projectRuntimeConversationTurns(merged).map(message => message.content)).toEqual([
+      `${content}\n\n${content}`,
+    ])
+  })
+
   test('keeps realtime tail items temporarily missing from a full Codex snapshot', () => {
     const local: RuntimeConversationTurn[] = [
       {
@@ -1250,6 +1556,47 @@ describe('runtimeConversationTurns', () => {
     ])
   })
 
+  test('keeps an unmatched optimistic user turn after the recovered snapshot', () => {
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: null,
+        clientUserMessageId: 'client-user-continue',
+        items: [
+          {
+            id: 'client-user-continue',
+            type: 'user_message',
+            message: {
+              ...userMessage('client-user-continue', '继续'),
+              createdAt: '2026-07-30T00:00:01.000Z',
+              status: 'sending',
+            },
+          },
+        ],
+        status: 'pending',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-history',
+        items: [
+          {
+            id: 'assistant-history',
+            type: 'assistant_text',
+            content: '已恢复的 AI 输出',
+            createdAt: '2026-07-30T00:00:02.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    expect(
+      projectRuntimeConversationTurns(mergeRuntimeConversationTurns(local, snapshot)).map(
+        message => message.content
+      )
+    ).toEqual(['已恢复的 AI 输出', '继续'])
+  })
+
   test('keeps an older stopped local turn before a newer snapshot turn', () => {
     const local: RuntimeConversationTurn[] = [
       {
@@ -1358,6 +1705,49 @@ describe('runtimeConversationTurns', () => {
     expect(merged).toHaveLength(1)
     expect(merged[0].items).toEqual([{ id: 'request-1', type: 'block', block: snapshotBlock }])
     expect(merged[0].status).toBe('done')
+  })
+
+  test('keeps a transcript assistant item when a completed text block races the snapshot', () => {
+    const content = 'Initial goal turn complete'
+    const assistantItem = {
+      id: 'message-1',
+      type: 'assistant_text' as const,
+      content,
+      createdAt: '2026-08-25T07:49:01.000Z',
+    }
+    let turns: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [assistantItem],
+        status: 'streaming',
+      },
+    ]
+
+    turns = reduceRuntimeConversationTurns(turns, {
+      type: 'block_created',
+      subtaskId: 'turn-1',
+      block: {
+        id: assistantItem.id,
+        subtaskId: 'turn-1',
+        type: 'text',
+        processKind: 'assistant_message',
+        content,
+        status: 'done',
+        createdAt: Date.parse(assistantItem.createdAt),
+      },
+    })
+    turns = mergeRuntimeConversationTurns(turns, [
+      {
+        id: 'turn-1',
+        items: [assistantItem],
+        status: 'streaming',
+      },
+    ])
+
+    expect(turns[0].items).toEqual([assistantItem])
+    expect(projectRuntimeConversationTurns(turns).map(message => message.content)).toEqual([
+      content,
+    ])
   })
 
   test('preserves the live tool start when a snapshot falls back to the turn start', () => {
@@ -1529,6 +1919,40 @@ describe('runtimeConversationTurns', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  test('appends processing block content deltas in runtime conversation state', () => {
+    let turns = reduceRuntimeConversationTurns([{ id: 'turn-1', items: [], status: 'streaming' }], {
+      type: 'block_created',
+      subtaskId: 'turn-1',
+      block: {
+        id: 'text-1',
+        subtaskId: 'turn-1',
+        type: 'text',
+        content: 'partial',
+        status: 'streaming',
+        createdAt: 1_780_000_000_000,
+      },
+    })
+
+    turns = reduceRuntimeConversationTurns(turns, {
+      type: 'block_updated',
+      subtaskId: 'turn-1',
+      blockId: 'text-1',
+      updates: {
+        contentDelta: ' response',
+        status: 'streaming',
+      },
+    })
+
+    expect(turns[0].items[0]).toMatchObject({
+      type: 'block',
+      block: {
+        id: 'text-1',
+        content: 'partial response',
+        status: 'streaming',
+      },
+    })
   })
 
   test('replaces the optimistic context compaction block with the runtime block', () => {
@@ -1966,6 +2390,80 @@ describe('runtimeConversationTurns', () => {
     )
   })
 
+  test('does not regress a completed live turn to a stale streaming snapshot', () => {
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'tool-1',
+            type: 'block',
+            block: {
+              id: 'tool-1',
+              subtaskId: 'turn-1',
+              type: 'tool',
+              toolName: 'exec_command',
+              status: 'done',
+              createdAt: 1,
+              completedAt: 2,
+            },
+          },
+          {
+            id: 'message-1',
+            type: 'assistant_text',
+            content: 'Complete answer',
+            createdAt: '2026-08-21T07:10:38.000Z',
+          },
+        ],
+        status: 'done',
+        completedAt: '2026-08-21T07:10:38.000Z',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'tool-1',
+            type: 'block',
+            block: {
+              id: 'tool-1',
+              subtaskId: 'turn-1',
+              type: 'tool',
+              toolName: 'exec_command',
+              status: 'streaming',
+              createdAt: 1,
+            },
+          },
+          {
+            id: 'message-1',
+            type: 'assistant_text',
+            content: 'Complete answer',
+            createdAt: '2026-08-21T07:10:38.000Z',
+          },
+        ],
+        status: 'streaming',
+        streamingThinkingContent: 'Still working',
+      },
+    ]
+
+    const [merged] = mergeRuntimeConversationTurns(local, snapshot)
+
+    expect(merged).toMatchObject({
+      id: 'turn-1',
+      status: 'done',
+      completedAt: '2026-08-21T07:10:38.000Z',
+      streamingThinkingContent: undefined,
+    })
+    expect(merged.items[0]).toMatchObject({
+      type: 'block',
+      block: {
+        status: 'done',
+        completedAt: 2,
+      },
+    })
+  })
+
   test('uses UTF-16 code-unit offsets when replacing streamed text', () => {
     let turns = reduceRuntimeConversationTurns([{ id: 'turn-1', items: [], status: 'streaming' }], {
       type: 'assistant_chunk',
@@ -2017,5 +2515,38 @@ describe('runtimeConversationTurns', () => {
         streamTextOffset: undefined,
       }),
     ])
+  })
+
+  test('reconciles a synthetic terminal message with its canonical transcript item', () => {
+    const local: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'runtime-final:turn-1',
+            type: 'assistant_text',
+            content: 'Complete answer',
+            createdAt: '2026-08-25T06:39:25.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+    const snapshot: RuntimeConversationTurn[] = [
+      {
+        id: 'turn-1',
+        items: [
+          {
+            id: 'message-1',
+            type: 'assistant_text',
+            content: 'Complete answer',
+            createdAt: '2026-08-25T06:39:25.000Z',
+          },
+        ],
+        status: 'done',
+      },
+    ]
+
+    expect(mergeRuntimeConversationTurns(local, snapshot)[0].items).toEqual(snapshot[0].items)
   })
 })

@@ -208,6 +208,31 @@ describe('ChatInputCard layout', () => {
     )
   })
 
+  it('uses compact input spacing when selectors collapse', () => {
+    render(<ChatInputCard {...buildProps()} selectedContexts={[]} shouldCollapseSelectors />)
+
+    const chatInput = screen.getByTestId('chat-input')
+    const chatInputWrapper = chatInput.parentElement
+
+    expect(chatInput).toHaveAttribute('data-compact-spacing', 'true')
+    expect(chatInputWrapper).toHaveClass('pt-1.5')
+    expect(mockChatInputControls).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shouldCollapseSelectors: true,
+      })
+    )
+  })
+
+  it('forwards hidden video parameters to input controls', () => {
+    render(<ChatInputCard {...buildProps()} hideDurationSelector />)
+
+    expect(mockChatInputControls).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hideDurationSelector: true,
+      })
+    )
+  })
+
   it('uses the clearable team badge in image generation mode', () => {
     const onRestoreDefaultTeam = jest.fn()
     const imageTeam: NonNullable<ChatInputCardProps['selectedTeam']> = {
@@ -243,6 +268,13 @@ describe('ChatInputCard layout', () => {
         onClear: onRestoreDefaultTeam,
       })
     )
+    expect(mockChatInputControls).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedTeam: imageTeam,
+        onClearTeam: onRestoreDefaultTeam,
+        showClearTeamButton: true,
+      })
+    )
   })
 
   it('does not allow clearing the selected team after the conversation starts', () => {
@@ -275,6 +307,12 @@ describe('ChatInputCard layout', () => {
       expect.objectContaining({
         team: imageTeam,
         showClearButton: false,
+      })
+    )
+    expect(mockChatInputControls).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedTeam: imageTeam,
+        showClearTeamButton: false,
       })
     )
   })

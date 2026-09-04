@@ -59,6 +59,9 @@ impl RuntimeWorkRpcHandler {
         );
         let stage_started_at = Instant::now();
         let collected_links = self.collect_links(false).await;
+        for link in &collected_links {
+            self.project_runtime_link_status(link);
+        }
         log_runtime_work_list_diagnostic(
             "links_collected",
             started_at,
@@ -244,36 +247,39 @@ impl RuntimeWorkRpcHandler {
                     &mut messages,
                     self.active_codex_transcript_messages(&local_task_id),
                 );
-                let presentation_page_messages = messages.clone();
-                attach_user_message_presentations_for_page(
-                    &mut messages,
-                    user_message_presentations(link),
-                    &presentation_page_messages,
-                    false,
-                    false,
-                );
-                log_runtime_transcript_finished(RuntimeTranscriptLog {
-                    started_at,
-                    local_task_id: &local_task_id,
-                    thread_id: session_id.as_deref().unwrap_or(""),
-                    source: "active_runtime_cache",
-                    refresh,
-                    running_hint,
-                    limit,
-                    before_cursor: before_cursor.as_deref(),
-                    after_cursor: after_cursor.as_deref(),
-                    message_count: messages.len(),
-                    running: true,
-                });
-                return Ok(cached_transcript_response(
-                    link,
-                    messages,
-                    None,
-                    true,
-                    limit,
-                    before_cursor.as_deref(),
-                    after_cursor.as_deref(),
-                ));
+                if !messages.is_empty() {
+                    let presentation_page_messages = messages.clone();
+                    attach_user_message_presentations_for_page(
+                        &mut messages,
+                        user_message_presentations(link),
+                        &presentation_page_messages,
+                        &[],
+                        false,
+                        false,
+                    );
+                    log_runtime_transcript_finished(RuntimeTranscriptLog {
+                        started_at,
+                        local_task_id: &local_task_id,
+                        thread_id: session_id.as_deref().unwrap_or(""),
+                        source: "active_runtime_cache",
+                        refresh,
+                        running_hint,
+                        limit,
+                        before_cursor: before_cursor.as_deref(),
+                        after_cursor: after_cursor.as_deref(),
+                        message_count: messages.len(),
+                        running: true,
+                    });
+                    return Ok(cached_transcript_response(
+                        link,
+                        messages,
+                        None,
+                        true,
+                        limit,
+                        before_cursor.as_deref(),
+                        after_cursor.as_deref(),
+                    ));
+                }
             }
         }
         if let Some(link) = local_link.as_ref().filter(|link| {
@@ -375,6 +381,13 @@ impl RuntimeWorkRpcHandler {
         )
         .await
         .map_err(|error| AppIpcError::new("codex_error", error))?;
+        let presentation_page_turn_ids = thread
+            .get("turns")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|turn| string_field(turn, "id"))
+            .collect::<Vec<_>>();
         let presentation_page_messages = local_link.as_ref().map(|_| {
             if include_full_content {
                 full_transcript_messages(&thread, &self.device_id)
@@ -405,6 +418,7 @@ impl RuntimeWorkRpcHandler {
                 &mut messages,
                 user_message_presentations(link),
                 presentation_page_messages.as_deref().unwrap_or_default(),
+                &presentation_page_turn_ids,
                 page_before_cursor.is_some(),
                 page_after_cursor.is_some(),
             );

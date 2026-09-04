@@ -33,6 +33,10 @@ from app.services.chat.external_knowledge_refs import (
     validate_external_knowledge_refs,
 )
 from app.services.context import context_service
+from app.services.execution.skill_generation import (
+    enrich_skill_generation_context,
+    has_skill_generation_context_enrichers,
+)
 from app.services.runtime_codex_model import (
     CODEX_RUNTIME_MODEL_ID,
     CODEX_RUNTIME_MODEL_NAME,
@@ -41,6 +45,7 @@ from app.services.user_runtime_config import (
     UserRuntimeConfigError,
     user_runtime_config_service,
 )
+from app.services.video_generation_params import apply_video_generation_params
 from shared.codex_model_catalog import (
     codex_catalog_model_id_for_upstream,
     codex_catalog_model_id_from_config,
@@ -50,12 +55,12 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from app.api.ws.chat_namespace import ChatNamespace
+    from app.models.subtask_context import SubtaskContext
     from app.services.execution.emitters import ResultEmitter
     from shared.models.execution import ExecutionRequest
 
 logger = logging.getLogger(__name__)
 
-SELECTED_KB_PRELOAD_SKILL = "wegent-knowledge"
 KNOWLEDGE_ARTIFACT_SOURCE = "knowledge_artifact"
 CODEX_RUNTIME = "codex"
 RUNTIME_MODEL_TYPE = "runtime"
@@ -77,7 +82,11 @@ def _apply_image_generation_params(
     model_config: Dict[str, Any], generate_params: Any
 ) -> None:
     """Apply request-scoped image options to the execution model config."""
-    selected_size = getattr(generate_params, "size", None)
+    selected_size = (
+        generate_params.get("size")
+        if isinstance(generate_params, dict)
+        else getattr(generate_params, "size", None)
+    )
     if not selected_size:
         return
     image_config = dict(model_config.get("imageConfig") or {})
@@ -109,6 +118,50 @@ def _generation_config_for_log(config: Any) -> Dict[str, Any]:
     if not isinstance(config, dict):
         return {}
     return {key: value for key, value in config.items() if key != "capabilities"}
+
+
+def _generation_param(generate_params: Any, name: str) -> Any:
+    if isinstance(generate_params, dict):
+        return generate_params.get(name)
+    return getattr(generate_params, name, None)
+
+
+def _apply_generation_params(
+    model_config: Dict[str, Any],
+    generate_params: Any,
+) -> None:
+    """Apply generation options when the execution model directly generates media."""
+    if generate_params is None:
+        return
+
+    model_type = str(model_config.get("modelType") or "").strip().lower()
+    if model_type not in {"image", "video"}:
+        return
+
+    if model_type == "image":
+        unsupported = [
+            name
+            for name in ("resolution", "ratio", "duration", "generation_mode_id")
+            if _generation_param(generate_params, name) is not None
+        ]
+        if unsupported:
+            raise ValueError(
+                "Image generation does not support options: " + ", ".join(unsupported)
+            )
+        _apply_image_generation_params(model_config, generate_params)
+    elif model_type == "video":
+        if _generation_param(generate_params, "size") is not None:
+            raise ValueError("Video generation does not support option: size")
+        apply_video_generation_params(model_config, generate_params)
+
+    logger.info(
+        "[build_execution_request] Generation params applied: "
+        "model_type=%s, selected=%s, image_config=%s, video_config=%s",
+        model_type,
+        _generation_params_for_log(generate_params),
+        _generation_config_for_log(model_config.get("imageConfig")),
+        _generation_config_for_log(model_config.get("videoConfig")),
+    )
 
 
 def _request_shell_type(request: "ExecutionRequest") -> str:
@@ -644,30 +697,25 @@ def _build_executor_attachment_payload(context: Any) -> dict[str, Any]:
     }
 
 
-def _ensure_selected_kb_skill_priority(request: "ExecutionRequest") -> None:
-    """Ensure selected-KB requests both preload and prioritize the KB skill."""
-    if not request.knowledge_base_ids or not request.is_user_selected_kb:
-        return
+def _order_contexts_by_attachment_ids(
+    contexts: List[Any],
+    attachment_ids: Optional[List[int]],
+) -> List[Any]:
+    """Keep attachment contexts in caller order and preserve remaining contexts."""
+    if not attachment_ids:
+        return contexts
 
-    preload_skills = list(request.preload_skills or [])
-    if SELECTED_KB_PRELOAD_SKILL not in preload_skills:
-        preload_skills.append(SELECTED_KB_PRELOAD_SKILL)
-        request.preload_skills = preload_skills
-        logger.info(
-            "[ai_trigger_unified] Added preload skill '%s' for selected KBs: %s",
-            SELECTED_KB_PRELOAD_SKILL,
-            request.knowledge_base_ids,
-        )
-
-    user_selected_skills = list(request.user_selected_skills or [])
-    if SELECTED_KB_PRELOAD_SKILL not in user_selected_skills:
-        user_selected_skills.append(SELECTED_KB_PRELOAD_SKILL)
-        request.user_selected_skills = user_selected_skills
-        logger.info(
-            "[ai_trigger_unified] Added user-selected skill '%s' for selected KBs: %s",
-            SELECTED_KB_PRELOAD_SKILL,
-            request.knowledge_base_ids,
-        )
+    contexts_by_id = {
+        context.id: context for context in contexts if context.id in attachment_ids
+    }
+    ordered = [
+        contexts_by_id[attachment_id]
+        for attachment_id in attachment_ids
+        if attachment_id in contexts_by_id
+    ]
+    ordered_ids = {context.id for context in ordered}
+    ordered.extend(context for context in contexts if context.id not in ordered_ids)
+    return ordered
 
 
 async def trigger_ai_response_unified(
@@ -782,6 +830,8 @@ async def build_execution_request(
     knowledge_base_names: Optional[List[Dict[str, str]]] = None,
     knowledge_base_refs: Optional[List[Dict[str, Any]]] = None,
     reasoning_config: Optional[Dict[str, Any]] = None,
+    generation_params: Any = None,
+    attachment_ids: Optional[List[int]] = None,
     include_wework_space_mcp: bool = False,
     web_runtime_guidance: Optional[bool] = None,
 ):
@@ -809,6 +859,8 @@ async def build_execution_request(
         knowledge_base_names: Optional legacy list of KB names in {'namespace': str, 'name': str} format
         knowledge_base_refs: Optional normalized KB refs with optional folder/document scope
         reasoning_config: Optional reasoning config dict with 'effort' and 'summary' keys
+        generation_params: Optional request-scoped image or video generation options
+        attachment_ids: Optional attachment IDs in caller-defined material order
         include_wework_space_mcp: Whether to expose the Wework board MCP
 
     Returns:
@@ -916,6 +968,23 @@ async def build_execution_request(
             override_model_name = None
             force_override = False
 
+        selected_generation_params = generation_params
+        if selected_generation_params is None and payload is not None:
+            selected_generation_params = getattr(payload, "generate_params", None)
+        user_generation = None
+        if selected_generation_params:
+            user_generation = _generation_params_for_log(selected_generation_params)
+        if user_subtask_id and has_skill_generation_context_enrichers():
+            user_generation = enrich_skill_generation_context(
+                generation=user_generation,
+                current_attachments=context_service.get_attachments_by_subtask(
+                    db, user_subtask_id
+                ),
+                task_attachments=context_service.get_attachments_by_task(db, task.id),
+                current_subtask_id=user_subtask_id,
+                user_id=user.id,
+            )
+
         request = builder.build(
             subtask=assistant_subtask,
             task=task,
@@ -935,17 +1004,12 @@ async def build_execution_request(
             web_runtime_guidance=web_runtime_guidance,
             runtime_model_config=runtime_model_config,
             include_wework_space_mcp=include_wework_space_mcp,
+            user_generation=user_generation,
         )
         request.device_id = device_id or request.device_id
         # Task spec is the runtime source of truth. Message-level external
         # contexts are materialized into Task.spec before execution is built.
         task_refs = extract_task_external_knowledge_refs(task)
-        if task_refs:
-            validate_external_knowledge_refs(
-                task_refs,
-                binding_level="conversation",
-            )
-            request.external_knowledge_refs = task_refs
 
         # Merge reasoning config from API/model selection into model_config.
         # Priority: explicit API reasoning_config > UI model_options > model think_config.
@@ -1004,77 +1068,7 @@ async def build_execution_request(
                     request.interactive_form_answer = dict(interactive_form_answer)
 
         # Merge user-selected generation parameters into the selected model config.
-        if payload is not None:
-            generate_params = getattr(payload, "generate_params", None)
-            if generate_params and request.model_config.get("modelType") == "video":
-                video_config = request.model_config.get("videoConfig") or {}
-                capabilities = video_config.get("capabilities") or {}
-
-                if generate_params.resolution:
-                    allowed_resolutions = [
-                        r.get("value") or r.get("label")
-                        for r in (capabilities.get("resolutions") or [])
-                    ]
-                    if (
-                        allowed_resolutions
-                        and generate_params.resolution not in allowed_resolutions
-                    ):
-                        raise ValueError(
-                            f"Unsupported resolution '{generate_params.resolution}', "
-                            f"allowed: {allowed_resolutions}"
-                        )
-                    video_config["resolution"] = generate_params.resolution
-
-                if generate_params.ratio:
-                    allowed_ratios = [
-                        r.get("value")
-                        for r in (capabilities.get("aspect_ratios") or [])
-                    ]
-                    if allowed_ratios and generate_params.ratio not in allowed_ratios:
-                        raise ValueError(
-                            f"Unsupported aspect ratio '{generate_params.ratio}', "
-                            f"allowed: {allowed_ratios}"
-                        )
-                    video_config["ratio"] = generate_params.ratio
-
-                if generate_params.duration:
-                    allowed_durations = capabilities.get("durations_sec") or []
-                    if (
-                        allowed_durations
-                        and generate_params.duration not in allowed_durations
-                    ):
-                        raise ValueError(
-                            f"Unsupported duration {generate_params.duration}s, "
-                            f"allowed: {allowed_durations}"
-                        )
-                    video_config["duration"] = generate_params.duration
-
-                request.model_config["videoConfig"] = video_config
-                if generate_params.generation_mode_id:
-                    modes = capabilities.get("generation_modes") or []
-                    allowed_mode_ids = [mode.get("id") for mode in modes]
-                    if (
-                        allowed_mode_ids
-                        and generate_params.generation_mode_id not in allowed_mode_ids
-                    ):
-                        raise ValueError(
-                            "Unsupported video generation mode "
-                            f"'{generate_params.generation_mode_id}'"
-                        )
-                    request.model_config["generation_mode_id"] = (
-                        generate_params.generation_mode_id
-                    )
-            elif generate_params and request.model_config.get("modelType") == "image":
-                _apply_image_generation_params(request.model_config, generate_params)
-            if generate_params:
-                logger.info(
-                    "[build_execution_request] Generation params applied: "
-                    "model_type=%s, selected=%s, image_config=%s, video_config=%s",
-                    request.model_config.get("modelType"),
-                    _generation_params_for_log(generate_params),
-                    _generation_config_for_log(request.model_config.get("imageConfig")),
-                    _generation_config_for_log(request.model_config.get("videoConfig")),
-                )
+        _apply_generation_params(request.model_config, selected_generation_params)
 
         # Always propagate user_subtask_id for downstream persistence (e.g., KB tool results).
         # Note: This is different from request.subtask_id which is the assistant subtask.
@@ -1123,26 +1117,77 @@ async def build_execution_request(
         context_subtask_id = (
             user_subtask_id if user_subtask_id else processed_subtask_id
         )
+        current_contexts = []
         if context_subtask_id:
-            preload_selected_kb_skill = (
-                task_labels.get("source") != KNOWLEDGE_ARTIFACT_SOURCE
+            current_contexts = context_service.get_by_subtask(db, context_subtask_id)
+
+        inherited_external_refs = list(task_refs)
+        if inherited_external_refs:
+            validate_external_knowledge_refs(
+                inherited_external_refs,
+                binding_level="conversation",
             )
+        request.external_knowledge_refs = inherited_external_refs
+
+        from app.services.chat.selected_knowledge import (
+            SUPPORTED_PROVIDER_NATIVE_SHELLS,
+            activate_provider_native_knowledge,
+            apply_selected_knowledge_context,
+            build_inherited_selected_knowledge_refs,
+            build_selected_knowledge_context,
+            validate_explicit_knowledge_contexts,
+        )
+
+        is_knowledge_artifact = task_labels.get("source") == KNOWLEDGE_ARTIFACT_SOURCE
+        supports_provider_native = (
+            not is_knowledge_artifact
+            and _request_shell_type(request) in SUPPORTED_PROVIDER_NATIVE_SHELLS
+        )
+        selected_knowledge_context = None
+        if supports_provider_native:
+            inherited_refs = build_inherited_selected_knowledge_refs(
+                db,
+                task,
+                user.id,
+                external_refs=inherited_external_refs,
+            )
+            selected_knowledge_context = build_selected_knowledge_context(
+                db,
+                request,
+                task,
+                current_contexts=current_contexts,
+                inherited_refs=inherited_refs,
+                user_id=user.id,
+            )
+        elif not is_knowledge_artifact:
+            validate_explicit_knowledge_contexts(current_contexts)
+        should_apply_provider_native = bool(
+            selected_knowledge_context and selected_knowledge_context.refs
+        )
+
+        if context_subtask_id:
+            process_context_kwargs = {
+                "prepare_provider_native_knowledge": should_apply_provider_native,
+                "current_contexts": current_contexts,
+            }
+            if attachment_ids is not None:
+                process_context_kwargs["attachment_ids"] = attachment_ids
             request = await _process_contexts(
                 db,
                 request,
                 context_subtask_id,
                 user.id,
-                preload_selected_kb_skill=preload_selected_kb_skill,
+                **process_context_kwargs,
             )
 
-        from app.services.chat.selected_knowledge import (
-            activate_provider_native_knowledge,
-            apply_selected_knowledge_context,
-        )
-
         provider_skills = []
-        if task_labels.get("source") != KNOWLEDGE_ARTIFACT_SOURCE:
-            provider_skills = apply_selected_knowledge_context(db, request, task)
+        if should_apply_provider_native:
+            provider_skills = apply_selected_knowledge_context(
+                db,
+                request,
+                task,
+                context=selected_knowledge_context,
+            )
         unresolved_provider_skills = [
             skill_name
             for skill_name in provider_skills
@@ -1174,7 +1219,9 @@ async def _process_contexts(
     user_subtask_id: int,
     user_id: int,
     *,
-    preload_selected_kb_skill: bool = True,
+    prepare_provider_native_knowledge: bool = False,
+    current_contexts: Optional[List["SubtaskContext"]] = None,
+    attachment_ids: Optional[List[int]] = None,
 ) -> "ExecutionRequest":
     """Process contexts (attachments, knowledge bases, etc.) for the request.
 
@@ -1183,13 +1230,19 @@ async def _process_contexts(
         request: ExecutionRequest to enhance
         user_subtask_id: User subtask ID for context retrieval
         user_id: User ID for context retrieval
-        preload_selected_kb_skill: Whether a selected knowledge base should preload
-            the knowledge-management skill (default: True)
+        prepare_provider_native_knowledge: Whether the resolved knowledge context
+            should suppress the legacy KB prompt.
 
     Returns:
         Enhanced ExecutionRequest with context information
     """
     from app.services.chat.preprocessing import prepare_contexts_for_chat
+
+    if current_contexts is not None:
+        current_contexts = _order_contexts_by_attachment_ids(
+            current_contexts,
+            attachment_ids,
+        )
 
     # Get context_window from model_config for selected_documents injection threshold
     model_context_window = request.model_config.get("context_window")
@@ -1207,6 +1260,7 @@ async def _process_contexts(
         context_window=model_context_window,
         model_config=request.model_config,
         inline_attachment_content=inline_attachment_content,
+        contexts=current_contexts,
     )
 
     # Update request with all processed context results.
@@ -1214,15 +1268,6 @@ async def _process_contexts(
     # computed inside _prepare_kb_tools_from_contexts and surfaced here - no extra
     # DB queries needed.
     request.prompt = ctx.final_message
-    from app.services.chat.selected_knowledge import (
-        SUPPORTED_PROVIDER_NATIVE_SHELLS,
-    )
-
-    prepare_provider_native_knowledge = bool(
-        ctx.kb.knowledge_base_ids
-        and preload_selected_kb_skill
-        and _request_shell_type(request) in SUPPORTED_PROVIDER_NATIVE_SHELLS
-    )
     request.system_prompt = (
         base_system_prompt
         if prepare_provider_native_knowledge
@@ -1232,9 +1277,16 @@ async def _process_contexts(
     request.kb_meta_prompt = (
         "" if prepare_provider_native_knowledge else ctx.kb.kb_meta_prompt
     )
+    attachment_contexts = context_service.get_attachments_by_subtask(
+        db,
+        user_subtask_id,
+    )
+    attachment_contexts = _order_contexts_by_attachment_ids(
+        attachment_contexts,
+        attachment_ids,
+    )
     request.attachments = [
-        _build_executor_attachment_payload(context)
-        for context in context_service.get_attachments_by_subtask(db, user_subtask_id)
+        _build_executor_attachment_payload(context) for context in attachment_contexts
     ]
     logger.info(
         "[ai_trigger_unified] Executor attachment payload built: "
@@ -1251,9 +1303,6 @@ async def _process_contexts(
         request.kb_tool_access_mode = ctx.kb.kb_tool_access_mode
         if ctx.kb.document_ids and not ctx.kb.knowledge_base_scopes:
             request.document_ids = ctx.kb.document_ids
-        if prepare_provider_native_knowledge:
-            _ensure_selected_kb_skill_priority(request)
-
     logger.info(
         "[ai_trigger_unified] Context processing completed: "
         "user_subtask_id=%d, knowledge_base_ids=%s, table_contexts_count=%d, "

@@ -25,13 +25,15 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from jose import JWTError, jwt
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
 from app.core import security
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.models.subtask_context import ContextType
 from app.models.task import TaskResource
 from app.models.user import User
@@ -42,6 +44,7 @@ from app.schemas.subtask_context import (
     TruncationInfo,
 )
 from app.services.attachment.external_storage import (
+    ExternalAttachmentPlayback,
     resolve_external_attachment_playback,
 )
 from app.services.attachment.parser import DocumentParseError, DocumentParser
@@ -84,6 +87,7 @@ router = APIRouter()
 ATTACHMENT_PREVIEW_TEXT_LIMIT = 4000
 REMOTE_MEDIA_TIMEOUT = 120.0
 REMOTE_MEDIA_CHUNK_SIZE = 1024 * 1024
+ATTACHMENT_STREAM_CHUNK_SIZE = 1024 * 1024
 DOWNLOAD_TOKEN_EXPIRE_SECONDS = 300
 DOWNLOAD_TOKEN_SCOPE = "attachment_download"
 
@@ -173,9 +177,89 @@ async def _stream_external_attachment(
     range_header: Optional[str] = None,
 ) -> Optional[StreamingResponse]:
     """Resolve and stream externally stored media when an adapter handles it."""
+    playback = await _resolve_attachment_playback(context)
+    if playback is None:
+        return None
+    return await _stream_remote_media(
+        playback.url,
+        context.original_filename,
+        default_media_type=playback.media_type,
+        range_header=range_header,
+    )
+
+
+def _load_stored_attachment_binary_data(attachment_id: int) -> Optional[bytes]:
+    """Load attachment bytes with a session owned by the current worker thread."""
+    with SessionLocal() as db:
+        context = context_service.get_context_optional(
+            db=db,
+            context_id=attachment_id,
+        )
+        if context is None:
+            return None
+        return context_service.get_attachment_binary_data(db=db, context=context)
+
+
+async def _stream_stored_attachment(context) -> StreamingResponse:
+    """Read blocking storage off the event loop and stream bounded chunks."""
+    attachment_id = context.id
+    filename = context.original_filename
+    media_type = context.mime_type or "application/octet-stream"
+    storage_backend = context.storage_backend
+    storage_key = context.storage_key
+
+    try:
+        binary_data = await asyncio.to_thread(
+            _load_stored_attachment_binary_data,
+            attachment_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to retrieve binary data for attachment %s",
+            attachment_id,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve attachment data",
+        ) from exc
+
+    if binary_data is None:
+        logger.error(
+            "Failed to retrieve binary data for attachment %s, "
+            "storage_backend=%s, storage_key=%s",
+            attachment_id,
+            storage_backend,
+            storage_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve attachment data",
+        )
+
+    async def iter_bytes():
+        for offset in range(0, len(binary_data), ATTACHMENT_STREAM_CHUNK_SIZE):
+            yield binary_data[offset : offset + ATTACHMENT_STREAM_CHUNK_SIZE]
+            await asyncio.sleep(0)
+
+    return StreamingResponse(
+        iter_bytes(),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": _build_content_disposition(filename),
+            "Content-Length": str(len(binary_data)),
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _resolve_attachment_playback(
+    context,
+) -> Optional[ExternalAttachmentPlayback]:
+    """Resolve fresh playback metadata through a registered storage adapter."""
     type_data = context.type_data if isinstance(context.type_data, dict) else {}
     try:
-        playback = await asyncio.to_thread(
+        return await asyncio.to_thread(
             resolve_external_attachment_playback,
             type_data=type_data,
             user_id=context.user_id,
@@ -190,15 +274,6 @@ async def _stream_external_attachment(
             status_code=502,
             detail="External media playback URL is unavailable",
         ) from exc
-
-    if playback is None:
-        return None
-    return await _stream_remote_media(
-        playback.url,
-        context.original_filename,
-        default_media_type=playback.media_type,
-        range_header=range_header,
-    )
 
 
 def _create_download_token(attachment_id: int, user: User) -> str:
@@ -586,6 +661,13 @@ async def upload_attachment(
         ) from e
 
 
+class AttachmentPlaybackResponse(BaseModel):
+    """Fresh browser playback information for a media attachment."""
+
+    playback_url: str
+    cover_url: Optional[str] = None
+
+
 @router.get("/{attachment_id}", response_model=AttachmentDetailResponse)
 async def get_attachment(
     attachment_id: int,
@@ -629,6 +711,68 @@ async def get_attachment(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     return AttachmentDetailResponse.from_context(context)
+
+
+def _attachment_cover_url(context) -> Optional[str]:
+    """Return a persisted cover URL when the attachment already has one."""
+    type_data = context.type_data if isinstance(context.type_data, dict) else {}
+    video_metadata = type_data.get("video_metadata")
+    if isinstance(video_metadata, dict) and video_metadata.get("cover_url"):
+        return str(video_metadata["cover_url"])
+    cover_url = type_data.get("cover_url")
+    return str(cover_url) if cover_url else None
+
+
+@router.get(
+    "/{attachment_id}/playback",
+    response_model=AttachmentPlaybackResponse,
+)
+async def get_attachment_playback(
+    attachment_id: int,
+    share_token: Optional[str] = Query(
+        None, description="Share token for public access"
+    ),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(security.get_current_user_optional),
+) -> AttachmentPlaybackResponse:
+    """Return a fresh direct or proxied URL for browser media playback."""
+    if share_token:
+        if not _validate_share_token_access(db, attachment_id, share_token):
+            raise HTTPException(status_code=403, detail="Share token access denied")
+        context = context_service.get_context_optional(
+            db=db,
+            context_id=attachment_id,
+        )
+        if context is None:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+    elif current_user:
+        context = _get_attachment_context(db, attachment_id, current_user)
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    external_playback = await _resolve_attachment_playback(context)
+    if external_playback and external_playback.delivery_mode == "direct":
+        return AttachmentPlaybackResponse(
+            playback_url=external_playback.url,
+            cover_url=external_playback.cover_url or _attachment_cover_url(context),
+        )
+
+    proxy_url = context_service.build_attachment_url(attachment_id)
+    if share_token:
+        proxy_url = f"{proxy_url}?share_token={quote(share_token, safe='')}"
+    else:
+        proxy_url = (
+            f"{proxy_url}?download_token="
+            f"{quote(_create_download_token(attachment_id, current_user), safe='')}"
+        )
+    return AttachmentPlaybackResponse(
+        playback_url=proxy_url,
+        cover_url=(
+            external_playback.cover_url
+            if external_playback and external_playback.cover_url
+            else _attachment_cover_url(context)
+        ),
+    )
 
 
 @router.get("/{attachment_id}/preview", response_model=AttachmentPreviewResponse)
@@ -801,29 +945,7 @@ async def download_attachment(
                     range_header=range_header,
                 )
 
-    # Get binary data from the appropriate storage backend
-    binary_data = context_service.get_attachment_binary_data(
-        db=db,
-        context=context,
-    )
-
-    if binary_data is None:
-        logger.error(
-            f"Failed to retrieve binary data for attachment {attachment_id}, "
-            f"storage_backend={context.storage_backend}, "
-            f"storage_key={context.storage_key}"
-        )
-        raise HTTPException(
-            status_code=500, detail="Failed to retrieve attachment data"
-        )
-
-    return Response(
-        content=binary_data,
-        media_type=context.mime_type,
-        headers={
-            "Content-Disposition": _build_content_disposition(context.original_filename)
-        },
-    )
+    return await _stream_stored_attachment(context)
 
 
 @router.post("/{attachment_id}/download-token")
@@ -878,29 +1000,7 @@ async def executor_download_attachment(
     if external_response is not None:
         return external_response
 
-    # Get binary data from the appropriate storage backend
-    binary_data = context_service.get_attachment_binary_data(
-        db=db,
-        context=context,
-    )
-
-    if binary_data is None:
-        logger.error(
-            f"Failed to retrieve binary data for attachment {attachment_id}, "
-            f"storage_backend={context.storage_backend}, "
-            f"storage_key={context.storage_key}"
-        )
-        raise HTTPException(
-            status_code=500, detail="Failed to retrieve attachment data"
-        )
-
-    return Response(
-        content=binary_data,
-        media_type=context.mime_type,
-        headers={
-            "Content-Disposition": _build_content_disposition(context.original_filename)
-        },
-    )
+    return await _stream_stored_attachment(context)
 
 
 @router.delete("/{attachment_id}")
@@ -1041,8 +1141,6 @@ async def get_all_task_attachments(
 # Public Share Link Endpoints
 # =============================================================================
 
-from pydantic import BaseModel
-
 
 class PublicShareLinkResponse(BaseModel):
     """Response for public share link generation."""
@@ -1166,26 +1264,9 @@ async def public_download_attachment(
     if external_response is not None:
         return external_response
 
-    # Get binary data
-    binary_data = context_service.get_attachment_binary_data(db=db, context=context)
-
-    if binary_data is None:
-        logger.error(
-            f"[PublicDownload] Failed to retrieve binary data for attachment {attachment_id}"
-        )
-        raise HTTPException(
-            status_code=500, detail="Failed to retrieve attachment data"
-        )
-
     logger.info(
-        f"[PublicDownload] Downloaded attachment {attachment_id} "
-        f"via signed public link"
+        "[PublicDownload] Streaming attachment %s via signed public link",
+        attachment_id,
     )
 
-    return Response(
-        content=binary_data,
-        media_type=context.mime_type,
-        headers={
-            "Content-Disposition": _build_content_disposition(context.original_filename)
-        },
-    )
+    return await _stream_stored_attachment(context)

@@ -7,6 +7,7 @@ import {
   CircleSlash,
   Clock3,
   Copy,
+  ChevronRight,
   ExternalLink,
   Hash,
   LoaderCircle,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProjectChatClient, ProjectChatMessage } from '@/api/backend/projectChatSocket'
-import type { CloudLoopItem, CloudProject } from '@/api/deliveries'
+import type { CloudLoopItem, CloudProject, LoopItemTaskBinding } from '@/api/deliveries'
 import type { ProjectChatAgent } from '@/api/projectChatAgents'
 import type { createProjectChatAgentApi } from '@/api/projectChatAgents'
 import type { Attachment, ProjectWithTasks, RuntimeTaskAddress } from '@/types/api'
@@ -29,6 +30,7 @@ import {
 } from '@/components/chat/ChatInput'
 import { ConversationQueuePanel } from '@/components/chat/ConversationQueuePanel'
 import { AssistantMarkdown } from '@/components/chat/AssistantMarkdown'
+import { CompositedSpinner } from '@/components/common/CompositedSpinner'
 import { Tooltip } from '@/components/ui/tooltip'
 import { DESKTOP_MESSAGE_LIST_CLASS } from '@/components/layout/desktopChatLayout'
 import { useWorkbenchPaneContext } from '@/features/workbench/useWorkbench'
@@ -72,6 +74,9 @@ interface TaskActivityViewProps {
   workflowManagerRunId?: string | null
   onWorkflowManagerExecutionChange?: (action: (() => void) | null) => void
   onWorkflowManagerFinished?: () => void
+  taskBindings?: LoopItemTaskBinding[]
+  onOpenTask?: (task: LoopItemTaskBinding) => void
+  onRefreshTaskBindings?: () => void | Promise<void>
 }
 
 interface TaskCardQueuedReply extends RuntimePaneQueuedMessage {
@@ -80,6 +85,12 @@ interface TaskCardQueuedReply extends RuntimePaneQueuedMessage {
 
 interface TaskCardDispatchResult extends CardCommentSendResult {
   persisted: boolean
+}
+
+interface ExecutionTaskSummary {
+  title: string
+  stageName: string | null
+  onOpen?: () => void
 }
 
 export function TaskActivityView({
@@ -96,6 +107,9 @@ export function TaskActivityView({
   workflowManagerRunId = null,
   onWorkflowManagerExecutionChange,
   onWorkflowManagerFinished,
+  taskBindings = [],
+  onOpenTask,
+  onRefreshTaskBindings,
 }: TaskActivityViewProps) {
   const { t } = useTranslation('common')
   const { services, state, createProjectRuntimeTask, cancelRuntimeTask, sendRuntimePaneMessage } =
@@ -108,6 +122,13 @@ export function TaskActivityView({
     projectLocation === 'local'
       ? (services.projectSpaceApis?.local ?? services.deliveryApi)
       : (services.projectSpaceApis?.cloud ?? services.deliveryApi)
+  const taskAiServices = useMemo(
+    () => ({
+      deliveryApi: projectDeliveryApi,
+      chatStream: services.chatStream,
+    }),
+    [projectDeliveryApi, services.chatStream]
+  )
   // The code project shown on the task page: the runtime code task bound to
   // this board task. Used as the default parent-comment execution project.
   const taskPageProject = useMemo(() => {
@@ -194,6 +215,7 @@ export function TaskActivityView({
     ]
   )
   const [messages, setMessages] = useState<ProjectChatMessage[]>([])
+  const requestedTaskBindingAddresses = useRef(new Set<string>())
   const [agents, setAgents] = useState<ProjectChatAgent[]>([])
   const [chatCurrentUserId, setChatCurrentUserId] = useState<string | null>(null)
   const [cardAiErrors, setCardAiErrors] = useState<Record<string, string>>({})
@@ -233,8 +255,8 @@ export function TaskActivityView({
   const workflowManagerRuntimeAddress = useMemo(() => {
     const address = workflowManagerMessage?.runtimeAddress
     if (!address?.deviceId || !address.taskId) return null
-    return findRuntimeTask(state.runtimeWork, address) ? address : null
-  }, [state.runtimeWork, workflowManagerMessage])
+    return address
+  }, [workflowManagerMessage])
   const workflowManagerBackendExecution = useMemo(
     () => (workflowManagerMessage ? backendTaskExecution(workflowManagerMessage) : null),
     [workflowManagerMessage]
@@ -259,7 +281,12 @@ export function TaskActivityView({
     }
     if (workflowManagerBackendExecution) {
       void openExternalUrl(workflowManagerBackendExecution.executionUrl)
+      return
     }
+    const card = listRef.current?.querySelector<HTMLElement>(
+      `[data-testid="cloud-task-activity-card-${workflowManagerMessage.messageId}"]`
+    )
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }, [
     task.ai_state,
     workflowManagerBackendExecution,
@@ -269,18 +296,9 @@ export function TaskActivityView({
 
   useEffect(() => {
     if (!onWorkflowManagerExecutionChange) return
-    const available = Boolean(
-      workflowManagerMessage && (workflowManagerRuntimeAddress || workflowManagerBackendExecution)
-    )
-    onWorkflowManagerExecutionChange(available ? openWorkflowManagerExecution : null)
+    onWorkflowManagerExecutionChange(workflowManagerMessage ? openWorkflowManagerExecution : null)
     return () => onWorkflowManagerExecutionChange(null)
-  }, [
-    onWorkflowManagerExecutionChange,
-    openWorkflowManagerExecution,
-    workflowManagerBackendExecution,
-    workflowManagerMessage,
-    workflowManagerRuntimeAddress,
-  ])
+  }, [onWorkflowManagerExecutionChange, openWorkflowManagerExecution, workflowManagerMessage])
 
   useEffect(() => {
     if (!workflowManagerMessage || !onWorkflowManagerFinished) return
@@ -514,22 +532,12 @@ export function TaskActivityView({
     () => agents.find(agent => agent.id === task.assignee_agent_id && agent.status === 'active'),
     [agents, task.assignee_agent_id]
   )
-  const robotBoundProject = useMemo(
-    () =>
-      assignedAgent?.localProjectId
-        ? (localProjects.find(project => project.id === assignedAgent.localProjectId) ?? null)
-        : null,
-    [assignedAgent, localProjects]
-  )
-  // The composer project bar reuses the homepage ProjectWorkBar directly; the
-  // selection drives only the per-comment execution project. The default ('')
-  // follows the robot-bound repository, so picking that repository explicitly
-  // is mapped back to the default and the clear button only appears while an
-  // actual override is selected.
+  // Comment execution workspace is an explicit per-run choice. Robot records
+  // no longer provide an implicit device or workspace fallback.
   const effectiveCommentProject =
     selectedCommentProjectId !== ''
       ? (localProjects.find(project => project.id === selectedCommentProjectId) ?? null)
-      : robotBoundProject
+      : null
   const commentProjectWork = useMemo<ProjectWorkControls>(
     () => ({
       projects: localProjects,
@@ -542,22 +550,15 @@ export function TaskActivityView({
       pendingProjectWorkspaceProjectId: null,
       executionMode: 'current_workspace',
       executionModeLocked: true,
-      // The execution-mode control is meaningless for comment runs; hide it.
-      isGitProject: false,
       showProjectClearButton: selectedCommentProjectId !== '',
-      onSelectProject: projectId =>
-        setSelectedCommentProjectId(
-          projectId == null || projectId === robotBoundProject?.id ? '' : projectId
-        ),
+      onSelectProject: projectId => setSelectedCommentProjectId(projectId ?? ''),
       onSelectStandaloneDevice: () => setSelectedCommentProjectId(''),
-      onSelectProjectWorkspace: projectId =>
-        setSelectedCommentProjectId(projectId === robotBoundProject?.id ? '' : projectId),
+      onSelectProjectWorkspace: projectId => setSelectedCommentProjectId(projectId),
       onExecutionModeChange: () => {},
     }),
     [
       effectiveCommentProject,
       localProjects,
-      robotBoundProject?.id,
       selectedCommentProjectId,
       state.devices,
       state.runtimeWork,
@@ -571,6 +572,25 @@ export function TaskActivityView({
   const awaitingApproval = task.execution_state === 'waiting_approval'
   const rawExecutionStatus = task.execution_state ?? task.ai_state?.status
   const aiTerminalFailure = isExecutionFailed(rawExecutionStatus)
+  useEffect(() => {
+    if (!onRefreshTaskBindings) return
+    const missingAddress = messages
+      .flatMap(message =>
+        message.sender.type === 'agent' && message.runtimeAddress ? [message.runtimeAddress] : []
+      )
+      .find(
+        address =>
+          !taskBindings.some(
+            binding => binding.device_id === address.deviceId && binding.task_id === address.taskId
+          ) && !requestedTaskBindingAddresses.current.has(`${address.deviceId}:${address.taskId}`)
+      )
+    if (!missingAddress) return
+    const key = `${missingAddress.deviceId}:${missingAddress.taskId}`
+    requestedTaskBindingAddresses.current.add(key)
+    void Promise.resolve(onRefreshTaskBindings()).catch(() => {
+      requestedTaskBindingAddresses.current.delete(key)
+    })
+  }, [messages, onRefreshTaskBindings, taskBindings])
   const commentCards = useMemo(() => {
     const ordered: { root: ProjectChatMessage; replies: ProjectChatMessage[] }[] = []
     const byRoot = new Map<string, { root: ProjectChatMessage; replies: ProjectChatMessage[] }>()
@@ -728,6 +748,29 @@ export function TaskActivityView({
     return findRuntimeTask(state.runtimeWork, address) ? address : null
   }
 
+  function taskSummaryForMessage(message: ProjectChatMessage): ExecutionTaskSummary | undefined {
+    const address = message.runtimeAddress
+    if (
+      message.sender.type !== 'agent' ||
+      message.metadata.executor_type === 'automation_manager' ||
+      message.metadata.conversation_only === true ||
+      !address?.deviceId ||
+      !address.taskId
+    ) {
+      return undefined
+    }
+    const binding = taskBindings.find(
+      candidate => candidate.device_id === address.deviceId && candidate.task_id === address.taskId
+    )
+    if (!binding) return undefined
+    const stage = task.workflow?.nodes.find(candidate => candidate.id === binding?.workflow_node_id)
+    return {
+      title: binding.task_title || stage?.name || task.title,
+      stageName: stage?.name ?? null,
+      onOpen: onOpenTask ? () => onOpenTask(binding) : undefined,
+    }
+  }
+
   async function acceptTask() {
     if (!projectDeliveryApi) return
     setError(null)
@@ -800,12 +843,12 @@ export function TaskActivityView({
           : null
       await startTaskAiRun({
         client,
-        services,
+        services: taskAiServices,
         runtime: { createProjectRuntimeTask, sendRuntimePaneMessage },
         project,
         task,
         agent: assignedAgent,
-        executionProject: robotBoundProject,
+        executionProject: null,
         prompt: buildRobotRoleDescription(assignedAgent),
         messages,
         models: availableModels,
@@ -924,12 +967,12 @@ export function TaskActivityView({
           : null
         const started = await startTaskAiRun({
           client,
-          services,
+          services: taskAiServices,
           runtime: { createProjectRuntimeTask, sendRuntimePaneMessage },
           project,
           task,
           agent: assignedAgent,
-          executionProject: robotBoundProject,
+          executionProject: null,
           prompt: text,
           trigger: message,
           messages,
@@ -1055,7 +1098,7 @@ export function TaskActivityView({
         selectedCommentProjectId !== ''
           ? (localProjects.find(project => project.id === selectedCommentProjectId) ?? null)
           : null
-      const executionProject = userSelectedProject ?? robotBoundProject
+      const executionProject = userSelectedProject
       const activeMentions = assignedAgent
         ? [{ type: 'agent' as const, id: assignedAgent.id, label: assignedAgent.name }]
         : []
@@ -1080,7 +1123,7 @@ export function TaskActivityView({
       if (assignedAgent && !selfManagedExecution) {
         await startTaskAiRun({
           client,
-          services,
+          services: taskAiServices,
           runtime: { createProjectRuntimeTask, sendRuntimePaneMessage },
           project,
           task,
@@ -1275,7 +1318,7 @@ export function TaskActivityView({
         >
           {loading ? (
             <div className="flex min-h-48 items-center justify-center text-sm text-text-muted">
-              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+              <CompositedSpinner className="mr-2 h-4 w-4" />
               {t('workbench.project_chat_loading')}
             </div>
           ) : threadMessages.length === 0 ? (
@@ -1313,6 +1356,7 @@ export function TaskActivityView({
                       compact
                       plain
                       taskAiState={task.ai_state}
+                      taskSummary={taskSummaryForMessage(card.root)}
                       onOpenExecution={
                         rootRuntimeAddress
                           ? () =>
@@ -1355,6 +1399,7 @@ export function TaskActivityView({
                               compact
                               plain
                               taskAiState={task.ai_state}
+                              taskSummary={taskSummaryForMessage(reply)}
                               onOpenExecution={
                                 replyRuntimeAddress
                                   ? () =>
@@ -1425,6 +1470,7 @@ export function TaskActivityView({
                     }
                     compact={compact}
                     taskAiState={task.ai_state}
+                    taskSummary={taskSummaryForMessage(message)}
                     onOpenExecution={
                       runtimeAddress
                         ? () =>
@@ -1505,11 +1551,14 @@ function resolveMessageRunStatus(
   if (['completed', 'failed', 'cancelled', 'canceled'].includes(messageStatus)) {
     return messageStatus
   }
+  const metadataStatus = message.metadata.run_status
+  if (typeof metadataStatus === 'string' && metadataStatus) {
+    return metadataStatus
+  }
   if (taskAiState?.project_chat_message_id === message.messageId && taskAiState.status) {
     return taskAiState.status
   }
-  const metadataStatus = message.metadata.run_status
-  return typeof metadataStatus === 'string' && metadataStatus ? metadataStatus : messageStatus
+  return messageStatus
 }
 
 function backendTaskExecution(message: ProjectChatMessage): {
@@ -1627,7 +1676,11 @@ function TaskExecutionStatusControl({
           onClick={() => setOpen(current => !current)}
           className="task-detail-execution-status-trigger"
         >
-          <Icon className={cn('h-4 w-4', animated && 'animate-spin')} />
+          {animated ? (
+            <CompositedSpinner icon={Icon} className="h-4 w-4" />
+          ) : (
+            <Icon className="h-4 w-4" />
+          )}
         </button>
       </Tooltip>
       {open ? (
@@ -1639,7 +1692,11 @@ function TaskExecutionStatusControl({
         >
           <span className="task-detail-execution-status-popover-head">
             <span className="task-detail-execution-status-popover-title">
-              <Icon className={cn('h-4 w-4', animated && 'animate-spin')} />
+              {animated ? (
+                <CompositedSpinner icon={Icon} className="h-4 w-4" />
+              ) : (
+                <Icon className="h-4 w-4" />
+              )}
               {label}
             </span>
             <button
@@ -1687,6 +1744,7 @@ function ChatMessage({
   compact = false,
   plain = false,
   taskAiState,
+  taskSummary,
   onOpenExecution,
   onStopExecution,
   stopping = false,
@@ -1697,6 +1755,7 @@ function ChatMessage({
   /** Render inside a parent comment card without the outer card border. */
   plain?: boolean
   taskAiState?: CloudLoopItem['ai_state']
+  taskSummary?: ExecutionTaskSummary
   onOpenExecution?: () => void
   onStopExecution?: () => void
   stopping?: boolean
@@ -1708,6 +1767,9 @@ function ChatMessage({
   const runId = typeof message.metadata.run_id === 'string' ? message.metadata.run_id : null
   const modelName = typeof message.metadata.model === 'string' ? message.metadata.model : null
   const runStatus = resolveMessageRunStatus(taskAiState, message)
+  const normalizedText = text.replace(/\s+/g, ' ').trim()
+  const summaryText =
+    normalizedText.length > 240 ? `${normalizedText.slice(0, 240).trimEnd()}…` : normalizedText
   const backendExecution = isAgent ? backendTaskExecution(message) : null
   const openBackendExecution = backendExecution
     ? () => {
@@ -1754,7 +1816,7 @@ function ChatMessage({
       ) : null}
       {isAgent && !compact && message.status === 'streaming' ? (
         <span className="mt-1 inline-flex items-center gap-1 text-xs text-text-muted">
-          <LoaderCircle className="h-3 w-3 animate-spin" />
+          <CompositedSpinner className="h-3 w-3" />
           {t('workbench.project_chat_processing')}
         </span>
       ) : null}
@@ -1811,7 +1873,7 @@ function ChatMessage({
   )
 
   if (compact) {
-    if (isAgent && !plain) {
+    if (isAgent && (!plain || taskSummary)) {
       return (
         <article
           data-testid={`cloud-task-activity-message-${message.messageId}`}
@@ -1823,12 +1885,13 @@ function ChatMessage({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-semibold text-text-primary">
-                  {message.sender.name}
+                  {taskSummary?.title ?? message.sender.name}
                 </span>
                 <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs text-text-muted">
-                  {isSubagent
-                    ? t('workbench.task_activity_subagent_execution')
-                    : t('workbench.task_activity_ai_execution')}
+                  {taskSummary?.stageName ??
+                    (isSubagent
+                      ? t('workbench.task_activity_subagent_execution')
+                      : t('workbench.task_activity_ai_execution'))}
                 </span>
               </div>
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-text-muted">
@@ -1845,7 +1908,27 @@ function ChatMessage({
               stopping={stopping}
             />
           </div>
-          <div className="task-detail-ai-run-body">{body}</div>
+          <div className="task-detail-ai-run-body">
+            {summaryText ? (
+              <p
+                data-testid={`cloud-task-activity-task-summary-${message.messageId}`}
+                className="task-detail-ai-run-summary"
+              >
+                {summaryText}
+              </p>
+            ) : null}
+            {taskSummary?.onOpen ? (
+              <button
+                type="button"
+                data-testid={`cloud-task-activity-open-task-${message.messageId}`}
+                onClick={taskSummary.onOpen}
+                className="task-detail-ai-run-open-task"
+              >
+                {t('workbench.task_activity_open_task')}
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
         </article>
       )
     }
@@ -1963,7 +2046,11 @@ function ExecutionStatusBadge({
   const animated = ['starting', 'running', 'cancelling'].includes(kind)
   const statusContent = (
     <>
-      <StatusIcon className={cn('h-3 w-3', animated && 'animate-spin')} />
+      {animated ? (
+        <CompositedSpinner icon={StatusIcon} className="h-3 w-3" />
+      ) : (
+        <StatusIcon className="h-3 w-3" />
+      )}
       {labels[kind]}
     </>
   )
@@ -2000,11 +2087,7 @@ function ExecutionStatusBadge({
             onStopExecution()
           }}
         >
-          {stopping ? (
-            <LoaderCircle className="h-3 w-3 animate-spin" />
-          ) : (
-            <Square className="h-3 w-3" />
-          )}
+          {stopping ? <CompositedSpinner className="h-3 w-3" /> : <Square className="h-3 w-3" />}
         </button>
       ) : null}
     </span>

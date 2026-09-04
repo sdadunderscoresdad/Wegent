@@ -1,7 +1,3 @@
-import { invoke } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
-import { isTauriRuntime } from '@/lib/runtime-environment'
-
 const MAX_EXPORT_EDGE = 4096
 const EXPORT_SCALE = 2
 
@@ -94,18 +90,13 @@ export async function renderDiagramPng(
   if (!context) throw new Error('Canvas is unavailable')
 
   context.scale(scale, scale)
-  context.fillStyle = theme === 'dark' ? '#111316' : '#ffffff'
+  context.fillStyle = theme === 'dark' ? '#181818' : '#ffffff'
   context.fillRect(0, 0, width, height)
   context.drawImage(image, 0, 0, width, height)
   return await canvasToPng(canvas)
 }
 
 export async function copyDiagramPng(blob: Blob): Promise<void> {
-  if (isTauriRuntime()) {
-    await invoke('copy_diagram_png', { dataBase64: await blobToBase64(blob) })
-    return
-  }
-
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
     throw new Error('Image clipboard is unavailable')
   }
@@ -113,16 +104,6 @@ export async function copyDiagramPng(blob: Blob): Promise<void> {
 }
 
 export async function saveDiagramPng(blob: Blob, filename: string): Promise<boolean> {
-  if (isTauriRuntime()) {
-    const path = await save({
-      defaultPath: filename,
-      filters: [{ name: 'PNG image', extensions: ['png'] }],
-    })
-    if (!path) return false
-    await invoke('save_diagram_png', { path, dataBase64: await blobToBase64(blob) })
-    return true
-  }
-
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
@@ -132,14 +113,4 @@ export async function saveDiagramPng(blob: Blob, filename: string): Promise<bool
   document.body.removeChild(link)
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
   return true
-}
-
-async function blobToBase64(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
-  }
-  return btoa(binary)
 }

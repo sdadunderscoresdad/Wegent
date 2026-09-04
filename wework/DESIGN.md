@@ -136,10 +136,10 @@ the static CSS bundle:
 
 | Token/role     | Default size | Typical line height | Weight    | Use                                   |
 | -------------- | -----------: | ------------------: | --------- | ------------------------------------- |
-| `text-xs`      |       `12px` |              `16px` | `400–500` | shortcuts, timestamps, dense metadata |
-| `text-sm`      |       `13px` |         `18px–19px` | `400–500` | helper text and compact controls      |
-| `text-base`    |       `14px` |              `21px` | `400–500` | rows, menus, forms and ordinary body  |
-| `text-lg`      |       `16px` |         `24px–25px` | `400–500` | emphasized UI                         |
+| `text-xs`      |       `12px` |              `16px` | `445–500` | shortcuts, timestamps, dense metadata |
+| `text-sm`      |       `13px` |         `18px–19px` | `445–500` | helper text and compact controls      |
+| `text-base`    |       `14px` |              `21px` | `445–500` | rows, menus, forms and ordinary body  |
+| `text-lg`      |       `16px` |         `24px–25px` | `445–500` | emphasized UI                         |
 | Heading small  |       `18px` |              `24px` | `500`     | section or dialog heading             |
 | Heading medium |       `20px` |              `27px` | `500`     | page heading where needed             |
 | Heading large  |       `24px` |              `29px` | `500`     | rare prominent heading                |
@@ -167,9 +167,9 @@ font size is allowed only when it derives from the shared typography tokens,
 such as an animated transition between two heading roles. Third-party content
 that cannot inherit Wework variables requires a narrow documented exception.
 
-The primary weight is regular. Codex uses subtle intermediate platform weights,
-but Wework maps them to `400` for body and `500` for emphasis. Use `600`
-sparingly and avoid `700` in product chrome.
+The primary Electron UI weight is `445`, matching ChatGPT's platform-adjusted
+normal weight. Explicit `font-normal` content remains `400`, while emphasis and
+headings use `500`. Use `600` sparingly and avoid `700` in product chrome.
 
 Entered composer text uses the primary text color so it reads as content. Normal
 menu labels and composer actions such as the quick-phrase trigger also use the
@@ -282,6 +282,8 @@ embedded may change spacing and composition, but it must not select a
 light-only or dark-only color recipe. Apply this rule to nested surfaces as
 well as their containers: dialogs, directory pickers, menus, inputs, list rows,
 tooltips, footers, and action groups must all inherit the active theme.
+Surfaces rendered through a portal must explicitly set their semantic
+foreground color instead of relying on an ancestor outside the portal target.
 
 Literal white, black, or neutral fills are allowed only when color is part of
 the content contract rather than application chrome. Examples include a QR
@@ -407,6 +409,10 @@ may reveal on hover/focus but must remain keyboard accessible.
   screenshot-matched review artifacts must use that width.
 - Sidebar rows are `30px` high with a `10px` radius, `8px–10px` horizontal
   padding, `14px` text, and an ordinary `16px` icon.
+- Leading status icons may occupy reserved indentation only when their negative
+  offset is fully contained by the row's left padding. Keep icons in the normal
+  flex flow for shallow pinned and top-level task rows so the glyph and its hit
+  target remain inside the sidebar viewport.
 - Priority task entries are selectable two-line data rows rather than compact
   navigation rows. They use a `48px` minimum height so the title and `12px–14px`
   source metadata remain readable.
@@ -656,6 +662,9 @@ must not discard entered data without warning. Do not stack modal dialogs.
   validation, or persistent system feedback.
 - Open on keyboard focus as well as hover and dismiss on blur, pointer exit, or
   Escape.
+- A focusable row retaining focus after activation must not keep its hover card
+  open unless that card explicitly opens on focus or focus has moved into its
+  interactive content.
 - Use the shared `Tooltip` component for compact controls instead of the native
   HTML `title` attribute. Icon-only controls must keep a localized
   `aria-label`; controls that currently have neither a visible label nor a
@@ -864,7 +873,7 @@ implementation and WCAG conflict.
 - File paths, terminals, permissions, and external applications reflect the
   actual current environment.
 - Keep pane resize and open/close motion stable under window zoom.
-- Verify changes through the isolated real-Tauri flow in `AGENTS.md`, never a
+- Verify changes through the isolated real-Electron flow in `AGENTS.md`, never a
   personal Wework window.
 
 ## 13. Implementation and review contract
@@ -895,7 +904,7 @@ For each material UI change, review:
 - Do keyboard behavior, accessible names, focus restoration, reduced motion,
   long translations, and constrained widths work?
 - Are light and dark themes both correct?
-- Was the affected flow verified in the isolated real Tauri application with a
+- Was the affected flow verified in the isolated real Electron application with a
   screenshot of the final normal state and any critical transient state?
 
 When a screenshot feels wrong, compare it in this order: composition, surface

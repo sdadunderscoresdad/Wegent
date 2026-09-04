@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde_json::{json, Value};
 use thiserror::Error;
 use uuid::Uuid;
@@ -27,6 +27,7 @@ use super::model::{
 const LOCAL_SCHEMA_VERSION: i64 = 7;
 const DEFAULT_WORK_ITEM_PROJECT_ID: &str = "default-work-items";
 const DEFAULT_WORK_ITEM_PROJECT_KEY: &str = "WORK";
+static LOCAL_TASK_STORE_INITIALIZATION: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error)]
 pub enum TaskRuntimeError {
@@ -55,11 +56,26 @@ pub struct LocalTaskStore {
 }
 
 impl LocalTaskStore {
+    pub(crate) fn default_path() -> PathBuf {
+        local_database_path()
+    }
+
     pub fn from_env() -> Result<Self, TaskRuntimeError> {
-        Self::open(local_database_path())
+        Self::open(Self::default_path())
+    }
+
+    pub fn from_env_if_exists() -> Result<Option<Self>, TaskRuntimeError> {
+        let path = Self::default_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        Self::open(path).map(Some)
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskRuntimeError> {
+        let _initialization = LOCAL_TASK_STORE_INITIALIZATION
+            .lock()
+            .map_err(|_| TaskRuntimeError::LockPoisoned)?;
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -623,6 +639,7 @@ impl LocalTaskStore {
                 "Robot max concurrent executions must be between 1 and 20".to_owned(),
             ));
         }
+        validate_workspace_policy(&input.workspace_policy)?;
         let connection = self.connection()?;
         let id = format!("LA-{}", Uuid::new_v4().simple());
         let now = now();
@@ -634,6 +651,8 @@ impl LocalTaskStore {
             "execution_environment": input.execution_environment.unwrap_or_else(|| "local".to_owned()),
             "execution_mode": input.execution_mode.unwrap_or_else(|| "auto".to_owned()),
             "max_concurrent_executions": input.max_concurrent_executions,
+            "workspace_policy": input.workspace_policy,
+            "plugins": input.plugins,
         });
         metadata["execution_device_id"] = json!(input.execution_device_id);
         metadata["local_project_id"] = json!(input.local_project_id);
@@ -704,8 +723,15 @@ impl LocalTaskStore {
             }
             metadata["max_concurrent_executions"] = json!(max_concurrent_executions);
         }
+        if let Some(workspace_policy) = input.workspace_policy {
+            validate_workspace_policy(&workspace_policy)?;
+            metadata["workspace_policy"] = json!(workspace_policy);
+        }
         if let Some(local_project_id) = input.local_project_id {
             metadata["local_project_id"] = json!(local_project_id);
+        }
+        if let Some(plugins) = input.plugins {
+            metadata["plugins"] = json!(plugins);
         }
         let status = input
             .status
@@ -2001,7 +2027,13 @@ impl LocalTaskStore {
         }
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let active = get_active_binding(&transaction, &input.device_id, &input.task_id)?;
+        let system_binding = project_id == DEFAULT_WORK_ITEM_PROJECT_ID;
+        let active = get_binding_by_kind(
+            &transaction,
+            &input.device_id,
+            &input.task_id,
+            system_binding,
+        )?;
         if let (Some(item_id), Some(workflow_node_id)) =
             (item_id, input.workflow_node_id.as_deref())
         {
@@ -2082,21 +2114,130 @@ impl LocalTaskStore {
         self.get_binding(&id)
     }
 
+    pub fn ensure_default_work_item_binding(
+        &self,
+        device_id: &str,
+        task_id: &str,
+        task_title: &str,
+        description: &str,
+    ) -> Result<TaskBinding, TaskRuntimeError> {
+        validate_name(device_id, "device id")?;
+        validate_name(task_id, "task id")?;
+        validate_name(task_title, "task title")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(active) = get_binding_by_kind(&transaction, device_id, task_id, true)? {
+            transaction.execute(
+                "UPDATE loop_items SET task_title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![task_title, now(), active.id],
+            )?;
+            transaction.commit()?;
+            drop(connection);
+            return self.get_binding(&active.id);
+        }
+
+        let project = get_item_from(&transaction, DEFAULT_WORK_ITEM_PROJECT_ID, "project")?
+            .ok_or(TaskRuntimeError::ProjectNotFound)?;
+        let sequence = project.next_item_number.unwrap_or(1);
+        let item_id = format!("{DEFAULT_WORK_ITEM_PROJECT_KEY}-{sequence}");
+        let timestamp = now();
+        transaction.execute(
+            "UPDATE loop_items SET next_item_number = ?1, version = version + 1,
+                    updated_at = ?2 WHERE id = ?3",
+            params![sequence + 1, timestamp, DEFAULT_WORK_ITEM_PROJECT_ID],
+        )?;
+        transaction.execute(
+            "INSERT INTO loop_items (
+                id, resource_type, project_space, cloud_project_id, title, description,
+                sequence_number, status, priority, sort_order, metadata, version,
+                created_at, updated_at
+             ) VALUES (?1, 'task', 'default', ?2, ?3, ?4, ?5, 'inbox', 'none',
+                       0, ?6, 1, ?7, ?7)",
+            params![
+                item_id,
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                task_title,
+                description,
+                sequence,
+                json!({"tags": []}).to_string(),
+                timestamp,
+            ],
+        )?;
+        let binding_id = numeric_id();
+        let metadata = json!({
+            "external_item_id": Value::Null,
+            "project_id": DEFAULT_WORK_ITEM_PROJECT_ID,
+            "workflow_node_id": Value::Null,
+            "workflow_stage_input": Value::Null,
+        });
+        transaction.execute(
+            "INSERT INTO loop_items (
+                id, resource_type, project_space, cloud_project_id, loop_item_id,
+                task_user_id, device_id, task_id, task_title, linked_by_user_id,
+                linked_at, metadata, version, created_at, updated_at
+             ) VALUES (?1, 'execution', 'default', ?2, ?3, 0, ?4, ?5, ?6, 0,
+                       ?7, ?8, 1, ?7, ?7)",
+            params![
+                binding_id,
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                item_id,
+                device_id,
+                task_id,
+                task_title,
+                timestamp,
+                metadata.to_string(),
+            ],
+        )?;
+        transaction.commit()?;
+        drop(connection);
+        self.get_binding(&binding_id)
+    }
+
     pub fn list_task_bindings(&self, item_id: &str) -> Result<Vec<TaskBinding>, TaskRuntimeError> {
+        self.list_task_bindings_batch(&[item_id.to_owned()])
+    }
+
+    pub fn list_task_bindings_batch(
+        &self,
+        item_ids: &[String],
+    ) -> Result<Vec<TaskBinding>, TaskRuntimeError> {
+        let item_ids = item_ids
+            .iter()
+            .map(|item_id| item_id.trim())
+            .filter(|item_id| !item_id.is_empty())
+            .collect::<HashSet<_>>();
+        if item_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(item_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
         let connection = self.connection()?;
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare(&format!(
             "SELECT id, COALESCE(cloud_project_id, json_extract(metadata, '$.project_id')),
                     COALESCE(loop_item_id, json_extract(metadata, '$.external_item_id')),
                     task_user_id, device_id,
                     task_id, task_title, backend_task_id,
                     json_extract(metadata, '$.workflow_node_id'),
-                    json_extract(metadata, '$.workflow_stage_input'), linked_at
+                    json_extract(metadata, '$.workflow_stage_input'),
+                    CASE
+                        WHEN COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                             = 'default-work-items'
+                        THEN 'system'
+                        ELSE 'user'
+                    END,
+                    linked_at
              FROM loop_items
              WHERE resource_type = 'execution' AND unlinked_at IS NULL
-               AND (loop_item_id = ?1 OR json_extract(metadata, '$.external_item_id') = ?1)
-             ORDER BY linked_at DESC",
-        )?;
-        let rows = statement.query_map([item_id], map_task_binding)?;
+               AND (
+                    loop_item_id IN ({placeholders})
+                    OR json_extract(metadata, '$.external_item_id') IN ({placeholders})
+               )
+             ORDER BY linked_at DESC"
+        ))?;
+        let parameters = item_ids.iter().copied().chain(item_ids.iter().copied());
+        let rows = statement.query_map(params_from_iter(parameters), map_task_binding)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(TaskRuntimeError::from)
     }
@@ -2107,18 +2248,151 @@ impl LocalTaskStore {
         task_id: &str,
     ) -> Result<TaskBinding, TaskRuntimeError> {
         let connection = self.connection()?;
-        get_active_binding(&connection, device_id, task_id)?.ok_or(TaskRuntimeError::TaskNotFound)
+        get_effective_binding(&connection, device_id, task_id)?
+            .ok_or(TaskRuntimeError::TaskNotFound)
     }
 
-    pub fn unbind_task(&self, device_id: &str, task_id: &str) -> Result<(), TaskRuntimeError> {
+    pub fn project_bound_task_status(
+        &self,
+        device_id: &str,
+        task_id: &str,
+        execution_status: &str,
+        observed_at_ms: i64,
+    ) -> Result<usize, TaskRuntimeError> {
+        if observed_at_ms <= 0 {
+            return Err(TaskRuntimeError::Invalid(
+                "runtime task status observation requires a positive timestamp".to_owned(),
+            ));
+        }
+        let next_status = match execution_status {
+            "queued" | "pending" => "pending",
+            "running" => "in_progress",
+            "done" | "completed" | "succeeded" | "failed" | "cancelled" | "canceled"
+            | "interrupted" | "error" => "in_review",
+            "archived" => "completed",
+            _ => {
+                return Err(TaskRuntimeError::Invalid(format!(
+                    "unsupported runtime task status '{execution_status}'"
+                )));
+            }
+        };
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let timestamp = now();
+        let preserve_reviewed = matches!(
+            execution_status,
+            "done"
+                | "completed"
+                | "succeeded"
+                | "failed"
+                | "cancelled"
+                | "canceled"
+                | "interrupted"
+                | "error"
+        );
+        let changed = transaction.execute(
+            "UPDATE loop_items
+             SET status = ?1,
+                 completed_at = CASE WHEN ?1 = 'completed' THEN ?2 ELSE NULL END,
+                 sort_order = 0, version = version + 1, updated_at = ?2
+             WHERE resource_type = 'task'
+               AND id IN (
+                   SELECT loop_item_id
+                   FROM loop_items
+                   WHERE resource_type = 'execution'
+                     AND device_id = ?3 AND task_id = ?4
+                     AND unlinked_at IS NULL AND loop_item_id IS NOT NULL
+                     AND json_extract(metadata, '$.workflow_node_id') IS NULL
+                     AND CAST(COALESCE(
+                         json_extract(metadata, '$.runtime_status_observed_at_ms'),
+                         0
+                     ) AS INTEGER) < ?6
+               )
+               AND status != ?1
+               AND (NOT ?5 OR status NOT IN ('completed', 'in_review'))",
+            params![
+                next_status,
+                timestamp,
+                device_id,
+                task_id,
+                preserve_reviewed,
+                observed_at_ms
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE loop_items
+             SET metadata = json_set(
+                     COALESCE(metadata, '{}'),
+                     '$.runtime_status_observed_at_ms',
+                     ?1
+                 ),
+                 version = version + 1,
+                 updated_at = ?2
+             WHERE resource_type = 'execution'
+               AND device_id = ?3 AND task_id = ?4
+               AND unlinked_at IS NULL AND loop_item_id IS NOT NULL
+               AND json_extract(metadata, '$.workflow_node_id') IS NULL
+               AND CAST(COALESCE(
+                   json_extract(metadata, '$.runtime_status_observed_at_ms'),
+                   0
+               ) AS INTEGER) < ?1",
+            params![observed_at_ms, timestamp, device_id, task_id],
+        )?;
+        transaction.commit()?;
+        Ok(changed)
+    }
+
+    pub fn find_system_task_binding(
+        &self,
+        device_id: &str,
+        task_id: &str,
+    ) -> Result<TaskBinding, TaskRuntimeError> {
+        let connection = self.connection()?;
+        get_binding_by_kind(&connection, device_id, task_id, true)?
+            .ok_or(TaskRuntimeError::TaskNotFound)
+    }
+
+    pub fn find_user_task_binding(
+        &self,
+        device_id: &str,
+        task_id: &str,
+    ) -> Result<TaskBinding, TaskRuntimeError> {
+        let connection = self.connection()?;
+        get_binding_by_kind(&connection, device_id, task_id, false)?
+            .ok_or(TaskRuntimeError::TaskNotFound)
+    }
+
+    pub fn unbind_task(
+        &self,
+        device_id: &str,
+        task_id: &str,
+        item_id: Option<&str>,
+    ) -> Result<(), TaskRuntimeError> {
         let connection = self.connection()?;
         let timestamp = now();
-        connection.execute(
-            "UPDATE loop_items SET unlinked_at = ?1, updated_at = ?1
-             WHERE resource_type = 'execution' AND device_id = ?2 AND task_id = ?3
-               AND unlinked_at IS NULL",
-            params![timestamp, device_id, task_id],
-        )?;
+        if let Some(item_id) = item_id {
+            connection.execute(
+                "UPDATE loop_items SET unlinked_at = ?1, updated_at = ?1
+                 WHERE resource_type = 'execution' AND device_id = ?2 AND task_id = ?3
+                   AND unlinked_at IS NULL
+                   AND (
+                       loop_item_id = ?4
+                       OR json_extract(metadata, '$.external_item_id') = ?4
+                   )
+                   AND COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                       != 'default-work-items'",
+                params![timestamp, device_id, task_id, item_id],
+            )?;
+        } else {
+            connection.execute(
+                "UPDATE loop_items SET unlinked_at = ?1, updated_at = ?1
+                 WHERE resource_type = 'execution' AND device_id = ?2 AND task_id = ?3
+                   AND unlinked_at IS NULL
+                   AND COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                       != 'default-work-items'",
+                params![timestamp, device_id, task_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -2131,7 +2405,14 @@ impl LocalTaskStore {
                         task_user_id, device_id,
                         task_id, task_title, backend_task_id,
                         json_extract(metadata, '$.workflow_node_id'),
-                        json_extract(metadata, '$.workflow_stage_input'), linked_at
+                        json_extract(metadata, '$.workflow_stage_input'),
+                        CASE
+                            WHEN COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                                 = 'default-work-items'
+                            THEN 'system'
+                            ELSE 'user'
+                        END,
+                        linked_at
                  FROM loop_items WHERE id = ?1 AND resource_type = 'execution'",
                 [id],
                 map_task_binding,
@@ -2167,7 +2448,7 @@ impl LocalTaskStore {
     }
 }
 
-fn get_active_binding(
+fn get_effective_binding(
     connection: &Connection,
     device_id: &str,
     task_id: &str,
@@ -2179,12 +2460,64 @@ fn get_active_binding(
                     task_user_id, device_id,
                     task_id, task_title, backend_task_id,
                     json_extract(metadata, '$.workflow_node_id'),
-                    json_extract(metadata, '$.workflow_stage_input'), linked_at
+                    json_extract(metadata, '$.workflow_stage_input'),
+                    CASE
+                        WHEN COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                             = 'default-work-items'
+                        THEN 'system'
+                        ELSE 'user'
+                    END,
+                    linked_at
              FROM loop_items
              WHERE resource_type = 'execution' AND device_id = ?1 AND task_id = ?2
                AND unlinked_at IS NULL
+             ORDER BY
+                 CASE
+                     WHEN COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                          = 'default-work-items'
+                     THEN 1
+                     ELSE 0
+                 END,
+                 linked_at DESC
              LIMIT 1",
             params![device_id, task_id],
+            map_task_binding,
+        )
+        .optional()
+        .map_err(TaskRuntimeError::from)
+}
+
+fn get_binding_by_kind(
+    connection: &Connection,
+    device_id: &str,
+    task_id: &str,
+    system: bool,
+) -> Result<Option<TaskBinding>, TaskRuntimeError> {
+    connection
+        .query_row(
+            "SELECT id, COALESCE(cloud_project_id, json_extract(metadata, '$.project_id')),
+                    COALESCE(loop_item_id, json_extract(metadata, '$.external_item_id')),
+                    task_user_id, device_id,
+                    task_id, task_title, backend_task_id,
+                    json_extract(metadata, '$.workflow_node_id'),
+                    json_extract(metadata, '$.workflow_stage_input'),
+                    CASE
+                        WHEN COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                             = 'default-work-items'
+                        THEN 'system'
+                        ELSE 'user'
+                    END,
+                    linked_at
+             FROM loop_items
+             WHERE resource_type = 'execution' AND device_id = ?1 AND task_id = ?2
+               AND unlinked_at IS NULL
+               AND (
+                   COALESCE(cloud_project_id, json_extract(metadata, '$.project_id'))
+                       = 'default-work-items'
+               ) = ?3
+             ORDER BY linked_at DESC
+             LIMIT 1",
+            params![device_id, task_id, system],
             map_task_binding,
         )
         .optional()
@@ -2215,7 +2548,7 @@ fn validate_local_workflow_task_binding(
         ));
     }
 
-    let current_binding = get_active_binding(connection, device_id, task_id)?;
+    let current_binding = get_binding_by_kind(connection, device_id, task_id, false)?;
     let is_idempotent = current_binding.as_ref().is_some_and(|binding| {
         binding.loop_item_id.as_deref() == Some(item_id)
             && binding.workflow_node_id.as_deref() == Some(workflow_node_id)
@@ -2252,7 +2585,8 @@ fn map_task_binding(row: &Row<'_>) -> rusqlite::Result<TaskBinding> {
         workflow_stage_input: row
             .get::<_, Option<String>>(9)?
             .and_then(|value| serde_json::from_str(&value).ok()),
-        linked_at: row.get(10)?,
+        binding_type: row.get(10)?,
+        linked_at: row.get(11)?,
     })
 }
 
@@ -2299,6 +2633,10 @@ fn local_workflow_stage_snapshot(
 }
 
 fn migrate(connection: &Connection) -> Result<(), TaskRuntimeError> {
+    if schema_is_current(connection)? {
+        ensure_default_work_item_project(connection)?;
+        return Ok(());
+    }
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -2529,14 +2867,49 @@ fn migrate(connection: &Connection) -> Result<(), TaskRuntimeError> {
          ON loop_items(assignee_agent_id)",
         [],
     )?;
-    let default_board_migration_applied = connection.query_row(
+    ensure_default_work_item_project(connection)?;
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+        params![LOCAL_SCHEMA_VERSION, now()],
+    )?;
+    Ok(())
+}
+
+fn schema_is_current(connection: &Connection) -> Result<bool, rusqlite::Error> {
+    let migration_table_exists = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'schema_migrations'
+         )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !migration_table_exists {
+        return Ok(false);
+    }
+    connection.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM schema_migrations WHERE version = ?1
          )",
         [LOCAL_SCHEMA_VERSION],
         |row| row.get::<_, bool>(0),
+    )
+}
+
+fn ensure_default_work_item_project(connection: &Connection) -> Result<(), TaskRuntimeError> {
+    let default_board_exists = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM loop_items
+            WHERE id = ?1 AND resource_type = 'project'
+              AND project_key = ?2
+              AND status = 'active'
+              AND deleted_at IS NULL
+              AND json_extract(metadata, '$.system_kind') = 'default_work_items'
+         )",
+        params![DEFAULT_WORK_ITEM_PROJECT_ID, DEFAULT_WORK_ITEM_PROJECT_KEY],
+        |row| row.get::<_, bool>(0),
     )?;
-    if !default_board_migration_applied {
+    if !default_board_exists {
         let timestamp = now();
         let metadata = local_project_metadata(TaskProviderKind::Local, json!({}));
         let metadata = json!({
@@ -2613,10 +2986,6 @@ fn migrate(connection: &Connection) -> Result<(), TaskRuntimeError> {
             ));
         }
     }
-    connection.execute(
-        "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
-        params![LOCAL_SCHEMA_VERSION, now()],
-    )?;
     Ok(())
 }
 
@@ -3002,6 +3371,15 @@ fn validate_name(value: &str, label: &str) -> Result<(), TaskRuntimeError> {
     Ok(())
 }
 
+fn validate_workspace_policy(value: &str) -> Result<(), TaskRuntimeError> {
+    if matches!(value, "project" | "git_worktree") {
+        return Ok(());
+    }
+    Err(TaskRuntimeError::Invalid(
+        "Robot workspace policy must be project or git_worktree".to_owned(),
+    ))
+}
+
 fn validate_status(value: &str) -> Result<(), TaskRuntimeError> {
     matches!(
         value,
@@ -3168,7 +3546,13 @@ fn map_chat_agent(row: LoopItem) -> ChatAgent {
             .and_then(Value::as_u64)
             .filter(|value| (1..=20).contains(value))
             .unwrap_or(1),
+        workspace_policy: text("workspace_policy", "project"),
         local_project_id: metadata.get("local_project_id").and_then(Value::as_i64),
+        plugins: metadata
+            .get("plugins")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
         created_by_user_id: row.created_by_user_id,
         version: row.version,
         created_at: row.created_at,
@@ -3353,6 +3737,11 @@ fn map_execution(row: &Row<'_>) -> rusqlite::Result<LocalExecution> {
             .and_then(Value::as_u64)
             .filter(|value| (1..=20).contains(value))
             .unwrap_or(1),
+        agent_plugins: agent_metadata
+            .get("plugins")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 
@@ -3561,6 +3950,8 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use serde_json::json;
     use tempfile::TempDir;
 
@@ -3595,8 +3986,10 @@ mod tests {
                     execution_mode: Some(mode.to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap()
@@ -4188,14 +4581,23 @@ mod tests {
                     execution_mode: Some("manual_approval".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(42),
+                    plugins: vec![json!({
+                        "id": "github@openai",
+                        "pluginName": "github",
+                        "marketplaceId": "openai",
+                        "displayName": "GitHub",
+                    })],
                 },
             )
             .unwrap();
         assert_eq!(agent.created_by_user_id, 42);
+        assert_eq!(agent.plugins[0]["id"], "github@openai");
         let listed = store.list_chat_agents(&project.id).unwrap();
         assert_eq!(listed[0].created_by_user_id, 42);
+        assert_eq!(listed[0].plugins[0]["id"], "github@openai");
     }
 
     #[test]
@@ -4214,8 +4616,10 @@ mod tests {
                     execution_mode: Some("auto".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: Some(7),
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4238,7 +4642,9 @@ mod tests {
                     execution_mode: None,
                     execution_device_id: None,
                     max_concurrent_executions: None,
+                    workspace_policy: None,
                     local_project_id: Some(Some(9)),
+                    plugins: None,
                 },
             )
             .unwrap();
@@ -4259,7 +4665,9 @@ mod tests {
                     execution_mode: None,
                     execution_device_id: None,
                     max_concurrent_executions: None,
+                    workspace_policy: None,
                     local_project_id: Some(None),
+                    plugins: None,
                 },
             )
             .unwrap();
@@ -4282,8 +4690,10 @@ mod tests {
                     execution_mode: Some("auto".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 20,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: None,
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4299,8 +4709,10 @@ mod tests {
                     execution_mode: Some("auto".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: None,
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4392,8 +4804,10 @@ mod tests {
                     execution_mode: Some("auto".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 2,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4462,8 +4876,10 @@ mod tests {
                     // Robots created before device binding have no device.
                     execution_device_id: None,
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4588,8 +5004,10 @@ mod tests {
                     execution_mode: Some("manual_approval".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -4647,8 +5065,10 @@ mod tests {
                     execution_mode: Some("manual_approval".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: Some(7),
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -5200,8 +5620,10 @@ mod tests {
                     execution_mode: Some("auto".to_owned()),
                     execution_device_id: Some("local-device".to_owned()),
                     max_concurrent_executions: 1,
+                    workspace_policy: "project".to_owned(),
                     local_project_id: None,
                     created_by_user_id: None,
+                    plugins: Vec::new(),
                 },
             )
             .unwrap();
@@ -5316,6 +5738,83 @@ mod tests {
             .filter(|project| project.project_key.as_deref() == Some(DEFAULT_WORK_ITEM_PROJECT_KEY))
             .count();
         assert_eq!(default_board_count, 1);
+    }
+
+    #[test]
+    fn initializes_a_new_store_once_across_concurrent_openers() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = Arc::new(directory.path().join("tasks.sqlite"));
+        let barrier = Arc::new(Barrier::new(8));
+        let openers = (0..8)
+            .map(|_| {
+                let db_path = Arc::clone(&db_path);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = LocalTaskStore::open(db_path.as_ref())
+                        .expect("concurrent first open must succeed");
+                    store
+                        .get_project(DEFAULT_WORK_ITEM_PROJECT_ID)
+                        .expect("default project must exist")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for opener in openers {
+            assert_eq!(
+                opener.join().expect("store opener must not panic").id,
+                DEFAULT_WORK_ITEM_PROJECT_ID
+            );
+        }
+    }
+
+    #[test]
+    fn opens_current_schema_while_another_connection_is_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("tasks.sqlite");
+        let _store = LocalTaskStore::open(&db_path).unwrap();
+        let mut writer = rusqlite::Connection::open(&db_path).unwrap();
+        let transaction = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+
+        let reopened_store = LocalTaskStore::open(&db_path)
+            .expect("opening a current schema must not require the SQLite write lock");
+
+        assert!(reopened_store
+            .get_project(DEFAULT_WORK_ITEM_PROJECT_ID)
+            .is_ok());
+        transaction.rollback().unwrap();
+    }
+
+    #[test]
+    fn restores_the_default_work_item_project_after_it_is_deleted() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("tasks.sqlite");
+        let store = LocalTaskStore::open(&db_path).unwrap();
+        {
+            let connection = store.connection().unwrap();
+            connection
+                .execute(
+                    "DELETE FROM loop_items WHERE id = ?1",
+                    [DEFAULT_WORK_ITEM_PROJECT_ID],
+                )
+                .unwrap();
+        }
+        drop(store);
+
+        let reopened_store = LocalTaskStore::open(&db_path).unwrap();
+        let restored_project = reopened_store
+            .get_project(DEFAULT_WORK_ITEM_PROJECT_ID)
+            .expect("the default work-item project should be restored");
+        assert_eq!(
+            restored_project.project_key.as_deref(),
+            Some(DEFAULT_WORK_ITEM_PROJECT_KEY)
+        );
+        assert_eq!(
+            restored_project.metadata["system_kind"],
+            json!("default_work_items")
+        );
     }
 
     #[test]
@@ -5734,11 +6233,322 @@ mod tests {
                 .as_deref(),
             Some("inbox")
         );
-        store.unbind_task("local-device", "runtime-1").unwrap();
+        store
+            .unbind_task("local-device", "runtime-1", Some(&task.id))
+            .unwrap();
         assert!(matches!(
             store.find_task_binding("local-device", "runtime-1"),
             Err(TaskRuntimeError::TaskNotFound)
         ));
+    }
+
+    #[test]
+    fn projects_runtime_status_to_bound_issue_without_renderer_writeback() {
+        let (_directory, store) = store();
+        let task = store
+            .create_task(
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                TaskCreate {
+                    title: "Runtime-owned status".to_owned(),
+                    description: String::new(),
+                    status: "in_review".to_owned(),
+                    priority: "none".to_owned(),
+                    parent_id: None,
+                    tags: vec![],
+                    workflow: None,
+                },
+            )
+            .unwrap();
+        store
+            .bind_task(
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                Some(&task.id),
+                None,
+                RuntimeTaskAddress {
+                    device_id: "local-device".to_owned(),
+                    task_id: "runtime-status-1".to_owned(),
+                    task_title: task.title.clone(),
+                    backend_task_id: None,
+                    workflow_node_id: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "running", 100,)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_task(DEFAULT_WORK_ITEM_PROJECT_ID, &task.id)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("in_progress")
+        );
+
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "succeeded", 200,)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_task(DEFAULT_WORK_ITEM_PROJECT_ID, &task.id)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("in_review")
+        );
+
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "running", 150,)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "queued", 175,)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .get_task(DEFAULT_WORK_ITEM_PROJECT_ID, &task.id)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("in_review")
+        );
+
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "running", 300,)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_task(DEFAULT_WORK_ITEM_PROJECT_ID, &task.id)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("in_progress")
+        );
+
+        assert_eq!(
+            store
+                .project_bound_task_status("local-device", "runtime-status-1", "archived", 400,)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_task(DEFAULT_WORK_ITEM_PROJECT_ID, &task.id)
+                .unwrap()
+                .status
+                .as_deref(),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn creates_and_reuses_default_work_item_binding_atomically() {
+        let (_directory, store) = store();
+
+        let first = store
+            .ensure_default_work_item_binding(
+                "local-device",
+                "runtime-default-1",
+                "Create from executor",
+                "Track after runtime creation",
+            )
+            .unwrap();
+        let second = store
+            .ensure_default_work_item_binding(
+                "local-device",
+                "runtime-default-1",
+                "Updated runtime title",
+                "Ignored duplicate description",
+            )
+            .unwrap();
+
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.loop_item_id, first.loop_item_id);
+        assert_eq!(second.task_title.as_deref(), Some("Updated runtime title"));
+        let items = store.list_tasks(DEFAULT_WORK_ITEM_PROJECT_ID).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("Create from executor"));
+        assert_eq!(items[0].description, "Track after runtime creation");
+    }
+
+    #[test]
+    fn lists_task_bindings_for_multiple_items_in_one_query() {
+        let (_directory, store) = store();
+        let project = local_project(&store);
+        let first = store
+            .create_task(
+                &project.id,
+                TaskCreate {
+                    title: "First bound task".to_owned(),
+                    description: String::new(),
+                    status: "inbox".to_owned(),
+                    priority: "none".to_owned(),
+                    parent_id: None,
+                    tags: vec![],
+                    workflow: None,
+                },
+            )
+            .unwrap();
+        let second = store
+            .create_task(
+                &project.id,
+                TaskCreate {
+                    title: "Second bound task".to_owned(),
+                    description: String::new(),
+                    status: "inbox".to_owned(),
+                    priority: "none".to_owned(),
+                    parent_id: None,
+                    tags: vec![],
+                    workflow: None,
+                },
+            )
+            .unwrap();
+        for (item, runtime_task_id) in [(&first, "runtime-1"), (&second, "runtime-2")] {
+            store
+                .bind_task(
+                    &project.id,
+                    Some(&item.id),
+                    None,
+                    RuntimeTaskAddress {
+                        device_id: "local-device".to_owned(),
+                        task_id: runtime_task_id.to_owned(),
+                        task_title: item.title.clone(),
+                        backend_task_id: None,
+                        workflow_node_id: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        let bindings = store
+            .list_task_bindings_batch(&[
+                first.id.clone(),
+                second.id.clone(),
+                first.id.clone(),
+                String::new(),
+            ])
+            .unwrap();
+        let task_ids = bindings
+            .iter()
+            .map(|binding| binding.task_id.as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(task_ids, HashSet::from(["runtime-1", "runtime-2"]));
+        assert!(store.list_task_bindings_batch(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn keeps_one_system_binding_alongside_the_current_user_binding() {
+        let (_directory, store) = store();
+        let user_project = local_project(&store);
+        let system_task = store
+            .create_task(
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                TaskCreate {
+                    title: "System task".to_owned(),
+                    description: String::new(),
+                    status: "inbox".to_owned(),
+                    priority: "none".to_owned(),
+                    parent_id: None,
+                    tags: vec![],
+                    workflow: None,
+                },
+            )
+            .unwrap();
+        let user_task = store
+            .create_task(
+                &user_project.id,
+                TaskCreate {
+                    title: "User issue".to_owned(),
+                    description: String::new(),
+                    status: "pending".to_owned(),
+                    priority: "none".to_owned(),
+                    parent_id: None,
+                    tags: vec![],
+                    workflow: None,
+                },
+            )
+            .unwrap();
+        let address = RuntimeTaskAddress {
+            device_id: "local-device".to_owned(),
+            task_id: "runtime-1".to_owned(),
+            task_title: Some("Runtime".to_owned()),
+            backend_task_id: None,
+            workflow_node_id: None,
+        };
+
+        let system_binding = store
+            .bind_task(
+                DEFAULT_WORK_ITEM_PROJECT_ID,
+                Some(&system_task.id),
+                None,
+                address.clone(),
+            )
+            .unwrap();
+        let user_binding = store
+            .bind_task(&user_project.id, Some(&user_task.id), None, address)
+            .unwrap();
+
+        assert_eq!(system_binding.binding_type, "system");
+        assert_eq!(user_binding.binding_type, "user");
+        assert_eq!(
+            store
+                .find_task_binding("local-device", "runtime-1")
+                .unwrap()
+                .id,
+            user_binding.id
+        );
+        assert_eq!(
+            store
+                .find_system_task_binding("local-device", "runtime-1")
+                .unwrap()
+                .id,
+            system_binding.id
+        );
+        assert_eq!(
+            store
+                .find_user_task_binding("local-device", "runtime-1")
+                .unwrap()
+                .id,
+            user_binding.id
+        );
+
+        store
+            .unbind_task("local-device", "runtime-1", Some(&user_task.id))
+            .unwrap();
+        assert_eq!(
+            store
+                .find_task_binding("local-device", "runtime-1")
+                .unwrap()
+                .id,
+            system_binding.id
+        );
+        store
+            .unbind_task("local-device", "runtime-1", Some(&system_task.id))
+            .unwrap();
+        assert_eq!(
+            store
+                .find_system_task_binding("local-device", "runtime-1")
+                .unwrap()
+                .id,
+            system_binding.id
+        );
     }
 
     #[test]

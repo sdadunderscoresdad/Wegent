@@ -76,12 +76,22 @@ class AdminUserListResponse(BaseModel):
 
 
 # Public Model Management Schemas
+def _validate_public_model_json(value: Optional[dict]) -> Optional[dict]:
+    """Require an object-valued spec when a public model JSON defines one."""
+    if value is not None and "spec" in value and not isinstance(value["spec"], dict):
+        raise ValueError("Public model JSON spec must be an object")
+    return value
+
+
 class PublicModelCreate(BaseModel):
     """Public model creation model"""
 
     name: str = Field(..., min_length=1, max_length=100)
     namespace: str = Field(default="default", max_length=100)
     model_json: dict = Field(..., alias="json")
+    is_visible: bool = True
+
+    _validate_model_json = field_validator("model_json")(_validate_public_model_json)
 
     class Config:
         populate_by_name = True
@@ -94,7 +104,10 @@ class PublicModelUpdate(BaseModel):
     namespace: Optional[str] = Field(None, max_length=100)
     model_json: Optional[dict] = Field(None, alias="json")
     is_active: Optional[bool] = None
+    is_visible: Optional[bool] = None
     is_advanced: Optional[bool] = None
+
+    _validate_model_json = field_validator("model_json")(_validate_public_model_json)
 
     class Config:
         populate_by_name = True
@@ -109,6 +122,7 @@ class PublicModelResponse(BaseModel):
     display_name: Optional[str] = None
     model_json: dict = Field(..., alias="json", serialization_alias="json")
     is_active: bool
+    is_visible: bool = True
     is_advanced: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -409,6 +423,12 @@ class PublicBotCreate(BaseModel):
         None, description="Precise skill refs for preloaded Ghost skills"
     )
     agent_config: Optional[dict] = Field(None, description="Agent config for Model")
+    secondary_model_name: Optional[str] = Field(
+        None, description="Secondary LLM model name for video/image bots"
+    )
+    secondary_model_namespace: Optional[str] = Field(
+        None, description="Namespace for the secondary model"
+    )
     default_knowledge_base_refs: Optional[List[dict]] = Field(
         None, description="Default knowledge base refs for Ghost"
     )
@@ -443,6 +463,12 @@ class PublicBotUpdate(BaseModel):
         None, description="Precise skill refs for preloaded Ghost skills"
     )
     agent_config: Optional[dict] = Field(None, description="Agent config for Model")
+    secondary_model_name: Optional[str] = Field(
+        None, description="Secondary LLM model name for video/image bots"
+    )
+    secondary_model_namespace: Optional[str] = Field(
+        None, description="Namespace for the secondary model"
+    )
     default_knowledge_base_refs: Optional[List[dict]] = Field(
         None, description="Default knowledge base refs for Ghost"
     )
@@ -466,6 +492,8 @@ class PublicBotResponse(BaseModel):
     ghost_name: Optional[str] = None
     shell_name: Optional[str] = None
     model_name: Optional[str] = None
+    secondary_model_name: Optional[str] = None
+    secondary_model_namespace: Optional[str] = None
     # Expanded Ghost fields for UI convenience
     system_prompt: Optional[str] = None
     mcp_servers: Optional[dict] = None

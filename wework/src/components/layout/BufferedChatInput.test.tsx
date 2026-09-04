@@ -2,8 +2,19 @@ import { act, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { requestWorkbenchComposerFocus } from '@/lib/workbenchComposerFocus'
+import {
+  dispatchPendingWorkbenchComposerFocusRequest,
+  requestWorkbenchComposerFocus,
+} from '@/lib/workbenchComposerFocus'
 import { BufferedChatInput } from './BufferedChatInput'
+
+vi.mock('@/api/dsh/desktopHost', () => ({
+  invokeDesktopHost: vi.fn(async (capability: string, params: Record<string, unknown> = {}) => {
+    if (capability === 'preferences.get') return {}
+    if (capability === 'preferences.update') return params.patch ?? {}
+    return {}
+  }),
+}))
 
 function createProjectChat(scopeKey: string) {
   return {
@@ -47,6 +58,72 @@ describe('BufferedChatInput', () => {
     await waitFor(() => {
       expect(screen.getByTestId('chat-message-input')).toHaveValue('queued message')
     })
+  })
+
+  test('keeps the local draft when parent props change before the debounce flush', async () => {
+    const onChange = vi.fn()
+
+    function Harness() {
+      const [expanded, setExpanded] = useState(false)
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="buffered-chat-input-toggle-mode"
+            onClick={() => setExpanded(current => !current)}
+          >
+            Toggle composer mode
+          </button>
+          <BufferedChatInput
+            value=""
+            onChange={onChange}
+            onSubmit={vi.fn()}
+            disabled={false}
+            showExecutionTools={expanded}
+          />
+        </>
+      )
+    }
+
+    render(<Harness />)
+    const input = screen.getByTestId('chat-message-input')
+    await userEvent.type(input, 'draft')
+    expect(onChange).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle composer mode' }))
+
+    expect(input).toHaveValue('draft')
+  })
+
+  test('does not replace newer input when two parent acknowledgements are delayed', async () => {
+    const acknowledgeDrafts: Array<() => void> = []
+
+    function Harness() {
+      const [value, setValue] = useState('')
+      return (
+        <BufferedChatInput
+          value={value}
+          onChange={nextValue => {
+            acknowledgeDrafts.push(() => setValue(nextValue))
+          }}
+          onSubmit={vi.fn()}
+          disabled={false}
+        />
+      )
+    }
+
+    render(<Harness />)
+    const input = screen.getByTestId('chat-message-input')
+    await userEvent.type(input, 'a')
+    await waitFor(() => expect(acknowledgeDrafts).toHaveLength(1), { timeout: 500 })
+    await userEvent.type(input, 'b')
+    await waitFor(() => expect(acknowledgeDrafts).toHaveLength(2), { timeout: 500 })
+
+    act(() => acknowledgeDrafts[0]?.())
+    expect(input).toHaveValue('ab')
+
+    act(() => acknowledgeDrafts[1]?.())
+    expect(input).toHaveValue('ab')
   })
 
   test('restores submitted text when it is externally returned for editing', async () => {
@@ -465,13 +542,15 @@ describe('BufferedChatInput', () => {
     render(
       <>
         <button type="button">Conversation</button>
-        <BufferedChatInput
-          value=""
-          onChange={vi.fn()}
-          onSubmit={vi.fn()}
-          disabled={false}
-          projectChat={createProjectChat('runtime:device-1:task-1')}
-        />
+        <div data-active-workbench-pane="true">
+          <BufferedChatInput
+            value=""
+            onChange={vi.fn()}
+            onSubmit={vi.fn()}
+            disabled={false}
+            projectChat={createProjectChat('runtime:device-1:task-1')}
+          />
+        </div>
       </>
     )
     const conversation = screen.getByRole('button', { name: 'Conversation' })
@@ -485,15 +564,76 @@ describe('BufferedChatInput', () => {
   test('focuses a selected conversation after its composer mounts', async () => {
     requestWorkbenchComposerFocus('runtime:device-1:task-1')
 
-    render(
-      <BufferedChatInput
-        value=""
-        onChange={vi.fn()}
-        onSubmit={vi.fn()}
-        disabled={false}
-        projectChat={createProjectChat('runtime:device-1:task-1')}
-      />
+    const composer = (
+      <div data-active-workbench-pane="true">
+        <BufferedChatInput
+          value=""
+          onChange={vi.fn()}
+          onSubmit={vi.fn()}
+          disabled={false}
+          projectChat={createProjectChat('runtime:device-1:task-1')}
+        />
+      </div>
     )
+    const { rerender } = render(composer)
+
+    await waitFor(() => expect(screen.getByTestId('chat-message-input')).toHaveFocus())
+
+    rerender(<div />)
+    rerender(
+      <div data-active-workbench-pane="true">
+        <BufferedChatInput
+          key="remounted"
+          value=""
+          onChange={vi.fn()}
+          onSubmit={vi.fn()}
+          disabled={false}
+          projectChat={createProjectChat('runtime:device-1:task-1')}
+        />
+      </div>
+    )
+    dispatchPendingWorkbenchComposerFocusRequest()
+
+    await waitFor(() => expect(screen.getByTestId('chat-message-input')).toHaveFocus())
+  })
+
+  test('does not let a cached hidden composer consume the focus request', async () => {
+    const { rerender } = render(
+      <>
+        <button type="button">Conversation</button>
+        <div data-active-workbench-pane="false">
+          <BufferedChatInput
+            value=""
+            onChange={vi.fn()}
+            onSubmit={vi.fn()}
+            disabled={false}
+            projectChat={createProjectChat('runtime:device-1:task-1')}
+          />
+        </div>
+      </>
+    )
+    const conversation = screen.getByRole('button', { name: 'Conversation' })
+    conversation.focus()
+
+    requestWorkbenchComposerFocus('runtime:device-1:task-1')
+    await new Promise(resolve => window.requestAnimationFrame(resolve))
+    expect(conversation).toHaveFocus()
+
+    rerender(
+      <>
+        <button type="button">Conversation</button>
+        <div data-active-workbench-pane="true">
+          <BufferedChatInput
+            value=""
+            onChange={vi.fn()}
+            onSubmit={vi.fn()}
+            disabled={false}
+            projectChat={createProjectChat('runtime:device-1:task-1')}
+          />
+        </div>
+      </>
+    )
+    dispatchPendingWorkbenchComposerFocusRequest()
 
     await waitFor(() => expect(screen.getByTestId('chat-message-input')).toHaveFocus())
   })

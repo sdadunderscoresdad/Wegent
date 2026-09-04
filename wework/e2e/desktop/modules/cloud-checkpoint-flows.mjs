@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import { verifyShortConversationLayout } from './conversation-layout.mjs'
@@ -66,7 +67,11 @@ import {
   verifyBackgroundTaskWindowLifecycle,
 } from './window-attachment-flows.mjs'
 
-import { verifyWorkspaceTabIsolation, waitForControlValue } from './workspace-flows.mjs'
+import {
+  captureVerificationScreenshot,
+  verifyWorkspaceTabIsolation,
+  waitForControlValue,
+} from './workspace-flows.mjs'
 
 const CLOUD_CHECKPOINTS = [
   'workspace-tabs',
@@ -75,6 +80,7 @@ const CLOUD_CHECKPOINTS = [
   'telemetry-consent',
   'automation-lifecycle',
   'plugin-auto-update',
+  'plugin-workspace-publication',
   'model-routing',
   'core-task-flow',
   'cloud-git-worktree',
@@ -134,21 +140,16 @@ async function createCloudProjectFixture(control, workspacePath) {
     'The cloud checkpoint folder picker did not retain the workspace path'
   )
   await control.command('clickWhenEnabled', '[data-testid="confirm-device-folder-picker-button"]')
-  await waitForCloudProject(
+  const projectMenuTestId = await waitForStableCloudProjectMenu(
     control,
     projectMenusBeforeCreate,
     'The cloud checkpoint project was not shown in the sidebar'
   )
-  await control.command('waitFor', '[data-testid^="project-device-status-"]', {
+  const projectId = projectMenuTestId.slice('project-menu-'.length)
+  await control.command('waitFor', `[data-testid="project-device-status-${projectId}"]`, {
     stableMs: COMPOSER_READY_STABILITY_MS * 2,
     timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
   })
-  const stableProjectSnapshot = JSON.parse(await control.command('snapshot', 'body'))
-  const projectMenuTestId = stableProjectSnapshot.testIds.find(
-    testId => testId.startsWith('project-menu-') && !projectMenusBeforeCreate.has(testId)
-  )
-  assert.ok(projectMenuTestId, 'The stable cloud checkpoint project identity was unavailable')
-  const projectId = projectMenuTestId.slice('project-menu-'.length)
   const projectRowSelector = `[data-testid="project-row-${projectId}"]`
   await control.command(
     'clickWhenEnabled',
@@ -167,6 +168,10 @@ async function createCloudProjectFixture(control, workspacePath) {
 }
 
 async function verifyCloudProjectCreationSources(control, workspacePath) {
+  await control.command('waitFor', '[data-testid="projects-create-button"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+
   const homePath = join(resultDir, 'cloud-executor-home')
 
   const createProjectAndSnapshotMenus = async sourceTestId => {
@@ -223,13 +228,15 @@ async function verifyCloudProjectCreationSources(control, workspacePath) {
     value: workspacePath,
   })
   await control.command('clickWhenEnabled', '[data-testid="remote-project-git-submit"]')
-  await waitForCloudProject(
+  const clonedProjectPath = join(homePath, basename(workspacePath))
+  await waitForGitCloneProject(
     control,
     gitMenus,
+    clonedProjectPath,
     'Cloning a Git cloud project did not add it to the sidebar'
   )
   await runChecked('git', ['rev-parse', '--is-inside-work-tree'], {
-    cwd: join(homePath, basename(workspacePath)),
+    cwd: clonedProjectPath,
   })
 }
 
@@ -242,6 +249,51 @@ async function waitForCloudProject(control, previousProjectMenus, message) {
         testId => testId.startsWith('project-menu-') && !previousProjectMenus.has(testId)
       )
     ) {
+      return snapshot
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(message)
+}
+
+async function waitForStableCloudProjectMenu(control, previousProjectMenus, message) {
+  const startedAt = Date.now()
+  let candidate = null
+  let candidateSince = 0
+  while (Date.now() - startedAt < WORKBENCH_READY_TIMEOUT_MS) {
+    const snapshot = JSON.parse(await control.command('snapshot', 'body'))
+    const current = snapshot.testIds.filter(
+      testId => testId.startsWith('project-menu-') && !previousProjectMenus.has(testId)
+    )
+    const projectMenuTestId = current.length === 1 ? current[0] : null
+    if (projectMenuTestId !== candidate) {
+      candidate = projectMenuTestId
+      candidateSince = Date.now()
+    } else if (
+      projectMenuTestId &&
+      Date.now() - candidateSince >= COMPOSER_READY_STABILITY_MS * 2
+    ) {
+      return projectMenuTestId
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(message)
+}
+
+async function waitForGitCloneProject(control, previousProjectMenus, targetPath, message) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < WORKBENCH_READY_TIMEOUT_MS) {
+    const snapshot = JSON.parse(await control.command('snapshot', 'body'))
+    const projectAdded = snapshot.testIds.some(
+      testId => testId.startsWith('project-menu-') && !previousProjectMenus.has(testId)
+    )
+    const clonePending = snapshot.testIds.some(testId =>
+      testId.startsWith('git-clone-project-operation-')
+    )
+    const targetExists = await access(targetPath)
+      .then(() => true)
+      .catch(() => false)
+    if (projectAdded && !clonePending && targetExists) {
       return snapshot
     }
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -292,12 +344,229 @@ async function verifyCloudWorkspacePathMentions({ composerSelector, control, wor
   )
 }
 
+async function verifyPluginWorkspacePublication({ cloudEnvironment, control }) {
+  await control.command('waitFor', '[data-testid="sidebar-cloud-connection-button"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  let restoredBackendUrl = ''
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const rawConnection = await control.command('getLocalStorageItem', 'body', {
+      value: 'wework.cloudConnection',
+    })
+    restoredBackendUrl = JSON.parse(rawConnection || '{}').backendUrl || ''
+    if (restoredBackendUrl === cloudEnvironment.backendUrl) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.equal(
+    restoredBackendUrl,
+    cloudEnvironment.backendUrl,
+    'Desktop cloud preferences did not replace the stale renderer connection'
+  )
+
+  const taskAddress = await cloudEnvironment.createPluginWorkspaceTask()
+  const taskId = taskAddress.taskId
+  const runtimeTask = await cloudEnvironment.waitForRuntimeTask(taskAddress)
+  const taskWorkspace = runtimeTask.workspacePath
+  const pluginRoot = join(taskWorkspace, 'plugins', 'cloud-workspace-e2e')
+  await mkdir(join(pluginRoot, '.codex-plugin'), { recursive: true })
+  await mkdir(join(pluginRoot, 'skills', 'cloud-draft'), { recursive: true })
+  await writeFile(
+    join(pluginRoot, '.codex-plugin', 'plugin.json'),
+    `${JSON.stringify(
+      {
+        name: 'cloud-workspace-e2e',
+        version: '1.0.0',
+        description: 'Cloud Plugin Creator Task workspace E2E',
+        author: { name: 'Wework E2E' },
+        skills: './skills/',
+        interface: {
+          displayName: 'Cloud Workspace E2E',
+          shortDescription: 'Verifies Task workspace publication',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  )
+  await writeFile(
+    join(pluginRoot, 'skills', 'cloud-draft', 'SKILL.md'),
+    '---\nname: cloud-draft\ndescription: Verify Task workspace publication.\n---\n',
+    'utf8'
+  )
+
+  const described = await cloudEnvironment.describePluginWorkspace(
+    pluginRoot,
+    taskWorkspace,
+    taskId
+  )
+  assert.equal(described.status, 'ready')
+  assert.equal(described.relativePath, 'plugins/cloud-workspace-e2e')
+  await cloudEnvironment.restartCloudExecutor()
+
+  const readyMarker = `[WEGENT_PLUGIN_RESULT]${JSON.stringify(described)}`
+  await cloudEnvironment.sendPluginWorkspaceResult(taskAddress, readyMarker)
+  await control.command('navigate', 'body', { value: '/' })
+  const taskRowSelector = `[data-testid="runtime-local-task-row-${taskId}"]`
+  await control.command('waitFor', taskRowSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', taskRowSelector, {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="plugin-workspace-result"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid="plugin-creator-publish-plugin"]')
+  await control.command('waitFor', '[data-testid="plugin-share-intent-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  const intentSnapshot = JSON.parse(
+    await control.command('snapshot', '[data-testid="plugin-share-intent-dialog"]')
+  )
+  assert.ok(intentSnapshot.testIds.includes('plugin-share-intent-restricted'))
+  assert.ok(intentSnapshot.testIds.includes('plugin-share-intent-enterprise'))
+  assert.equal(
+    intentSnapshot.testIds.some(testId => /organization|workspace|public/.test(testId)),
+    false,
+    'The share intent dialog exposed a third organization/public scope'
+  )
+  await control.command('click', '[data-testid="plugin-share-intent-continue"]')
+  await control.command('waitFor', '[data-testid="plugin-share-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  const [shareDialogBeforeSearch] = JSON.parse(
+    await control.command('getElementMetrics', '[data-testid="plugin-share-dialog"]')
+  )
+  await control.command('fill', '[data-testid="plugin-share-search"]', {
+    value: 'admin',
+  })
+  await control.command('waitFor', '[data-testid="plugin-share-search-results"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await new Promise(resolve => setTimeout(resolve, 400))
+  const [shareDialogAfterSearch] = JSON.parse(
+    await control.command('getElementMetrics', '[data-testid="plugin-share-dialog"]')
+  )
+  assert.ok(
+    Math.abs(shareDialogAfterSearch.top - shareDialogBeforeSearch.top) <= 1,
+    `Member search moved the centered dialog from ${shareDialogBeforeSearch.top}px to ${shareDialogAfterSearch.top}px`
+  )
+  assert.ok(
+    Math.abs(shareDialogAfterSearch.height - shareDialogBeforeSearch.height) <= 1,
+    `Member search changed the dialog height from ${shareDialogBeforeSearch.height}px to ${shareDialogAfterSearch.height}px`
+  )
+  await control.command('click', '[data-testid="plugin-share-back"]')
+  await control.command('waitFor', '[data-testid="plugin-share-intent-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid="plugin-share-intent-enterprise"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-share-intents.png')
+  await control.command('click', '[data-testid="plugin-share-intent-continue"]')
+  await control.command('waitFor', '[data-testid="plugin-publication-step-version"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-publication-version.png')
+  await control.command('click', '[data-testid="plugin-publication-overlay"]')
+  await control.command('waitFor', '[data-testid="plugin-creator-publish-plugin"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid="plugin-creator-publish-plugin"]')
+  await control.command('waitFor', '[data-testid="plugin-share-intent-dialog"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('clickWhenEnabled', '[data-testid="plugin-share-intent-enterprise"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('click', '[data-testid="plugin-share-intent-continue"]')
+  await control.command('waitFor', '[data-testid="plugin-publication-step-version"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await control.command('fill', '[data-testid="plugin-publication-release-notes"]', {
+    value: 'Exercise',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-release-notes"]', {
+    value: 'Exercise the immutable enterprise',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-release-notes"]', {
+    value: 'Exercise the immutable enterprise publication workflow.',
+  })
+  await control.command('clickWhenEnabled', '[data-testid="plugin-publication-next-risk"]')
+  await control.command('fill', '[data-testid="plugin-publication-test-notes"]', {
+    value: 'Desktop E2E',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-test-notes"]', {
+    value: 'Desktop E2E verified the personal plugin',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-test-notes"]', {
+    value: 'Desktop E2E verified the personal plugin and enterprise request flow.',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-additional-notes"]', {
+    value: 'Automated',
+  })
+  await control.command('fill', '[data-testid="plugin-publication-additional-notes"]', {
+    value: 'Automated risk-step typing regression verified.',
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-publication-risk.png')
+  await control.command('clickWhenEnabled', '[data-testid="plugin-publication-next-confirm"]')
+  await control.command('waitFor', '[data-testid="plugin-publication-step-confirm"]', {
+    text: 'Automated risk-step typing regression verified.',
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-publication-confirm.png')
+  await control.command('click', '[data-testid="plugin-publication-declaration"]')
+  await control.command('clickWhenEnabled', '[data-testid="plugin-publication-submit"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('waitFor', '[data-testid="plugin-workspace-result"]', {
+    text: '已提交审核',
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+
+  await control.command('navigate', 'body', { value: '/plugins' })
+  await control.command('waitFor', '[data-testid="plugins-workspace"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await control.command('fill', '[data-testid="plugins-search-input"]', {
+    value: 'Cloud Workspace E2E',
+  })
+  await control.command('click', '[data-testid="plugins-distribution-tab-personal"]')
+  await control.command('waitFor', '[data-testid^="plugin-marketplace-row-"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  const snapshot = JSON.parse(await control.command('snapshot', 'body'))
+  const publishedRow = snapshot.testIds.find(testId => testId.startsWith('plugin-marketplace-row-'))
+  assert.match(
+    publishedRow ?? '',
+    /^plugin-marketplace-row-\d+$/,
+    'The result-card publication did not create a marketplace plugin row'
+  )
+  assert.ok(snapshot.text.includes('Cloud Workspace E2E'))
+  await captureVerificationScreenshot(control, 'cloud-plugin-workspace-published.png')
+
+  await control.command('click', `[data-testid="${publishedRow}"]`)
+  await control.command('waitFor', '[data-testid^="plugin-publication-card-"]', {
+    timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-personal-detail.png')
+  await control.command('clickWhenEnabled', '[data-testid^="plugin-publication-view-progress-"]')
+  await control.command('waitFor', '[data-testid="plugin-publication-progress-drawer"]', {
+    timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+  })
+  await captureVerificationScreenshot(control, 'cloud-plugin-publication-submitted.png')
+}
+
 async function verifyCloudCheckpoint({
   app,
+  appBundlePath,
   appIdentifier,
   cloudEnvironment,
+  codexHome,
   control,
   desktopScenario,
+  executorLogPath,
   restartDesktopApp,
   setPhase,
   workspacePath,
@@ -328,34 +597,41 @@ async function verifyCloudCheckpoint({
   }
 
   if (checkpoint === 'plugin-auto-update') {
+    setPhase('cloud-plugin-auto-update-disable-codex-rpc')
+    await cloudEnvironment.restartCloudExecutorWithoutCodexPluginRpc()
     setPhase('cloud-plugin-auto-update-fixtures')
     await cloudEnvironment.seedPluginAutoUpdateFixtures(6)
-    setPhase('cloud-plugin-auto-update')
-    await control.command('navigate', 'body', { value: '/plugins' })
-    await control.command('waitFor', '[data-testid="plugins-workspace"]', {
-      timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
-    })
-    await control.command('waitFor', '[data-testid="plugin-operation-notice"]', {
-      text: '6',
-      timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
-    })
+    setPhase('cloud-plugin-auto-update-release-push')
     const completionDeadline = Date.now() + WORKBENCH_READY_TIMEOUT_MS
-    let noticeKind = ''
+    let completionError = null
     while (Date.now() < completionDeadline) {
-      noticeKind = await control
-        .command('getAttribute', '[data-testid="plugin-operation-notice"]', {
-          value: 'data-notice-kind',
-        })
-        .catch(() => '')
-      if (noticeKind === 'success') break
+      try {
+        await cloudEnvironment.assertPluginAutoUpdateComplete(codexHome, 6)
+        completionError = null
+        break
+      } catch (error) {
+        completionError = error
+      }
       await new Promise(resolve => setTimeout(resolve, 100))
     }
-    assert.equal(
-      noticeKind,
-      'success',
-      'Plugin auto-update did not finish successfully in the real Tauri application'
-    )
-    await cloudEnvironment.assertPluginAutoUpdateComplete(6)
+    if (completionError) {
+      throw new Error(
+        'Published release events did not auto-update plugins outside the plugin page',
+        { cause: completionError }
+      )
+    }
+    setPhase('cloud-plugin-auto-update-without-codex-rpc')
+    await cloudEnvironment.syncPluginAutoUpdatesToCloudDevice()
+    await cloudEnvironment.assertPluginAutoUpdateComplete(cloudEnvironment.remoteCodexHome, 6)
+    return
+  }
+
+  if (checkpoint === 'plugin-workspace-publication') {
+    setPhase('cloud-plugin-workspace-publication')
+    await verifyPluginWorkspacePublication({
+      cloudEnvironment,
+      control,
+    })
     return
   }
 
@@ -369,7 +645,7 @@ async function verifyCloudCheckpoint({
     control,
     workspacePath
   )
-  const executorLogPath = cloudEnvironment.remoteExecutorLogPath
+  const remoteExecutorLogPath = cloudEnvironment.remoteExecutorLogPath
 
   switch (checkpoint) {
     case 'cloud-git-worktree':
@@ -414,6 +690,7 @@ async function verifyCloudCheckpoint({
       setPhase('cloud-window-lifecycle')
       await verifyBackgroundTaskWindowLifecycle({
         app,
+        appBundlePath,
         appIdentifier,
         composerSelector,
         control,
@@ -424,9 +701,17 @@ async function verifyCloudCheckpoint({
       return
     case 'goal-lifecycle':
       setPhase('cloud-goal-busy-handoff')
-      await verifyBusyTurnGoalHandoff({ composerSelector, control, executorLogPath })
+      await verifyBusyTurnGoalHandoff({
+        composerSelector,
+        control,
+        executorLogPath: remoteExecutorLogPath,
+      })
       setPhase('cloud-goal-idle-unread')
-      await verifyActiveGoalIdleUnreadLifecycle({ composerSelector, control, executorLogPath })
+      await verifyActiveGoalIdleUnreadLifecycle({
+        composerSelector,
+        control,
+        executorLogPath: remoteExecutorLogPath,
+      })
       setPhase('cloud-goal-restart-recovery')
       await verifyCloudGoalRestartRecoveryLifecycle({
         composerSelector,
@@ -472,6 +757,7 @@ async function verifyCloudCheckpoint({
       setPhase('cloud-attachment-sidebar')
       await verifyAttachmentOnlySidebarLifecycle({
         app,
+        appBundlePath,
         appIdentifier,
         composerSelector,
         control,

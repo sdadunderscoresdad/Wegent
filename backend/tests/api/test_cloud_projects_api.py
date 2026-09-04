@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import io
 import json
+from contextlib import contextmanager
 from datetime import datetime
 from typing import BinaryIO
 
@@ -32,8 +33,10 @@ from app.models.kind import Kind
 from app.models.loop_item_execution import LoopItemExecution
 from app.models.project import Project
 from app.models.user import User
+from app.services.auth import create_task_token
 from app.services.cloud_files import cloud_file_service
 from app.services.delivery import delivery_service
+from app.services.loop_items.external_provider import external_loop_item_provider
 
 
 class FakeProviderResponse:
@@ -880,16 +883,22 @@ def test_backend_routes_cloud_github_issues_without_exposing_token(
         "closed_at": None,
     }
     requests: list[tuple[str, str, object]] = []
+    provider_params: list[object] = []
 
     def provider_request(
         method: str, url: str, **kwargs: object
     ) -> FakeProviderResponse:
         requests.append((method, url, kwargs.get("json")))
-        if method == "GET":
+        provider_params.append(kwargs.get("params"))
+        if method == "GET" and url.endswith("/issues"):
             return FakeProviderResponse([created_issue])
+        if method == "PATCH" and isinstance(kwargs.get("json"), dict):
+            created_issue.update(kwargs["json"])
         return FakeProviderResponse(created_issue)
 
-    monkeypatch.setattr(httpx, "request", provider_request)
+    monkeypatch.setattr(
+        external_loop_item_provider._http_client, "request", provider_request
+    )
     project = test_client.post(
         "/api/v1/cloud-projects",
         headers=_auth(test_token),
@@ -908,15 +917,35 @@ def test_backend_routes_cloud_github_issues_without_exposing_token(
         f"/api/v1/cloud-projects/{project['id']}/loop-items",
         headers=_auth(test_token),
     )
+    paged = test_client.get(
+        f"/api/v1/cloud-projects/{project['id']}/loop-item-pages",
+        headers=_auth(test_token),
+        params={"status": "in_progress", "limit": 25},
+    )
     created = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/loop-items",
         headers=_auth(test_token),
         json={"title": "Backend issue", "status": "in_progress", "tags": ["bug"]},
     )
+    archived = test_client.delete(
+        "/api/v1/loop-items/CLOUDGH-7",
+        headers=_auth(test_token),
+    )
 
     assert listed.status_code == 200
     assert listed.json()["items"][0]["id"] == "CLOUDGH-7"
+    assert paged.status_code == 200
+    assert paged.json()["items"][0]["description"] == ""
+    assert paged.json()["items"][0]["detail_loaded"] is False
+    assert any(
+        isinstance(params, dict)
+        and params.get("state") == "open"
+        and params.get("labels") == "wegent:status:in_progress"
+        for params in provider_params
+    )
     assert created.status_code == 201
+    assert archived.status_code == 204
+    assert any(payload == {"state": "closed"} for _, _, payload in requests)
     assert any(method == "POST" for method, _, _ in requests)
     assert all("server-only-secret" not in str(payload) for _, _, payload in requests)
 
@@ -967,7 +996,9 @@ def test_public_github_project_enforces_issue_ownership(
         number = int(url.rsplit("/", 1)[-1])
         return FakeProviderResponse(issues[number])
 
-    monkeypatch.setattr(httpx, "request", provider_request)
+    monkeypatch.setattr(
+        external_loop_item_provider._http_client, "request", provider_request
+    )
     project = test_client.post(
         "/api/v1/cloud-projects",
         headers=_auth(test_token),
@@ -991,7 +1022,8 @@ def test_public_github_project_enforces_issue_ownership(
     by_id = {item["id"]: item for item in listed.json()["items"]}
     assert by_id["PUBLICGH-1"]["description"] == ""
     assert by_id["PUBLICGH-1"]["can_view_detail"] is False
-    assert by_id["PUBLICGH-2"]["description"] == "visitor details"
+    assert by_id["PUBLICGH-2"]["description"] == ""
+    assert by_id["PUBLICGH-2"]["detail_loaded"] is False
     assert by_id["PUBLICGH-2"]["created_by_user_name"] == visitor.user_name
     assert by_id["PUBLICGH-2"]["can_edit"] is True
 
@@ -1003,6 +1035,8 @@ def test_public_github_project_enforces_issue_ownership(
     )
     assert hidden.status_code == 404
     assert visible.status_code == 200
+    assert visible.json()["description"] == "visitor details"
+    assert visible.json()["detail_loaded"] is True
 
 
 def test_backend_routes_gitlab_updates_and_comments(
@@ -1045,7 +1079,9 @@ def test_backend_routes_gitlab_updates_and_comments(
             )
         return FakeProviderResponse(issue)
 
-    monkeypatch.setattr(httpx, "request", provider_request)
+    monkeypatch.setattr(
+        external_loop_item_provider._http_client, "request", provider_request
+    )
     project = test_client.post(
         "/api/v1/cloud-projects",
         headers=_auth(test_token),
@@ -1275,11 +1311,8 @@ def test_loop_item_ai_assignee_is_project_scoped_and_exclusive(
         json={
             "name": "Reviewer",
             "runtime": "codex",
-            "model": None,
             "systemPrompt": "Verify before reporting completion.",
             "capabilityDescription": "Reviews backend changes and test evidence.",
-            "executionEnvironment": "cloud",
-            "executionDeviceId": "api-cloud-dev-1",
         },
     ).json()
     item = test_client.post(
@@ -1306,7 +1339,7 @@ def test_loop_item_ai_assignee_is_project_scoped_and_exclusive(
     assert reassigned.json()["assignee_agent_id"] is None
 
 
-def test_cloud_project_robot_binds_local_project(
+def test_cloud_project_robot_binds_default_runtime_profile(
     test_client: TestClient,
     test_db: Session,
     test_user: User,
@@ -1331,36 +1364,60 @@ def test_cloud_project_robot_binds_local_project(
         headers=_auth(test_token),
         json={"project_key": "robotbind", "name": "Robot binding"},
     ).json()
+    first_profile = test_client.post(
+        "/api/v1/runtime-profiles",
+        headers=_auth(test_token),
+        json={
+            "name": "Local Runtime 1",
+            "executionEnvironment": "local",
+            "executionDeviceId": "api-local-dev-1",
+            "model": "model-1",
+            "workspacePolicy": "project",
+        },
+    ).json()
     agent = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/chat-agents",
         headers=_auth(test_token),
         json={
             "name": "Bound Reviewer",
             "runtime": "codex",
-            "executionEnvironment": "local",
-            "executionDeviceId": "api-local-dev-1",
-            "localProjectId": 91,
+            "defaultRuntimeProfileId": first_profile["id"],
         },
     )
     assert agent.status_code == 201
     body = agent.json()
-    assert body["localProjectId"] == 91
+    assert body["defaultRuntimeProfileId"] == first_profile["id"]
+    assert body["localProjectId"] is None
 
+    second_profile = test_client.post(
+        "/api/v1/runtime-profiles",
+        headers=_auth(test_token),
+        json={
+            "name": "Local Runtime 2",
+            "executionEnvironment": "local",
+            "executionDeviceId": "api-local-dev-1",
+            "model": "model-2",
+            "workspacePolicy": "git_worktree",
+        },
+    ).json()
     updated = test_client.patch(
         f"/api/v1/cloud-projects/{project['id']}/chat-agents/{body['id']}",
         headers=_auth(test_token),
-        json={"version": body["version"], "localProjectId": 92},
+        json={
+            "version": body["version"],
+            "defaultRuntimeProfileId": second_profile["id"],
+        },
     )
     assert updated.status_code == 200
-    assert updated.json()["localProjectId"] == 92
+    assert updated.json()["defaultRuntimeProfileId"] == second_profile["id"]
 
     cleared = test_client.patch(
         f"/api/v1/cloud-projects/{project['id']}/chat-agents/{body['id']}",
         headers=_auth(test_token),
-        json={"version": updated.json()["version"], "localProjectId": None},
+        json={"version": updated.json()["version"], "defaultRuntimeProfileId": None},
     )
     assert cleared.status_code == 200
-    assert cleared.json()["localProjectId"] is None
+    assert cleared.json()["defaultRuntimeProfileId"] is None
 
 
 def test_project_automation_webhook_verifies_github_signature(
@@ -1403,8 +1460,6 @@ def test_project_automation_webhook_verifies_github_signature(
         json={
             "name": "Dispatcher",
             "runtime": "codex",
-            "executionEnvironment": "cloud",
-            "executionDeviceId": "hook-cloud-device",
         },
     ).json()
     rule = test_client.post(
@@ -1516,7 +1571,9 @@ def test_project_automation_webhook_verifies_github_signature(
         f"/api/v1/cloud-projects/{project['id']}/automations/{rule['id']}/run",
         headers=_auth(test_token),
     )
-    assert manual_response.status_code == 409
+    assert manual_response.status_code == 200, manual_response.text
+    assert manual_response.json()["trigger"] == "manual"
+    assert manual_response.json()["automationId"] == rule["id"]
 
 
 def test_project_automation_webhook_verifies_gitlab_token(
@@ -1626,14 +1683,24 @@ def test_cloud_project_automation_creates_generic_task_for_cloud_robot(
         headers=_auth(test_token),
         json={"project_key": "automation", "name": "Project automation"},
     ).json()
+    runtime_profile = test_client.post(
+        "/api/v1/runtime-profiles",
+        headers=_auth(test_token),
+        json={
+            "name": "Automation cloud Runtime",
+            "executionEnvironment": "cloud",
+            "executionDeviceId": "automation-cloud-device",
+            "model": "test-model",
+            "workspacePolicy": "project",
+        },
+    ).json()
     agent = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/chat-agents",
         headers=_auth(test_token),
         json={
             "name": "Project assistant",
             "runtime": "codex",
-            "executionEnvironment": "cloud",
-            "executionDeviceId": "automation-cloud-device",
+            "defaultRuntimeProfileId": runtime_profile["id"],
         },
     ).json()
 
@@ -1652,7 +1719,8 @@ def test_cloud_project_automation_creates_generic_task_for_cloud_robot(
     assert created.status_code == 201
     rule = created.json()
     assert rule["agentId"] == agent["id"]
-    assert rule["executionEnvironment"] == "cloud"
+    assert rule["runtimeSource"] == "agent_default"
+    assert rule["runtimeProfileId"] is None
     assert rule["nextRunAt"] is not None
     assert rule["nextRunAt"].endswith("Z")
 
@@ -1702,6 +1770,17 @@ def test_cloud_project_automation_supports_managed_executor_sources(
         headers=_auth(test_token),
         json={"project_key": "managed", "name": "Managed automation"},
     ).json()
+    runtime_profile = test_client.post(
+        "/api/v1/runtime-profiles",
+        headers=_auth(test_token),
+        json={
+            "name": "Managed Runtime",
+            "executionEnvironment": "local",
+            "executionDeviceId": "desktop-a",
+            "model": "model-a",
+            "workspacePolicy": "project",
+        },
+    ).json()
 
     custom = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/automations",
@@ -1711,17 +1790,16 @@ def test_cloud_project_automation_supports_managed_executor_sources(
             "prompt": "Read the project and handle the event.",
             "assignmentMode": "ai_managed",
             "managerType": "custom",
-            "model": "model-a",
-            "executionEnvironment": "local",
-            "executionDeviceId": "desktop-a",
+            "runtimeSource": "fixed_profile",
+            "runtimeProfileId": runtime_profile["id"],
             "cronExpression": "0 3 * * *",
         },
     )
     assert custom.status_code == 201, custom.text
     assert custom.json()["assignmentMode"] == "ai_managed"
     assert custom.json()["managerType"] == "custom"
-    assert custom.json()["model"] == "model-a"
-    assert custom.json()["executionDeviceId"] == "desktop-a"
+    assert custom.json()["runtimeSource"] == "fixed_profile"
+    assert custom.json()["runtimeProfileId"] == runtime_profile["id"]
     assert custom.json()["agentId"] is None
 
     team = _create_runnable_wegent_team(
@@ -1850,11 +1928,59 @@ def test_cloud_project_manual_automation_waits_for_runtime_truth_after_local_cla
             },
         )
     )
+    test_db.add(
+        Kind(
+            kind="Device",
+            name="automation-runtime-device",
+            namespace="default",
+            user_id=test_user.id,
+            is_active=True,
+            json={
+                "spec": {
+                    "deviceType": "local",
+                    "runtimeInstanceId": "runtime-automation-local",
+                },
+                "metadata": {"name": "automation-runtime-device"},
+            },
+        )
+    )
+    test_db.add(
+        Kind(
+            kind="Model",
+            name="test-model",
+            namespace="default",
+            user_id=0,
+            is_active=True,
+            json={
+                "spec": {
+                    "modelConfig": {
+                        "env": {
+                            "model": "claude",
+                            "model_id": "test-model",
+                            "api_key": "test-key",
+                            "base_url": "https://runtime.example.com",
+                        }
+                    }
+                }
+            },
+        )
+    )
     test_db.commit()
     project = test_client.post(
         "/api/v1/cloud-projects",
         headers=_auth(test_token),
         json={"project_key": "autolocal", "name": "Local automation"},
+    ).json()
+    runtime_profile = test_client.post(
+        "/api/v1/runtime-profiles",
+        headers=_auth(test_token),
+        json={
+            "name": "Local automation Runtime",
+            "executionEnvironment": "local",
+            "executionDeviceId": "automation-local-device",
+            "model": "test-model",
+            "workspacePolicy": "project",
+        },
     ).json()
     agent = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/chat-agents",
@@ -1862,8 +1988,7 @@ def test_cloud_project_manual_automation_waits_for_runtime_truth_after_local_cla
         json={
             "name": "Local bug fixer",
             "runtime": "codex",
-            "executionEnvironment": "local",
-            "executionDeviceId": "automation-local-device",
+            "defaultRuntimeProfileId": runtime_profile["id"],
         },
     ).json()
     rule = test_client.post(
@@ -1888,54 +2013,78 @@ def test_cloud_project_manual_automation_waits_for_runtime_truth_after_local_cla
     assert run["status"] == "queued"
     assert run["taskId"]
     assert run["expiresAt"] is None
+    queued_execution = (
+        test_db.query(LoopItemExecution)
+        .filter(LoopItemExecution.automation_run_id == run["id"])
+        .one()
+    )
+    assert queued_execution.status == "queued"
+    assert queued_execution.execution_device_id == "automation-local-device"
+    assert queued_execution.execution_environment == "local"
+    assert queued_execution.executor_owner_user_id == test_user.id
+
+    from app.services.device.capacity import RuntimeCapacity
+    from app.services.loop_item_executions.device_pull import (
+        acknowledge_execution,
+        pull_execution,
+    )
 
     monkeypatch.setattr(
-        "app.services.device.capacity.cache_manager.get_sync",
-        lambda _key: {
-            "runtime_instance_id": "runtime-automation-local",
-            "runtime_capacity": {
-                "limit": 1,
-                "active": 0,
-                "active_task_ids": [],
-                "queued": 0,
-            },
-        },
+        "app.services.loop_item_executions.device_pull."
+        "validate_runtime_capacity_observation_sync",
+        lambda *_args, **_kwargs: RuntimeCapacity(
+            runtime_instance_id="runtime-automation-local",
+            limit=1,
+            active=0,
+            active_task_ids=frozenset(),
+            queued=0,
+        ),
     )
-    claimed = test_client.post(
-        "/api/v1/loop-item-executions/claim-my-next",
-        headers=_auth(test_token),
-        json={
-            "executionDeviceId": "automation-local-device",
-            "leaseSeconds": 300,
-        },
+    monkeypatch.setattr(
+        "app.services.loop_item_executions.service._runtime_capacity_used",
+        lambda *_args, **_kwargs: 0,
     )
-    assert claimed.status_code == 200, claimed.text
-    execution = claimed.json()
-    assert execution["executionDeviceId"] == "automation-local-device"
-    assert execution["status"] == "claimed"
-    assert execution["displayState"] == "starting"
-    assert execution["observedState"] == "unconfirmed"
-    assert execution["automationRunId"] == run["id"]
-    assert "executionPayload" not in execution
-    assert execution["runtimePayload"]["message"]
-    assert "executionRequest" not in execution["runtimePayload"]
-    assert "executorProfile" not in execution
-    assert "modelId" not in execution["runtimePayload"]
 
-    started_runtime = test_client.post(
-        f"/api/v1/cloud-projects/{project['id']}/executions/{execution['id']}/runtime-start",
-        headers=_auth(test_token),
-        json={
-            "runtime_device_id": "automation-local-device",
-            "runtime_task_id": execution["runtimeTaskId"],
-            "prompt": "Scan bugs.",
+    @contextmanager
+    def test_db_session():
+        yield test_db
+
+    monkeypatch.setattr(
+        "app.services.loop_item_executions.device_pull.get_db_session",
+        test_db_session,
+    )
+
+    pulled = pull_execution(
+        owner_user_id=test_user.id,
+        execution_target_id="automation-local-device",
+        runtime_device_id="automation-runtime-device",
+        runtime_instance_id="runtime-automation-local",
+        environment="local",
+        runtime_capacity={
+            "limit": 1,
+            "active": 0,
+            "active_task_ids": [],
+            "queued": 0,
         },
     )
-    assert started_runtime.status_code == 200, started_runtime.text
-    accepted = started_runtime.json()
-    assert accepted["status"] == "claimed"
-    assert accepted["displayState"] == "waiting_runtime"
-    assert accepted["observedState"] == "accepted"
+    assert pulled["success"], pulled
+    task = pulled["task"]
+    assert task is not None
+    assert task["payload"]["message"]
+    assert task["payload"]["executionRequest"]["model_config"]
+    assert task["payload"]["modelId"] == "test-model"
+
+    accepted = acknowledge_execution(
+        owner_user_id=test_user.id,
+        runtime_device_id="automation-runtime-device",
+        runtime_instance_id="runtime-automation-local",
+        execution_id=task["execution_id"],
+        runtime_task_id=task["runtime_task_id"],
+        accepted=True,
+        prompt="Scan bugs.",
+        error=None,
+    )
+    assert accepted == {"success": True}
 
     runs = test_client.get(
         f"/api/v1/cloud-projects/{project['id']}/automations/{rule['id']}/runs",
@@ -1971,8 +2120,14 @@ def test_ai_manager_assignment_endpoint_applies_tool_selected_member(
         status="enabled",
         created_by_user_id=test_user.id,
         metadata_json={
-            "assignment_mode": "ai_managed",
-            "manager_type": "custom",
+            "action": "ai_assign",
+            "role": {"source": "generic", "agent_id": None},
+            "runtime": {
+                "source": "issue_creator",
+                "runtime_profile_id": None,
+                "user_id": None,
+            },
+            "manager": {"type": "custom", "wegent_team_id": None},
         },
     )
     run = ProjectAutomationRun(
@@ -1987,10 +2142,16 @@ def test_ai_manager_assignment_endpoint_applies_tool_selected_member(
     )
     test_db.add_all([rule, run])
     test_db.commit()
+    task_token = create_task_token(
+        task_id=0,
+        subtask_id=0,
+        user_id=test_user.id,
+        user_name=test_user.user_name,
+    )
 
     assigned = test_client.post(
         f"/api/v1/cloud-projects/{project['id']}/automation-runs/{run.id}/assign",
-        headers=_auth(test_token),
+        headers=_auth(task_token),
         json={"assigneeType": "user", "assigneeId": str(test_user.id)},
     )
 
