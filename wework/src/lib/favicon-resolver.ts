@@ -26,6 +26,65 @@ interface UrlMetadataResult {
 const faviconCache = new Map<string, FaviconCacheEntry>()
 const pendingByDomain = new Map<string, Promise<string | undefined>>()
 
+interface ProbeSubscriber {
+  onLoad: () => void
+  onError: () => void
+}
+
+interface ProbeState {
+  pending: boolean
+  loaded: boolean
+  subscribers: ProbeSubscriber[]
+}
+
+/**
+ * In-flight and resolved image probes, keyed by the icon URL. Pasting many
+ * links from the same site would otherwise create one `<img>` probe per chip
+ * for the identical `/favicon.ico`; sharing the probe keeps that to a single
+ * load per site.
+ */
+const probeByIconUrl = new Map<string, ProbeState>()
+
+/**
+ * Drops in-flight and resolved probe state so subsequent chips start from a
+ * clean slate. Mirrors Codex's per-node-view icon registry teardown: editor
+ * and component tests call this between cases to avoid sharing probe state
+ * across a jsdom run where images never settle.
+ */
+export function resetFaviconProbeCache(): void {
+  probeByIconUrl.clear()
+}
+
+function probeIconOnce(iconUrl: string, onLoad: () => void, onError: () => void): void {
+  const existing = probeByIconUrl.get(iconUrl)
+  if (existing?.loaded) {
+    onLoad()
+    return
+  }
+  if (existing?.pending) {
+    existing.subscribers.push({ onLoad, onError })
+    return
+  }
+  const state: ProbeState = { pending: true, loaded: false, subscribers: [{ onLoad, onError }] }
+  probeByIconUrl.set(iconUrl, state)
+  const image = new Image()
+  image.onload = () => {
+    state.pending = false
+    state.loaded = true
+    const subscribers = state.subscribers
+    state.subscribers = []
+    for (const subscriber of subscribers) subscriber.onLoad()
+  }
+  image.onerror = () => {
+    state.pending = false
+    probeByIconUrl.delete(iconUrl)
+    const subscribers = state.subscribers
+    state.subscribers = []
+    for (const subscriber of subscribers) subscriber.onError()
+  }
+  image.src = iconUrl
+}
+
 /**
  * Best-effort favicon lookup for a URL. Returns the site's real favicon when
  * the backend resolves it, otherwise undefined so callers keep the generic
@@ -117,8 +176,9 @@ export function evictFaviconCache(url: string): void {
  * loaded, wins over the placeholder. If the backend favicon fails to load —
  * e.g. a site that serves HTML at `/favicon.ico` — the cache entry is evicted
  * so the next render re-resolves instead of showing the generic icon for the
- * whole cache TTL. `faviconPromise` is passed in so callers can provide a
- * mocked resolution in tests.
+ * whole cache TTL. Probes are shared per icon URL, so chips pasted from the
+ * same site resolve their placeholder once. `faviconPromise` is passed in so
+ * callers can provide a mocked resolution in tests.
  */
 export function resolveAndProbeIcon(
   url: string,
@@ -128,20 +188,18 @@ export function resolveAndProbeIcon(
 ): void {
   const placeholder = faviconPlaceholderUrl(url)
   let backendIconShown = false
-  const probe = (candidate: string, onLoad: () => void, onError?: () => void): void => {
-    const image = new Image()
-    image.onload = onLoad
-    image.onerror = () => onError?.()
-    image.src = candidate
-  }
   if (placeholder) {
-    probe(placeholder, () => {
-      if (!isDisposed() && !backendIconShown) show(placeholder)
-    })
+    probeIconOnce(
+      placeholder,
+      () => {
+        if (!isDisposed() && !backendIconShown) show(placeholder)
+      },
+      () => undefined
+    )
   }
   void faviconPromise.then(favicon => {
     if (!favicon || isDisposed()) return
-    probe(
+    probeIconOnce(
       favicon,
       () => {
         if (isDisposed()) return

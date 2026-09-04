@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Activity, createRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { PluginReference } from '@/features/plugins/pluginNavigation'
-import { GENERIC_LINK_ICON_SRC, resolveFavicon } from '@/lib/favicon-resolver'
+import {
+  GENERIC_LINK_ICON_SRC,
+  resetFaviconProbeCache,
+  resolveFavicon,
+} from '@/lib/favicon-resolver'
 import { GITHUB_ICON } from '@/lib/link-preview'
 import { ComposerProseMirrorEditor, type ComposerEditorHandle } from './ComposerProseMirrorEditor'
 import {
@@ -29,6 +33,7 @@ class MockImage {
 
 beforeEach(() => {
   resolveImageOnLoad = false
+  resetFaviconProbeCache()
   vi.stubGlobal('Image', MockImage)
 })
 
@@ -836,4 +841,53 @@ test('composer link chip falls back to a generic icon when a site icon fails to 
 test('preserves trailing punctuation after a recognized web URL', () => {
   const doc = createComposerDocument('See https://example.com/page.')
   expect(serializeComposerDocument(doc)).toBe('See [example.com/page](https://example.com/page).')
+})
+
+test('keeps the full URL when pasting a markdown link with parentheses', () => {
+  const { editorRef } = renderEditor('')
+  const editor = screen.getByTestId('composer-editor')
+
+  fireEvent.paste(editor, {
+    clipboardData: {
+      files: [],
+      getData: (type: string) =>
+        type === 'text/plain' ? '[wiki](https://en.wikipedia.org/wiki/Foo_(bar))' : '',
+      types: ['text/plain'],
+    },
+  })
+
+  const chip = screen.getByTestId('composer-link-chip')
+  expect(chip).toHaveAttribute('data-composer-link-url', 'https://en.wikipedia.org/wiki/Foo_(bar)')
+  expect(editorRef.current?.getSnapshot().value).toBe(
+    '[wiki](https://en.wikipedia.org/wiki/Foo_\\(bar\\))'
+  )
+})
+
+test('pastes HTML anchors as inline link chips', () => {
+  const { editorRef } = renderEditor('')
+  const editor = screen.getByTestId('composer-editor')
+
+  fireEvent.paste(editor, {
+    clipboardData: {
+      files: [],
+      getData: (type: string) => {
+        if (type === 'text/html') {
+          return '<p><a href="https://github.com/wecode-ai/Wegent/pull/2350">my pr</a></p>'
+        }
+        if (type === 'text/plain') return 'my pr'
+        return ''
+      },
+      types: ['text/html', 'text/plain'],
+    },
+  })
+
+  const chip = screen.getByTestId('composer-link-chip')
+  expect(chip).toHaveAttribute(
+    'data-composer-link-url',
+    'https://github.com/wecode-ai/Wegent/pull/2350'
+  )
+  expect(chip).toHaveTextContent('my pr')
+  expect(editorRef.current?.getSnapshot().value).toContain(
+    '[my pr](https://github.com/wecode-ai/Wegent/pull/2350)'
+  )
 })

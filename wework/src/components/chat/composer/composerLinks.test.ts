@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { resolveFavicon } from '@/lib/favicon-resolver'
-import { applyLinkIcon, type ComposerLinkPayload } from './composerLinks'
+import { resetFaviconProbeCache, resolveFavicon } from '@/lib/favicon-resolver'
+import {
+  applyLinkIcon,
+  escapeComposerLinkLabel,
+  escapeComposerLinkUrl,
+  parseComposerLinks,
+  type ComposerLinkPayload,
+} from './composerLinks'
+import { createComposerDocument, serializeComposerDocument } from './composerProseMirrorModel'
 
 vi.mock('@/lib/favicon-resolver', async () => {
   const actual =
@@ -27,6 +34,7 @@ function mountIcon(): HTMLImageElement {
 
 beforeEach(() => {
   resolveImageOnLoad = false
+  resetFaviconProbeCache()
   vi.mocked(resolveFavicon).mockReset()
   vi.mocked(resolveFavicon).mockResolvedValue(undefined)
   vi.stubGlobal('Image', MockImage)
@@ -67,5 +75,53 @@ describe('applyLinkIcon', () => {
 
     expect(resolveFavicon).toHaveBeenCalledWith('https://example.com/b')
     expect(icon.src).toBe('https://cdn.example.com/icon-b.png')
+  })
+})
+
+describe('Codex-style markdown link scanning', () => {
+  test('keeps the full URL when the destination contains balanced parentheses', () => {
+    const value = '[wiki](https://en.wikipedia.org/wiki/Foo_(bar))'
+    const links = parseComposerLinks(value)
+    expect(links).toHaveLength(1)
+    expect(links[0]?.url).toBe('https://en.wikipedia.org/wiki/Foo_(bar)')
+    expect(links[0]?.label).toBe('wiki')
+    expect(serializeComposerDocument(createComposerDocument(value))).toBe(
+      '[wiki](https://en.wikipedia.org/wiki/Foo_\\(bar\\))'
+    )
+  })
+
+  test('round-trips a URL whose destination ends with a closing parenthesis', () => {
+    const serialized = '[x](https://example.com/a_\\(b\\))'
+    const links = parseComposerLinks(serialized)
+    expect(links).toHaveLength(1)
+    expect(links[0]?.url).toBe('https://example.com/a_(b)')
+    expect(serializeComposerDocument(createComposerDocument(serialized))).toBe(serialized)
+  })
+
+  test('parses escaped brackets in the label and round-trips them', () => {
+    const value = '[a\\]b](https://example.com/x)'
+    const links = parseComposerLinks(value)
+    expect(links).toHaveLength(1)
+    expect(links[0]?.label).toBe('a]b')
+    expect(links[0]?.url).toBe('https://example.com/x')
+    expect(serializeComposerDocument(createComposerDocument(value))).toBe(value)
+  })
+
+  test('leaves an unbalanced destination as plain text', () => {
+    expect(parseComposerLinks('[x](https://example.com/a(b)')).toHaveLength(0)
+  })
+
+  test('does not span line breaks', () => {
+    expect(
+      parseComposerLinks('a [x](https://example.com/1)\nb [y](https://example.com/2)').map(
+        link => link.url
+      )
+    ).toEqual(['https://example.com/1', 'https://example.com/2'])
+    expect(parseComposerLinks('[a\nb](https://example.com/x)')).toHaveLength(0)
+  })
+
+  test('escapes labels and URLs for serialization', () => {
+    expect(escapeComposerLinkLabel('a]b\\c')).toBe('a\\]b\\\\c')
+    expect(escapeComposerLinkUrl('https://example.com/a_(b)')).toBe('https://example.com/a_\\(b\\)')
   })
 })

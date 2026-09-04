@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { GENERIC_LINK_ICON_SRC, resolveFavicon } from '@/lib/favicon-resolver'
+import {
+  GENERIC_LINK_ICON_SRC,
+  resetFaviconProbeCache,
+  resolveFavicon,
+} from '@/lib/favicon-resolver'
 import { GITHUB_ICON } from '@/lib/link-preview'
 import { ComposerLinkChip } from './ComposerLinkChip'
 
@@ -24,6 +28,7 @@ const GENERIC_URL = 'https://example.com/page'
 describe('ComposerLinkChip', () => {
   beforeEach(() => {
     resolveImageOnLoad = false
+    resetFaviconProbeCache()
     vi.mocked(resolveFavicon).mockReset()
     vi.mocked(resolveFavicon).mockResolvedValue(undefined)
     vi.stubGlobal('Image', MockImage)

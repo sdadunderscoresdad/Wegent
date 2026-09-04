@@ -24,6 +24,7 @@ import { isElectronRuntime } from '@/lib/runtime-environment'
 import { ComposerMentionNodeView } from './ComposerMentionNodeView'
 import { ComposerLinkNodeView } from './ComposerLinkNodeView'
 import type { ComposerLinkPayload } from './composerLinks'
+import { composerClipboardText, wrapComposerSelectionWithPastedUrl } from './composerPaste'
 import {
   allocateComposerDiagnosticId,
   classifyComposerInputData,
@@ -269,9 +270,11 @@ export const ComposerProseMirrorEditor = forwardRef<
         return true
       },
       handlePaste(view, event) {
-        const text =
-          event.clipboardData?.getData('text/plain') || event.clipboardData?.getData('text')
+        const clipboard = event.clipboardData
+        if (!clipboard) return false
+        const text = composerClipboardText(clipboard)
         if (!text) return false
+        if (wrapPastedUrlAroundSelection(view, text)) return true
         const pastedDocument = createComposerDocument(text)
         const transaction = view.state.tr.replaceSelection(new Slice(pastedDocument.content, 1, 1))
         view.dispatch(
@@ -592,6 +595,31 @@ function findComposerAtomFromDOMSelection(view: EditorView): HTMLElement | null 
       '[data-composer-skill-reference], [data-composer-link-url]'
     ) ?? null
   return atom && view.dom.contains(atom) ? atom : null
+}
+
+function wrapPastedUrlAroundSelection(view: EditorView, pastedText: string): boolean {
+  const { from, to } = view.state.selection
+  if (from === to) return false
+  const doc = view.state.doc
+  if (doc.resolve(from).parent !== doc.resolve(to).parent) return false
+  let containsAtom = false
+  doc.nodesBetween(from, to, node => {
+    if (node.isAtom) {
+      containsAtom = true
+      return false
+    }
+    return true
+  })
+  if (containsAtom) return false
+  const wrapped = wrapComposerSelectionWithPastedUrl({
+    value: serializeComposerDocument(doc),
+    selectionStart: serializedOffsetFromPosition(doc, from),
+    selectionEnd: serializedOffsetFromPosition(doc, to),
+    pastedText,
+  })
+  if (!wrapped) return false
+  replaceComposerValue(view, wrapped.value, wrapped.caretOffset, false, true)
+  return true
 }
 
 function setComposerSelection(view: EditorView, event: KeyboardEvent, position: number): boolean {

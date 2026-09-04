@@ -159,6 +159,39 @@ describe('favicon-resolver', () => {
     expect(shown).toEqual(['https://example.com/favicon.ico', 'https://example.com/icon.png'])
   })
 
+  test('shares one image probe across chips on the same site', async () => {
+    const { resolveAndProbeIcon } = await loadResolver()
+    let imageCount = 0
+    class CountingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      set src(_value: string) {
+        imageCount += 1
+        this.onload?.()
+      }
+    }
+    vi.stubGlobal('Image', CountingImage)
+
+    const shown: string[] = []
+    const faviconPromise = Promise.resolve(undefined)
+    resolveAndProbeIcon(
+      'https://example.com/a',
+      faviconPromise,
+      url => shown.push(url),
+      () => false
+    )
+    resolveAndProbeIcon(
+      'https://example.com/b',
+      faviconPromise,
+      url => shown.push(url),
+      () => false
+    )
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(imageCount).toBe(1)
+    expect(shown).toEqual(['https://example.com/favicon.ico', 'https://example.com/favicon.ico'])
+  })
+
   test('evicts a cached favicon that fails to render so the next resolve retries', async () => {
     const { resolveAndProbeIcon, resolveFavicon } = await loadResolver()
     fetchMock.mockResolvedValueOnce({
