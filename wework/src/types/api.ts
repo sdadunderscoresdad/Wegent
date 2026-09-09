@@ -1070,8 +1070,14 @@ export interface RuntimeWorktreeCapability {
   persistentStorageVerified?: boolean
 }
 
+export interface RuntimeInteractiveSessionCapability {
+  codeServer?: boolean
+  terminal?: boolean
+}
+
 export interface RuntimeFeatureSet {
   schemaVersion: number
+  interactiveSessions?: RuntimeInteractiveSessionCapability | null
   worktrees?: RuntimeWorktreeCapability | null
 }
 
@@ -1302,7 +1308,9 @@ export interface RuntimeTaskExecutionConfig {
 }
 
 export interface RuntimeTaskCreateRequest {
-  schemaVersion?: 1 | 2
+  schemaVersion?: 1 | 2 | 3
+  wegentTeamId?: number
+  newSession?: boolean
   projectId?: number
   deviceWorkspaceId?: number
   deviceId?: string
@@ -1346,6 +1354,11 @@ export interface RuntimeTaskCreateRequest {
     [key: string]: unknown
   }
   additionalContext?: RuntimeAdditionalContext
+}
+
+export interface RuntimeTaskMaterializeResponse {
+  payload: Record<string, unknown>
+  runtimeHandle?: Record<string, unknown> | null
 }
 
 export interface RuntimeTaskCreateResponse {
@@ -2134,6 +2147,14 @@ export interface InstalledPluginComponents {
     slug: string
     authPolicy: 'on_install' | 'on_use' | 'optional'
     localAuth?: PluginLocalAuthDefinition | null
+    accountAuth?: {
+      protocolVersion: 1
+      credentialType: 'password' | 'bearer' | 'oauth2'
+      oauth2?: Array<'authorize' | 'refresh' | 'revoke'>
+      exportMode?: 'exclusive'
+      localEnvironment?: Record<string, { type: 'directory' } | { type: 'enum'; values: string[] }>
+      adapter: string
+    } | null
     description?: string | null
   }>
   lsps: PluginPathComponent[]
@@ -2875,6 +2896,12 @@ export interface SkillRef {
 
 export type AttachmentStatus = 'uploading' | 'parsing' | 'ready' | 'failed'
 
+export interface RuntimeWorkspaceFileReference {
+  device_id: string
+  workspace_path: string
+  path: string
+}
+
 export interface Attachment {
   id: number
   filename: string
@@ -2891,6 +2918,9 @@ export interface Attachment {
   created_at: string
   local_preview_url?: string
   local_path?: string
+  workspace_file?: RuntimeWorkspaceFileReference
+  image_width?: number
+  image_height?: number
   ui_group_id?: string
   ui_group_role?: 'primary' | 'companion'
   ui_kind?: 'appshot'

@@ -30,6 +30,7 @@ import {
   parseTelemetryPayload,
   readRawRequestBody,
   readRequestBody,
+  requestAdvertisesProgrammaticExec,
   requestAdvertisesShellTool,
   requestAdvertisesViewImageTool,
   requestContainsToolOutput,
@@ -41,10 +42,12 @@ import {
   selectConvertedTool,
   selectMcpTool,
   selectOfficialPluginMcpTool,
+  selectProgrammaticExec,
   selectShellTool,
   selectShellToolCommand,
   selectTool,
   selectToolSearch,
+  serializedOutputReportsSuccess,
   toolSearchResponseEvents,
   selectViewImageTool,
   streamingMarkdownReport,
@@ -410,6 +413,7 @@ class DesktopE2EServer {
     this.commandQueue = []
     this.commandResults = new Map()
     this.commandHistory = []
+    this.controlTransportHistory = []
     this.controlLongPolls = new Map()
     this.modelRequests = []
     this.catalogRequests = []
@@ -428,6 +432,16 @@ class DesktopE2EServer {
     this.siteEnvironmentRevision = 0
     this.siteEnvironmentVariables = []
     this.siteCollaborators = []
+    this.siteAccessPolicy = {
+      id: 'pol_e2e_1',
+      project_id: 'prj_e2e_product',
+      target: 'inner',
+      audience: 'owner',
+      subjects: [],
+      revision_number: 2,
+      created_by: 'wework-desktop-e2e-cloud-user',
+      created_at: '2026-09-08T00:00:00Z',
+    }
     this.miniProgramPluginInstalled = false
     this.miniProgramPluginDeviceId = null
     this.sitesConnectionBootstrapRequests = 0
@@ -1016,6 +1030,11 @@ class DesktopE2EServer {
     return this.commandForClient(clientId, action, selector, options)
   }
 
+  recordControlTransport(event, clientId) {
+    this.controlTransportHistory.push({ event, clientId, at: new Date().toISOString() })
+    if (this.controlTransportHistory.length > 200) this.controlTransportHistory.shift()
+  }
+
   async commandForClient(clientId, action, selector, options = {}) {
     const observesElectronState = ELECTRON_OBSERVATION_ACTIONS.has(action)
     const availableAt = observesElectronState
@@ -1097,6 +1116,7 @@ class DesktopE2EServer {
     }
     const timeout = setTimeout(() => {
       if (this.controlLongPolls.get(clientId)?.response !== response) return
+      this.recordControlTransport('poll-timeout', clientId)
       this.controlLongPolls.delete(clientId)
       response.writeHead(204)
       response.end()
@@ -1104,6 +1124,7 @@ class DesktopE2EServer {
     this.controlLongPolls.set(clientId, { response, timeout })
     response.once('close', () => {
       if (this.controlLongPolls.get(clientId)?.response !== response) return
+      this.recordControlTransport('poll-close', clientId)
       clearTimeout(timeout)
       this.controlLongPolls.delete(clientId)
     })
@@ -1266,7 +1287,14 @@ class DesktopE2EServer {
             app_type: 'web',
             enabled: true,
             order: 10,
-            capabilities: ['create', 'publish', 'edit', 'delete', 'configure_environment'],
+            capabilities: [
+              'create',
+              'publish',
+              'edit',
+              'delete',
+              'configure_environment',
+              'manage_access',
+            ],
             create: {
               plugin_name: 'wegent-sites',
               marketplace_name: 'wegent',
@@ -1408,6 +1436,31 @@ class DesktopE2EServer {
       return
     }
 
+    if (url.pathname === '/api/sites/prj_e2e_product/access' && request.method === 'GET') {
+      json(response, 200, this.siteAccessPolicy)
+      return
+    }
+    if (url.pathname === '/api/sites/prj_e2e_product/access' && request.method === 'PUT') {
+      assert.ok(
+        typeof request.headers['idempotency-key'] === 'string' &&
+          request.headers['idempotency-key'].length > 0,
+        'Updating Site access did not include an Idempotency-Key'
+      )
+      const body = await readRequestBody(request)
+      assert.ok(['all', 'login', 'owner', 'custom'].includes(body.audience))
+      assert.ok(Array.isArray(body.subjects))
+      this.siteAccessPolicy = {
+        ...this.siteAccessPolicy,
+        id: 'pol_e2e_2',
+        audience: body.audience,
+        subjects: body.subjects,
+        revision_number: this.siteAccessPolicy.revision_number + 1,
+        created_at: '2026-09-08T00:01:00Z',
+      }
+      json(response, 200, this.siteAccessPolicy)
+      return
+    }
+
     const siteCollaboratorsMatch = url.pathname.match(
       /^\/api\/sites\/prj_e2e_product\/collaborators(?:\/([^/]+))?$/
     )
@@ -1444,6 +1497,10 @@ class DesktopE2EServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/plugins/installed') {
+      if (this.applicationPluginInspectionUnavailable) {
+        json(response, 500, { detail: 'Plugin inventory unavailable' })
+        return
+      }
       json(response, 200, {
         items: [
           ...(this.sitesPluginInstalled
@@ -1469,6 +1526,9 @@ class DesktopE2EServer {
       const installedPlugin = isSitesPlugin
         ? installedSitesPlugin(targetDeviceId ?? 'local-device')
         : installedMiniProgramPlugin(targetDeviceId ?? 'local-device')
+      if (targetDeviceId && this.onApplicationPluginInstalled) {
+        await this.onApplicationPluginInstalled(installedPlugin)
+      }
       const installedPluginId = isSitesPlugin ? 601 : 602
       if (isSitesPlugin) {
         this.sitesPluginInstalled = true
@@ -1722,6 +1782,7 @@ class DesktopE2EServer {
   }
 
   async handleControlRoute(request, response, url) {
+    response.setHeader('Cache-Control', 'no-store')
     if (request.method === 'POST' && url.pathname === '/ready') {
       const ready = await readRequestBody(request)
       assert.equal(typeof ready.clientId, 'string', 'Desktop control client ID is required')
@@ -1774,6 +1835,7 @@ class DesktopE2EServer {
 
     if (request.method === 'GET' && url.pathname === '/commands') {
       const clientId = url.searchParams.get('clientId')
+      this.recordControlTransport('poll', clientId)
       if (!clientId || !this.controlWindowsByClient.has(clientId)) {
         response.writeHead(204)
         response.end()
@@ -2125,7 +2187,8 @@ class DesktopE2EServer {
     if (
       this.scenario === 'embedded_browser_setup' &&
       !this.embeddedBrowserSetupToolLessPrewarmHandled &&
-      !requestAdvertisesShellTool(body)
+      !requestAdvertisesShellTool(body) &&
+      !requestAdvertisesProgrammaticExec(body)
     ) {
       this.embeddedBrowserSetupToolLessPrewarmHandled = true
       this.writeSse(response, [responseCreated(responseId), responseCompleted(responseId)])
@@ -2352,10 +2415,45 @@ class DesktopE2EServer {
       )
 
       if (requestNumber === 1) {
+        if (requestAdvertisesProgrammaticExec(body)) {
+          const browserUrl = new URL('/embedded-browser-agent-fixture', this.url).href
+          const program = [
+            "const browserOpen = ALL_TOOLS.find(tool => tool.name === 'browser_open' || (tool.name.includes('wework_browser') && tool.name.endsWith('browser_open')))",
+            "if (!browserOpen) throw new Error('Wework browser_open unavailable')",
+            `await tools[browserOpen.name](${JSON.stringify({ url: browserUrl })})`,
+            'text(JSON.stringify({ ok: true }))',
+          ].join('\n')
+          const exec = selectProgrammaticExec(body, program)
+          this.writeSse(response, [
+            responseCreated(responseId),
+            customToolCall(EMBEDDED_BROWSER_SETUP_OPEN_ID, exec.name, exec.input),
+            responseCompleted(responseId),
+          ])
+          return
+        }
         const search = selectToolSearch(body, 'Wework browser open')
         this.writeSse(response, [
           responseCreated(responseId),
           ...toolSearchResponseEvents(EMBEDDED_BROWSER_SETUP_SEARCH_ID, search),
+          responseCompleted(responseId),
+        ])
+        return
+      }
+
+      if (requestAdvertisesProgrammaticExec(body)) {
+        assert.equal(requestNumber, 2, `Unexpected embedded-browser setup request ${requestNumber}`)
+        assert.equal(
+          requestContainsToolOutput(body, EMBEDDED_BROWSER_SETUP_OPEN_ID),
+          true,
+          'The embedded-browser programmatic exec output did not return to the model'
+        )
+        assert.ok(
+          findNestedString(body, serializedOutputReportsSuccess),
+          'The programmatic Wework browser_open call did not complete successfully'
+        )
+        this.writeSse(response, [
+          responseCreated(responseId),
+          assistantMessage(EMBEDDED_BROWSER_SETUP_COMPLETION_TEXT),
           responseCompleted(responseId),
         ])
         return
@@ -4148,6 +4246,20 @@ class DesktopE2EServer {
     )
     assert.ok(applyPatch, `${matrixCaseId(model)} did not advertise apply_patch`)
     if (model.protocol === 'responses') {
+      const hasNativeToolSearch = tools.some(tool => tool?.type === 'tool_search')
+      if (model.modelId === 'gpt-6-astra') {
+        assert.ok(
+          hasNativeToolSearch,
+          `${matrixCaseId(model)} did not preserve Astra native tool_search`
+        )
+      }
+      if (!hasNativeToolSearch) {
+        assert.equal(
+          tools.some(tool => tool?.defer_loading === true),
+          false,
+          `${matrixCaseId(model)} advertised defer_loading without native tool_search`
+        )
+      }
       assert.equal(
         applyPatch.type,
         model.source === 'local' ? 'function' : 'custom',

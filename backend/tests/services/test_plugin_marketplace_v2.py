@@ -1306,6 +1306,52 @@ def test_plugin_visibility_requires_an_approved_grant(test_db, test_user):
     ] == [plugin.id]
 
 
+def test_list_plugins_orders_by_recommendation_score_descending(test_db, test_user):
+    plugins: list[Plugin] = []
+    for index, score in enumerate((90, 91, 90, -5, 0)):
+        plugin = Plugin(
+            catalog_namespace="wework-official",
+            slug=f"ranked-{index}",
+            name=f"ranked-{index}",
+            display_name=f"Ranked {index}",
+            keywords_json=[],
+            interface_json={},
+            visibility="public",
+            status="published",
+            featured_rank=score,
+        )
+        test_db.add(plugin)
+        test_db.flush()
+        release = PluginRelease(
+            plugin_id=plugin.id,
+            version="1.0.0",
+            manifest_json={"name": plugin.name, "version": "1.0.0"},
+            interface_json={},
+            storage_key=f"plugins/{plugin.slug}.zip",
+            sha256=f"{index + 1:064d}",
+            size_bytes=10,
+            status="ready",
+            scan_status="passed",
+            scan_report_json={},
+        )
+        test_db.add(release)
+        test_db.flush()
+        plugin.latest_release_id = release.id
+        plugins.append(plugin)
+    test_db.commit()
+
+    items = PluginMarketplaceService().list_plugins(test_db, user_id=test_user.id).items
+
+    assert [item.id for item in items] == [
+        plugins[1].id,
+        plugins[2].id,
+        plugins[0].id,
+        plugins[3].id,
+        plugins[4].id,
+    ]
+    assert [item.featured for item in items[-2:]] == [True, False]
+
+
 def test_list_plugins_batches_grant_lookups_instead_of_per_plugin_queries(
     test_db: Session, test_user: User
 ) -> None:
@@ -1845,7 +1891,10 @@ def test_capability_payload_uses_signed_release_url(test_db, test_user, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_all_devices_receive_pending_rows(test_db, test_user, monkeypatch):
+@pytest.mark.parametrize("duplicate_device", [False, True])
+async def test_all_devices_receive_pending_rows(
+    test_db, test_user, monkeypatch, duplicate_device
+):
     plugin = Plugin(
         slug="devices",
         name="devices",
@@ -1882,10 +1931,13 @@ async def test_all_devices_receive_pending_rows(test_db, test_user, monkeypatch)
     test_db.commit()
 
     async def devices(_db, _user_id):
-        return [
+        result = [
             {"device_id": "online-device", "status": "online"},
             {"device_id": "offline-device", "status": "offline"},
         ]
+        if duplicate_device:
+            result.append({"deviceId": " online-device ", "status": "offline"})
+        return result
 
     monkeypatch.setattr(
         "app.services.plugin_device_installation_service.device_service.get_all_devices",

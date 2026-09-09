@@ -96,11 +96,65 @@
     "pagination": "Page {{page}} of {{totalPages}}",
     "wework": {
       "title": "WeWork Marketplace Management",
-      "description": "Manage WeWork plugin publication reviews and Smart App marketplace content",
+      "description": "Manage WeWork plugin reviews, plugin listings, and Smart App marketplace content",
       "plugin_tab": "Plugin Reviews",
+      "plugin_management_tab": "Plugin Management",
       "smart_app_tab": "Smart Apps",
       "smart_app_title": "Smart App Marketplace Management",
       "smart_app_description": "Manage listing status and recommendation scores for Smart Apps published to everyone"
+    },
+    "plugins": {
+      "title": "Plugin Marketplace Management",
+      "description": "Manage descriptions, recommendation order, and listing status for WeWork official and enterprise plugins.",
+      "total": "{{count}} plugins",
+      "load_failed": "Failed to load the plugin marketplace",
+      "empty": "No matching plugins",
+      "empty_description": "Adjust the filters or wait for a plugin to complete its first publication.",
+      "saved": "Plugin marketplace settings saved",
+      "save_failed": "Failed to save plugin marketplace settings",
+      "sources": {
+        "wework-official": "WeWork Official",
+        "enterprise": "Enterprise"
+      },
+      "statuses": {
+        "listed": "Listed",
+        "unlisted": "Unlisted"
+      },
+      "filters": {
+        "search": "Search plugin name or identifier",
+        "all_sources": "All sources",
+        "all_statuses": "All statuses"
+      },
+      "columns": {
+        "plugin": "Plugin",
+        "source": "Source",
+        "score": "Recommendation score",
+        "status": "Marketplace status",
+        "updated_at": "Updated"
+      },
+      "detail": {
+        "source": "Source",
+        "description": "Marketplace description",
+        "score": "Recommendation score",
+        "score_hint": "Higher scores rank earlier in the marketplace. Enter an integer from 0 to 100.",
+        "score_invalid": "Enter an integer from 0 to 100.",
+        "listing": "Marketplace listing",
+        "listed_hint": "Listed plugins are visible to users with marketplace access.",
+        "unlisted_hint": "Unlisted plugins remain visible to admins and can be relisted later.",
+        "version": "Current version",
+        "author": "Author",
+        "created_at": "Created",
+        "updated_at": "Updated",
+        "unsaved": "Unsaved changes"
+      },
+      "actions": {
+        "save": "Save changes",
+        "cancel": "Cancel",
+        "close": "Close plugin editor",
+        "refresh": "Refresh plugin list",
+        "retry": "Try again",
+        "reset_filters": "Reset filters"
+      }
     },
     "plugin_publications": {
       "title": "WeWork Plugin Publication Reviews",
@@ -118,6 +172,13 @@
       },
       "queue": {
         "total": "{{count}} requests",
+        "columns": {
+          "plugin": "Plugin and version",
+          "submitter": "Submitter",
+          "review": "Review status",
+          "submitted": "Submitted",
+          "gitlab": "GitLab"
+        },
         "stage": "Stage: {{stage}}",
         "findings": "{{blockers}} blockers · {{warnings}} warnings",
         "submitted_at": "Submitted {{time}}",
@@ -702,6 +763,22 @@
     "marketplace_tag_disabled": "Disabled",
     "knowledge_base_profile_title": "Knowledge Base Retrieval Default Profile",
     "knowledge_base_profile_description": "Initial settings for all new knowledge bases. References must name public resources.",
+    "code_wiki_generation_policy_title": "Code Wiki Generation Strategies",
+    "code_wiki_generation_policy_description": "Choose which generation modes are available, the Team each uses, and the system default for new wikis. Existing wikis keep their own strategy.",
+    "code_wiki_generation_policy_bootstrap": "No system policy has been saved yet. The environment compatibility setting is in use; saving here applies these settings immediately.",
+    "code_wiki_generation_policy_load_failed": "Could not load Code Wiki generation strategies.",
+    "code_wiki_generation_policy_saved": "Code Wiki generation strategies saved.",
+    "code_wiki_generation_policy_save_failed": "Could not save Code Wiki generation strategies. Check that each Team meets the requirements.",
+    "code_wiki_generation_policy_default_required": "Enable at least one strategy and choose it as the default.",
+    "code_wiki_generation_policy_default": "Default for new wikis",
+    "code_wiki_generation_policy_default_placeholder": "Choose the default strategy",
+    "code_wiki_generation_policy_team_placeholder": "Choose the execution Team",
+    "code_wiki_generation_strategy_coordinator_adaptive_title": "Adaptive collaboration",
+    "code_wiki_generation_strategy_coordinator_adaptive_description": "One AI owns the whole wiki and delegates only complex areas for deeper work.",
+    "code_wiki_generation_strategy_coordinator_reviewed_title": "Reviewed generation",
+    "code_wiki_generation_strategy_coordinator_reviewed_description": "The documentation plan is checked before writing. It is usually steadier, but slower.",
+    "code_wiki_generation_strategy_coordinator_solo_title": "Single-agent generation",
+    "code_wiki_generation_strategy_coordinator_solo_description": "One AI researches and writes the whole wiki. Good for smaller projects and comparisons.",
     "knowledge_base_profile_health_missing": "No profile is configured; new knowledge bases use automatic defaults.",
     "knowledge_base_profile_health_valid": "The profile references active public resources.",
     "knowledge_base_profile_health_invalid": "The profile cannot be applied; new knowledge bases use automatic defaults.",
