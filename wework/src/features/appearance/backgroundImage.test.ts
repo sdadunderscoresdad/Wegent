@@ -8,12 +8,15 @@ import {
 const { invokeDesktopHost } = vi.hoisted(() => ({
   invokeDesktopHost: vi.fn(),
 }))
+const { isElectronRuntime } = vi.hoisted(() => ({ isElectronRuntime: vi.fn() }))
 
 vi.mock('@/api/dsh/desktopHost', () => ({ invokeDesktopHost }))
+vi.mock('@/lib/runtime-environment', () => ({ isElectronRuntime }))
 
 describe('workbench background image service', () => {
   beforeEach(() => {
     invokeDesktopHost.mockReset()
+    isElectronRuntime.mockReturnValue(true)
   })
 
   test('returns the selected Electron desktop file', async () => {
@@ -35,10 +38,15 @@ describe('workbench background image service', () => {
     await expect(selectWorkbenchBackground('light')).resolves.toBeNull()
   })
 
-  test('removes the configured image and converts its display URL', async () => {
+  test('removes the configured image and converts its desktop display URL', async () => {
     await removeWorkbenchBackground('light')
 
     expect(invokeDesktopHost).not.toHaveBeenCalled()
-    expect(backgroundImageUrl('/app-data/background.webp')).toBe('file:///app-data/background.webp')
+    expect(backgroundImageUrl('/app-data/background.webp')).toBe(
+      'asset://localhost/app-data/background.webp'
+    )
+    expect(backgroundImageUrl('C:\\Users\\me\\背景.webp')).toBe(
+      'asset://localhost/C%3A/Users/me/%E8%83%8C%E6%99%AF.webp'
+    )
   })
 })

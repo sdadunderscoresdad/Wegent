@@ -8,6 +8,7 @@ import {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  protocol,
   screen,
   session,
   shell,
@@ -75,6 +76,7 @@ import {
   installContextMenu,
 } from './host/image-context-actions.js'
 import { SystemResumeBridge } from './host/system-resume-bridge.js'
+import { installLocalAssetProtocol } from './host/local-asset-protocol.js'
 import {
   prepareDesktopComponents,
   shouldStageDesktopComponentUpdates,
@@ -1579,8 +1581,12 @@ function startDesktopRuntime(): Promise<void> {
 }
 
 if (hasSingleInstanceLock) {
+  protocol.registerSchemesAsPrivileged([
+    { scheme: 'asset', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  ])
   app.whenReady().then(async () => {
     logStartupStep('electron-ready', 'completed')
+    installLocalAssetProtocol()
     if (process.platform === 'darwin' && app.dock && developmentDockIdentity) {
       app.dock.setBadge(developmentDockIdentity.badge)
       console.info('[development] Dock identity configured', developmentDockIdentity)

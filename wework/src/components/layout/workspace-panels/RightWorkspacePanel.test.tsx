@@ -105,4 +105,18 @@ describe('RightWorkspacePanel workspace target errors', () => {
 
     expect(screen.getByTestId('workspace-target-error')).toHaveTextContent('Workspace is not ready')
   })
+
+  test('renders the launcher with translucent background surfaces', () => {
+    renderPanel({
+      activeView: 'launcher',
+      openTabs: [],
+      browserStates: {},
+    })
+
+    expect(screen.getByTestId('right-workspace-terminal-option')).toHaveClass(
+      'border',
+      'border-border/45',
+      'bg-surface/20'
+    )
+  })
 })

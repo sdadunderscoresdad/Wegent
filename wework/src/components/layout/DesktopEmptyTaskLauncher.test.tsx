@@ -67,8 +67,9 @@ describe('DesktopEmptyTaskLauncher', () => {
     expect(categoryButtons[0]).toHaveClass(
       'min-h-[104px]',
       'rounded-2xl',
-      'bg-background',
-      'ring-[0.5px]'
+      'border',
+      'border-border/45',
+      'bg-transparent'
     )
     expect(categoryButtons.map(button => button.querySelector('svg')?.classList.value)).toEqual([
       'h-4 w-4 text-[#0285FF]',

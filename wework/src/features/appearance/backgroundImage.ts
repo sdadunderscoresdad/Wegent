@@ -1,5 +1,5 @@
 import { invokeDesktopHost } from '@/api/dsh/desktopHost'
-import { desktopFileUrl } from '@/components/chat/assistantMarkdownLinks'
+import { isElectronRuntime } from '@/lib/runtime-environment'
 import type { ResolvedAppearanceMode } from './types'
 
 export type WorkbenchBackgroundSlot = ResolvedAppearanceMode | 'common'
@@ -23,5 +23,12 @@ export async function removeWorkbenchBackground(theme?: WorkbenchBackgroundSlot)
 }
 
 export function backgroundImageUrl(path: string | null): string | null {
-  return path ? desktopFileUrl(path) : null
+  if (!path || !isElectronRuntime()) return null
+
+  const encodedPath = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(segment => encodeURIComponent(segment))
+    .join('/')
+  return `asset://localhost/${encodedPath.replace(/^\/+/, '')}`
 }
