@@ -14,6 +14,8 @@ import {
 } from './composerMentions'
 import {
   createComposerLinkElement,
+  escapeComposerLinkLabel,
+  escapeComposerLinkUrl,
   parseComposerLinks,
   type ComposerLinkPayload,
   type ParsedComposerLink,
@@ -201,7 +203,8 @@ function mergeComposerTokens(
 export function serializeComposerLinkNode(node: ProseMirrorNode): string {
   const label = String(node.attrs.label ?? '')
   const url = String(node.attrs.url ?? '')
-  return label ? `[${label}](${url})` : url
+  if (!label) return url
+  return `[${escapeComposerLinkLabel(label)}](${escapeComposerLinkUrl(url)})`
 }
 
 export function serializeComposerDocument(doc: ProseMirrorNode): string {
