@@ -1,11 +1,16 @@
 import { KNOWN_AI_PROVIDERS, type KnownAiProvider } from './modelCatalog'
+import {
+  SMART_APP_EVENT_PROPERTY_KEYS,
+  SMART_APP_EVENT_VALUE_CONSTRAINTS,
+  type SmartAppGeneratedEventMap,
+} from './generated/smartAppEvents'
 
 export type ExecutionTarget = 'local' | 'cloud' | 'unknown'
 export type TelemetryResult = 'success' | 'cancelled' | 'failure'
 export type TelemetryFailureReason = 'network_error' | 'model_error' | 'runtime_error' | 'unknown'
 export type TelemetryDataSource = 'local' | 'cloud' | 'unknown'
 
-export interface AnalyticsEventMap {
+export interface AnalyticsEventMap extends SmartAppGeneratedEventMap {
   $ai_trace: {
     $ai_trace_id: string
     $ai_trace_phase: 'start' | 'end'
@@ -324,6 +329,7 @@ export const ANALYTICS_EVENT_PROPERTY_KEYS: {
   task_retried: ['execution_target', 'since_last_ms', 'previous_result'],
   setting_changed: ['setting', 'value'],
   workspace_panel_removed: ['panel'],
+  ...SMART_APP_EVENT_PROPERTY_KEYS,
 }
 
 type PropertyValueConstraint<Property> =
@@ -557,7 +563,15 @@ export const ANALYTICS_EVENT_VALUE_CONSTRAINTS: {
   workspace_panel_removed: {
     panel: ['review', 'terminal', 'browser', 'chat', 'files', 'desktop', 'other'],
   },
+  ...SMART_APP_EVENT_VALUE_CONSTRAINTS,
 }
+
+export type AnalyticsEvent = {
+  [Name in AnalyticsEventName]: {
+    readonly name: Name
+    readonly properties: AnalyticsEventMap[Name]
+  }
+}[AnalyticsEventName]
 
 export interface CommonTelemetryProperties {
   $geoip_disable: boolean

@@ -8,6 +8,7 @@ use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc}
 #[cfg(windows)]
 use std::{env, path::PathBuf};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Value};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
@@ -40,6 +41,7 @@ use crate::{
         PrepareLocalHarnessLaunchRequest,
     },
     local::local_skills::list_local_skills,
+    local::native_git::run_git_capture_with_input,
     local::plugin_catalog::{
         list_wegent_store_plugins, read_plugin_manifest, save_plugin_example,
         ReadPluginManifestRequest, SavePluginExampleRequest,
@@ -77,6 +79,14 @@ pub const APP_IPC_PROTOCOL_VERSION: u64 = 1;
 const DEFAULT_TIMEOUT_SECONDS: f64 = 60.0;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const APP_IPC_REQUEST_TIMEOUT_SECONDS: u64 = 75;
+
+fn app_ipc_request_timeout_seconds(method: Option<&str>) -> u64 {
+    match method {
+        Some("executor.plugin_auth.migrate") => 280,
+        Some("executor.plugin_auth.run") => 200,
+        _ => APP_IPC_REQUEST_TIMEOUT_SECONDS,
+    }
+}
 const APP_IPC_AUTH_TIMEOUT_SECONDS: u64 = 5;
 const APP_IPC_MAX_AUTH_FRAME_BYTES: usize = 4096;
 const APP_IPC_BULK_WRITE_BUFFER_CAPACITY: usize = 65_535;
@@ -87,6 +97,7 @@ const APP_IPC_CAPABILITIES: &[&str] = &[
     "executor.harnesses",
     "executor.health",
     "executor.plugins",
+    "executor.plugin_auth",
     "runtime.archives",
     "runtime.automations",
     "runtime.codex",
@@ -110,6 +121,8 @@ const APP_IPC_RENDERER_METHODS: &[&str] = &[
     "device.execute_command",
     "dws.*",
     "executions.*",
+    "executor.plugin_auth.migrate",
+    "executor.plugin_auth.run",
     "executor.backend.configure",
     "executor.backend.status",
     "executor.codex_home.config.read",
@@ -227,6 +240,14 @@ pub trait RuntimeWorkHandler: Send + Sync {
 }
 
 pub trait BackendConnectionHandler: Send + Sync {
+    fn execute_plugin_auth<'a>(
+        &'a self,
+        params: Value,
+    ) -> BoxFuture<'a, Result<Value, AppIpcError>>;
+    fn migrate_plugin_auth<'a>(
+        &'a self,
+        params: Value,
+    ) -> BoxFuture<'a, Result<Value, AppIpcError>>;
     fn configure_backend<'a>(&'a self, params: Value) -> BoxFuture<'a, Result<Value, AppIpcError>>;
     fn backend_quota<'a>(&'a self) -> BoxFuture<'a, Result<Value, AppIpcError>>;
     fn backend_status<'a>(&'a self) -> BoxFuture<'a, Result<Value, AppIpcError>>;
@@ -758,6 +779,20 @@ impl AppIpcServer {
             return Ok(Value::String(saved));
         }
 
+        if method == "executor.plugin_auth.migrate" || method == "executor.plugin_auth.run" {
+            let handler = self.backend_connection_handler.as_ref().ok_or_else(|| {
+                AppIpcError::new(
+                    "backend_connection_unavailable",
+                    "Backend connection handler is not available",
+                )
+            })?;
+            return if method == "executor.plugin_auth.run" {
+                handler.execute_plugin_auth(params).await
+            } else {
+                handler.migrate_plugin_auth(params).await
+            };
+        }
+
         if method == "executor.backend.configure" {
             let Some(handler) = &self.backend_connection_handler else {
                 return Err(AppIpcError::new(
@@ -1239,8 +1274,9 @@ impl AppIpcServer {
                             None,
                             None,
                         );
+                        let timeout_seconds = app_ipc_request_timeout_seconds(method.as_deref());
                         let response = match tokio::time::timeout(
-                            Duration::from_secs(APP_IPC_REQUEST_TIMEOUT_SECONDS),
+                            Duration::from_secs(timeout_seconds),
                             server.handle_line(&request_line),
                         )
                         .await
@@ -1260,7 +1296,7 @@ impl AppIpcServer {
                                     &AppIpcError::new(
                                         "request_timeout",
                                         format!(
-                                            "app IPC request timed out after {APP_IPC_REQUEST_TIMEOUT_SECONDS}s"
+                                            "app IPC request timed out after {timeout_seconds}s"
                                         ),
                                     ),
                                 ))
@@ -1528,6 +1564,16 @@ impl AppIpcServer {
             "git_push" => Some(
                 push_current_branch(
                     native_path.clone(),
+                    &native_env,
+                    native_timeout,
+                    native_max_output,
+                )
+                .await,
+            ),
+            "git_apply_patch" => Some(
+                apply_git_patch(
+                    &native_args,
+                    native_path.as_deref(),
                     &native_env,
                     native_timeout,
                     native_max_output,
@@ -2141,6 +2187,16 @@ async fn handle_task_runtime_request(method: &str, params: Value) -> Result<Valu
             serialize_task_value(
                 runtime
                     .get_task(project_id, task_id)
+                    .await
+                    .map_err(task_runtime_error)?,
+            )
+        }
+        "todos.mark_read" => {
+            let project_id = required_task_string(&params, "project_id")?;
+            let task_id = required_task_string(&params, "task_id")?;
+            serialize_task_value(
+                runtime
+                    .mark_task_read(project_id, task_id)
                     .await
                     .map_err(task_runtime_error)?,
             )
@@ -2899,6 +2955,68 @@ fn git_is_worktree(path: &str) -> bool {
     })
 }
 
+async fn apply_git_patch(
+    args: &[String],
+    cwd: Option<&str>,
+    env: &HashMap<String, String>,
+    timeout_seconds: f64,
+    max_output_bytes: usize,
+) -> CommandResult {
+    let action = args.first().map(String::as_str).unwrap_or_default();
+    let encoded_patch = args.get(1).map(String::as_str).unwrap_or_default();
+    let git_args = match action {
+        "stage" => vec![
+            "apply".to_owned(),
+            "--cached".to_owned(),
+            "--whitespace=nowarn".to_owned(),
+            "-".to_owned(),
+        ],
+        "unstage" => vec![
+            "apply".to_owned(),
+            "--cached".to_owned(),
+            "--reverse".to_owned(),
+            "--whitespace=nowarn".to_owned(),
+            "-".to_owned(),
+        ],
+        "revert" => vec![
+            "apply".to_owned(),
+            "--reverse".to_owned(),
+            "--whitespace=nowarn".to_owned(),
+            "-".to_owned(),
+        ],
+        _ => {
+            return CommandResult::error("Unsupported patch action".to_owned(), 0.0, false);
+        }
+    };
+    let patch = match BASE64_STANDARD.decode(encoded_patch) {
+        Ok(patch) => patch,
+        Err(_) => return CommandResult::error("Invalid patch payload".to_owned(), 0.0, false),
+    };
+    let Some(cwd) = cwd.map(Path::new) else {
+        return CommandResult::error("Workspace is not a Git repository".to_owned(), 0.0, false);
+    };
+    if !git_is_worktree(cwd.to_string_lossy().as_ref()) {
+        return CommandResult::error("Workspace is not a Git repository".to_owned(), 0.0, false);
+    }
+
+    match run_git_capture_with_input(
+        &git_args,
+        &patch,
+        Some(cwd),
+        env,
+        Duration::from_secs_f64(timeout_seconds.max(0.001)),
+        max_output_bytes,
+    )
+    .await
+    {
+        Ok(capture) if capture.success => {
+            CommandResult::ok(String::from_utf8_lossy(&capture.stdout).into_owned())
+        }
+        Ok(capture) => CommandResult::error(capture.stderr, 0.0, false),
+        Err(error) => CommandResult::error(error.message, 0.0, error.timed_out),
+    }
+}
+
 fn looks_like_git_dir(path: &Path) -> bool {
     path.join("HEAD").is_file()
         && (path.join("objects").is_dir()
@@ -3261,6 +3379,11 @@ fn local_app_command(command_key: &str) -> Option<LocalAppCommandDefinition> {
             None,
         )),
         "git_add_all" => Some(command_definition("git add --all", &["git", "add", "--all"], None)),
+        "git_apply_patch" => Some(command_definition(
+            "git apply <validated patch>",
+            &["git", "apply"],
+            None,
+        )),
         "git_commit" => Some(command_definition("git commit", &["git", "commit"], None)),
         "browser_relay_restart" => Some(command_definition(
             "sh -lc <browser_relay_restart>",

@@ -6,6 +6,9 @@ use super::tasks::{forked_task_link, mark_runtime_model_switch, runtime_model_se
 use super::turns::{read_runtime_turn_queue, write_runtime_turn_queue};
 use super::*;
 
+#[path = "execution_timestamp_tests.rs"]
+mod execution_timestamp_tests;
+
 #[test]
 fn codex_runtime_proxy_defaults_to_initialized_without_proxy() {
     let config = CodexRuntimeProxyConfig::default();
@@ -2017,6 +2020,7 @@ fn turn_result_persists_observed_goal_status_before_settling_task() {
                 content: "done".to_owned(),
             },
             response_item_id: Some("assistant-1".to_owned()),
+            response_value_origin: crate::agents::CodexResponseValueOrigin::Final,
             goal_status: Some("complete".to_owned()),
             goal_status_observed: true,
         }),
@@ -2117,6 +2121,7 @@ fn stale_terminal_result_cannot_emit_or_finish_replacement_execution() {
                 content: "stale".to_owned(),
             },
             response_item_id: Some("assistant-stale".to_owned()),
+            response_value_origin: crate::agents::CodexResponseValueOrigin::Final,
             goal_status: None,
             goal_status_observed: false,
         }),
@@ -2789,13 +2794,22 @@ fn runtime_turn_ids_are_persisted_by_subtask() {
 
 #[test]
 fn completed_responses_use_the_active_codex_turn_id() {
-    for (case, outcome, response_item_id) in [
+    for (case, outcome, response_item_id, value_origin) in [
         (
             "completed",
             ExecutionOutcome::Completed {
                 content: "Done".to_owned(),
             },
             Some("assistant-item-1".to_owned()),
+            crate::agents::CodexResponseValueOrigin::Final,
+        ),
+        (
+            "process-fallback",
+            ExecutionOutcome::Completed {
+                content: "I will inspect.".to_owned(),
+            },
+            Some("assistant-progress-1".to_owned()),
+            crate::agents::CodexResponseValueOrigin::ProcessFallback,
         ),
         (
             "waiting",
@@ -2803,6 +2817,7 @@ fn completed_responses_use_the_active_codex_turn_id() {
                 stop_reason: "Need input".to_owned(),
             },
             None,
+            crate::agents::CodexResponseValueOrigin::Empty,
         ),
     ] {
         let (event_tx, mut event_rx) = broadcast::channel(1);
@@ -2835,6 +2850,7 @@ fn completed_responses_use_the_active_codex_turn_id() {
                 thread_id: format!("thread-{case}"),
                 outcome,
                 response_item_id: response_item_id.clone(),
+                response_value_origin: value_origin,
                 goal_status: None,
                 goal_status_observed: false,
             }),
@@ -2846,6 +2862,11 @@ fn completed_responses_use_the_active_codex_turn_id() {
         assert_eq!(event["event"], "response.completed", "{case}");
         assert_eq!(event["payload"]["subtaskId"], "turn-1", "{case}");
         assert_eq!(event["payload"]["data"]["turnId"], "turn-1", "{case}");
+        assert_eq!(
+            event["payload"]["data"]["valueOrigin"],
+            value_origin.as_str(),
+            "{case}"
+        );
         assert_eq!(
             event["payload"]["data"]["itemId"],
             response_item_id.map(Value::String).unwrap_or(Value::Null),
@@ -3822,6 +3843,21 @@ async fn codex_instructions_write_rejects_non_string_payload() {
 }
 
 #[tokio::test]
+async fn codex_login_cancel_requires_a_login_id() {
+    let handler = RuntimeWorkRpcHandler::new("device-1", "/bin/false");
+
+    let result = handler
+        .handle_runtime_rpc(json!({
+            "method": "runtime.codex.auth.login.cancel",
+            "payload": {}
+        }))
+        .await;
+
+    let error = result.expect_err("missing login id should be rejected");
+    assert_eq!(error.code, "invalid_request");
+}
+
+#[tokio::test]
 async fn codex_personality_write_rejects_unsupported_value() {
     let handler = RuntimeWorkRpcHandler::new("device-1", "/bin/false");
 
@@ -3855,6 +3891,85 @@ async fn transcript_without_runtime_link_returns_empty_local_transcript() {
     assert_eq!(result["taskId"], "optimistic-local-task");
     assert_eq!(result["workspacePath"], "/tmp/project");
     assert_eq!(result["messages"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn transcript_sync_requires_restore_before_native_thread_exists() {
+    let index_path = temp_runtime_work_index_path("transcript-sync-pending-thread");
+    let mut handler = RuntimeWorkRpcHandler::new("device-1", "/bin/false");
+    handler.store = RuntimeWorkStore::new(index_path.clone());
+    let mut link = RuntimeTaskLink::new_pending(
+        "local-task-1".to_owned(),
+        "/tmp/project".to_owned(),
+        "Synced task".to_owned(),
+    );
+    link.runtime_handle["cloudTranscript"] = json!({
+        "transcriptId": "cloud-transcript-1",
+        "importedThrough": 3,
+    });
+    handler.upsert_local_task(link);
+
+    let result = handler
+        .transcript_sync_status(json!({
+            "taskId": "local-task-1",
+            "transcriptId": "cloud-transcript-1",
+        }))
+        .expect("pending native thread should require native restore");
+
+    assert_eq!(result["available"], true);
+    assert_eq!(result["importedThrough"], 0);
+    assert_eq!(result["reason"], "restore_required");
+    let _ = fs::remove_file(index_path);
+}
+
+#[test]
+fn transcript_sync_rekeys_the_local_task_when_a_conflicting_turn_forks() {
+    let index_path = temp_runtime_work_index_path("transcript-sync-fork");
+    let mut handler = RuntimeWorkRpcHandler::new("device-1", "/bin/false");
+    handler.store = RuntimeWorkStore::new(index_path.clone());
+    let mut link = RuntimeTaskLink::new_pending(
+        "parent-transcript".to_owned(),
+        "/tmp/project".to_owned(),
+        "Local conflicting branch".to_owned(),
+    );
+    link.thread_id = Some("local-thread".to_owned());
+    link.runtime_handle["cloudTranscript"] = json!({
+        "transcriptId": "parent-transcript",
+        "importedThrough": 3,
+        "rolloutBytes": 120,
+    });
+    handler.upsert_local_task(link);
+
+    let result = handler
+        .acknowledge_transcript_turn(json!({
+            "taskId": "parent-transcript",
+            "transcriptId": "fork-transcript",
+            "parentTranscriptId": "parent-transcript",
+            "sequence": 1,
+            "rolloutEnd": 240,
+        }))
+        .expect("fork acknowledgement should move the local task");
+
+    assert_eq!(result["taskId"], "fork-transcript");
+    assert_eq!(result["available"], true);
+    assert!(handler.local_task_link("parent-transcript").is_none());
+    let branch = handler
+        .local_task_link("fork-transcript")
+        .expect("forked local task should use the branch transcript ID");
+    assert_eq!(branch.thread_id.as_deref(), Some("local-thread"));
+    assert_eq!(
+        branch.runtime_handle["cloudTranscript"]["transcriptId"],
+        "fork-transcript"
+    );
+    assert_eq!(
+        branch.runtime_handle["cloudTranscript"]["importedThrough"],
+        1
+    );
+    assert_eq!(
+        branch.runtime_handle["cloudTranscript"]["requiresSnapshot"],
+        false
+    );
+    let _ = fs::remove_file(index_path);
 }
 
 #[tokio::test]
@@ -4318,6 +4433,7 @@ fn active_local_task_routes_only_notifications_from_other_turns_globally() {
     link.updated_at = 1_780_000_000_000;
     handler.upsert_local_task(link);
     let execution_id = start_test_execution(&handler, local_task_id);
+    let started_at = handler.store.get_task(local_task_id).unwrap().updated_at;
     handler.register_thread_event_route("thread-1", local_task_id.to_owned(), request, true);
     handler.record_active_codex_turn(
         local_task_id,
@@ -4332,7 +4448,7 @@ fn active_local_task_routes_only_notifications_from_other_turns_globally() {
             .get_task(local_task_id)
             .expect("registered task should remain stored")
             .updated_at,
-        1_780_000_000_000
+        started_at
     );
 
     handler.route_codex_notification(json!({

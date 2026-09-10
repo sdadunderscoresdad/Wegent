@@ -25,10 +25,14 @@ interface HoverCardProps {
   openOnFocus?: boolean
   pinOnInteraction?: boolean
   pinOnInteractionSelector?: string
+  pinned?: boolean
+  onPinnedChange?: (pinned: boolean) => void
   closeLabel?: string
   cardClassName?: string
   estimatedWidth?: number
   estimatedHeight?: number
+  placement?: 'anchor' | 'viewport-right'
+  viewportTop?: number
 }
 
 type HoverCardPosition = CSSProperties & {
@@ -70,6 +74,21 @@ function hoverCardPosition(
   }
 }
 
+function viewportRightHoverCardPosition(
+  estimatedWidth: number,
+  estimatedHeight: number,
+  viewportTop: number
+): HoverCardPosition {
+  return {
+    left: Math.max(VIEWPORT_PADDING, window.innerWidth - estimatedWidth - VIEWPORT_PADDING),
+    top: clamp(
+      viewportTop,
+      VIEWPORT_PADDING,
+      Math.max(VIEWPORT_PADDING, window.innerHeight - estimatedHeight - VIEWPORT_PADDING)
+    ),
+  }
+}
+
 export function HoverCard({
   children,
   content,
@@ -78,10 +97,14 @@ export function HoverCard({
   openOnFocus = false,
   pinOnInteraction = false,
   pinOnInteractionSelector,
+  pinned: controlledPinned,
+  onPinnedChange,
   closeLabel = 'Close',
   cardClassName,
   estimatedWidth = 310,
   estimatedHeight = 220,
+  placement = 'anchor',
+  viewportTop = VIEWPORT_PADDING,
 }: HoverCardProps) {
   const anchorRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -89,9 +112,25 @@ export function HoverCard({
   const closeTimerRef = useRef<number | null>(null)
   const focusWithinRef = useRef(false)
   const pinnedRef = useRef(false)
+  const openRef = useRef(false)
+  const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<HoverCardPosition | null>(null)
-  const [pinned, setPinned] = useState(false)
-  const isOpen = position !== null
+  const [uncontrolledPinned, setUncontrolledPinned] = useState(false)
+  const pinned = controlledPinned ?? uncontrolledPinned
+  const displayedOpen = open || pinned
+
+  useEffect(() => {
+    pinnedRef.current = pinned
+  }, [pinned])
+
+  const updatePinned = useCallback(
+    (nextPinned: boolean) => {
+      pinnedRef.current = nextPinned
+      if (controlledPinned === undefined) setUncontrolledPinned(nextPinned)
+      onPinnedChange?.(nextPinned)
+    },
+    [controlledPinned, onPinnedChange]
+  )
 
   const clearTimers = useCallback(() => {
     if (openTimerRef.current !== null) {
@@ -107,25 +146,26 @@ export function HoverCard({
   const close = useCallback(() => {
     clearTimers()
     focusWithinRef.current = false
-    pinnedRef.current = false
-    setPinned(false)
+    updatePinned(false)
+    openRef.current = false
+    setOpen(false)
     setPosition(null)
-  }, [clearTimers])
+  }, [clearTimers, updatePinned])
 
-  const open = useCallback(() => {
+  const show = useCallback(() => {
     clearTimers()
-    const rect = anchorRef.current?.getBoundingClientRect()
-    if (!rect) return
-    setPosition(hoverCardPosition(rect, estimatedWidth, estimatedHeight))
-  }, [clearTimers, estimatedHeight, estimatedWidth])
+    if (openRef.current || !anchorRef.current) return
+    openRef.current = true
+    setOpen(true)
+  }, [clearTimers])
 
   const scheduleOpen = useCallback(() => {
     clearTimers()
     openTimerRef.current = window.setTimeout(() => {
       openTimerRef.current = null
-      open()
+      show()
     }, DEFAULT_OPEN_DELAY_MS)
-  }, [clearTimers, open])
+  }, [clearTimers, show])
 
   const scheduleClose = useCallback(() => {
     if (pinnedRef.current) return
@@ -151,10 +191,9 @@ export function HoverCard({
 
   const pin = useCallback(() => {
     if (!pinOnInteraction) return
-    pinnedRef.current = true
-    setPinned(true)
+    updatePinned(true)
     keepOpen()
-  }, [keepOpen, pinOnInteraction])
+  }, [keepOpen, pinOnInteraction, updatePinned])
 
   const shouldPinInteraction = useCallback(
     (target: EventTarget | null) =>
@@ -178,12 +217,12 @@ export function HoverCard({
       if (focusIsInsideAnchor && !openOnFocus) return
       focusWithinRef.current = true
       if (openOnFocus) {
-        open()
+        show()
         return
       }
       keepOpen()
     },
-    [keepOpen, open, openOnFocus, pin, shouldPinInteraction]
+    [keepOpen, openOnFocus, pin, shouldPinInteraction, show]
   )
 
   const handleBlurCapture = useCallback(
@@ -207,26 +246,24 @@ export function HoverCard({
     []
   )
 
-  // Calibrate once per open transition. Re-running from the position update can
-  // make position-sensitive content alternate between two measured layouts.
+  // Measure while hidden, then reveal at the final position. Showing the
+  // estimated position first makes tall cards visibly jump after calibration.
+  // Calibrate only once because position-sensitive content can otherwise
+  // alternate between two measured layouts.
   useLayoutEffect(() => {
-    if (!isOpen) return
+    if (!displayedOpen) return
     const anchorRect = anchorRef.current?.getBoundingClientRect()
     const cardRect = cardRef.current?.getBoundingClientRect()
     if (!anchorRect || !cardRect) return
 
-    const nextPosition = hoverCardPosition(
-      anchorRect,
-      cardRect.width || estimatedWidth,
-      cardRect.height || estimatedHeight
+    const measuredWidth = cardRect.width || estimatedWidth
+    const measuredHeight = cardRect.height || estimatedHeight
+    setPosition(
+      placement === 'viewport-right'
+        ? viewportRightHoverCardPosition(measuredWidth, measuredHeight, viewportTop)
+        : hoverCardPosition(anchorRect, measuredWidth, measuredHeight)
     )
-    setPosition(current => {
-      if (!current || (nextPosition.left === current.left && nextPosition.top === current.top)) {
-        return current
-      }
-      return nextPosition
-    })
-  }, [estimatedHeight, estimatedWidth, isOpen])
+  }, [displayedOpen, estimatedHeight, estimatedWidth, placement, viewportTop])
 
   useEffect(() => {
     if (!position) return
@@ -284,6 +321,10 @@ export function HoverCard({
       onPointerDownCapture={event => {
         if (interactive) {
           if (event.target instanceof Node && anchorRef.current?.contains(event.target)) {
+            if (shouldPinInteraction(event.target)) {
+              keepOpen()
+              return
+            }
             close()
             return
           }
@@ -312,13 +353,14 @@ export function HoverCard({
       }}
     >
       {children}
-      {position &&
+      {displayedOpen &&
         createPortal(
           <div
             ref={cardRef}
             data-testid={testId}
+            data-pinned={pinned ? 'true' : 'false'}
             role={interactive ? 'dialog' : 'tooltip'}
-            style={position}
+            style={position ?? { left: 0, top: 0, visibility: 'hidden' }}
             onMouseEnter={interactive ? keepOpen : undefined}
             onMouseLeave={interactive ? scheduleClose : undefined}
             className={cn(

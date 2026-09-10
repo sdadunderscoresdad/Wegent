@@ -199,7 +199,7 @@ describe('bundled plugin resources', () => {
     ).toBe(false)
   })
 
-  test('packages Smart apps on Windows without evaluating path text', () => {
+  test('delegates Smart App verification and packaging to the Wework host', () => {
     const script = readFileSync(
       resolve(
         process.cwd(),
@@ -209,12 +209,26 @@ describe('bundled plugin resources', () => {
       ),
       'utf8'
     )
+    const skill = readFileSync(
+      resolve(
+        process.cwd(),
+        'resources',
+        bundledSmartAppBuilderDirectory,
+        'skills/create-smart-app/SKILL.md'
+      ),
+      'utf8'
+    )
 
-    expect(script).toMatch(/execFileSync\(\s*'tar\.exe'/)
-    expect(script).not.toMatch(/execFileSync\(\s*'powershell\.exe'/)
-    expect(script).toContain("'--exclude=node_modules'")
-    expect(script).toContain("'--exclude=.git'")
-    expect(script).toContain("'--exclude=test-results'")
+    expect(script).toContain("spawnSync('wework'")
+    expect(script).toContain("['smart-app', command, '--project', root, '--format', 'json']")
+    expect(script).toContain("case 'inspect'")
+    expect(script).toContain("case 'verify'")
+    expect(script).toContain("case 'pack'")
+    expect(script).not.toContain('function validate(')
+    expect(script).not.toContain('function pack(')
+    expect(script).not.toContain('execFileSync')
+    expect(skill).toContain('inspect → contract → doctor → verify → preview → pack')
+    expect(skill).toContain('structured error code')
   })
 
   test('uses the Electron release builder and publishes both updater protocols', () => {
@@ -222,15 +236,14 @@ describe('bundled plugin resources', () => {
       resolve(process.cwd(), '../.github/workflows/wework-app.yml'),
       'utf8'
     )
+    const signingKeychainStep = workflow.match(
+      / {6}- name: Prepare Apple signing keychain\n(?:(?!\n {6}- name:)[\s\S])*/
+    )?.[0]
     const packageManifest = JSON.parse(
       readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
     ) as {
       scripts: Record<string, string>
     }
-    const installerHooks = readFileSync(
-      resolve(process.cwd(), 'electron/scripts/installer.nsh'),
-      'utf8'
-    )
     const builderConfig = readFileSync(
       resolve(process.cwd(), 'electron/electron-builder.config.cjs'),
       'utf8'
@@ -249,21 +262,30 @@ describe('bundled plugin resources', () => {
     expect(builderConfig).toContain('productName: identity.productName')
     expect(builderConfig).toContain('executableName: identity.executableName')
     expect(builderConfig).toContain('weworkAppId: identity.identifier')
-    expect(workflow).toMatch(
-      /- name: Prepare Apple signing keychain[\s\S]*?security import[\s\S]*?APPLE_SIGNING_IDENTITY=[\s\S]*?MACOS_KEYCHAIN_PATH=/
+    expect(signingKeychainStep).toContain('security import')
+    expect(signingKeychainStep).toContain('security list-keychains -d user -s')
+    expect(signingKeychainStep).toContain(
+      'echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"'
     )
-    expect(workflow).toContain('security list-keychains -d user -s')
+    expect(signingKeychainStep).toContain('echo "CSC_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"')
+    expect(signingKeychainStep).toContain(
+      'echo "MACOS_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"'
+    )
+    expect(workflow).not.toMatch(/^\s+CSC_LINK:/m)
+    expect(workflow).not.toMatch(/^\s+CSC_KEY_PASSWORD:/m)
     expect(workflow).toContain('generate-desktop-update-manifests.mjs')
     expect(workflow).toContain('plan-desktop-release.mjs')
     expect(workflow).not.toContain('prepare-rolling-desktop-installers.mjs')
     expect(workflow).toContain('CURRENT_SOURCE_REF')
     expect(workflow).toContain('RELEASE_KIND')
-    expect(workflow).toContain('TAURI_SIGNING_PRIVATE_KEY')
+    expect(workflow).toContain('- name: Prepare desktop release assets')
     expect(workflow).toContain('release-manifests/*')
     expect(workflow).toContain("! -name 'WeworkComponent_*.tar.gz'")
     expect(workflow).toContain('desktop-component-release.mjs release-assets version')
     expect(workflow).toContain('desktop-component-release.mjs release-assets shared')
     expect(workflow).toContain('Reusing immutable component asset')
+    expect(workflow).toContain('collect-harness-runtime-release-assets.mjs')
+    expect(workflow).toContain('Reusing immutable Harness Runtime asset')
     expect(workflow).toContain('components-${channel}-linux-x64.json')
     expect(
       readFileSync(
@@ -305,10 +327,6 @@ describe('bundled plugin resources', () => {
       workflow.indexOf('- name: Promote stable release to latest')
     )
     expect(workflow).toMatch(/gh release edit "\$RELEASE_TAG"[\s\S]*--target "\$RELEASE_SHA"/)
-    expect(installerHooks).toContain('Software\\you\\WeWork')
-    expect(installerHooks).toContain('InstallLocation')
-    expect(installerHooks).toContain('${GetOptions} $R0 "/P"')
-    expect(installerHooks).toContain('$R0\\${APP_EXECUTABLE_FILENAME}')
   })
 
   test('publishes packaged Electron artifacts for all desktop platforms', () => {
@@ -317,7 +335,26 @@ describe('bundled plugin resources', () => {
       'utf8'
     )
 
-    expect(workflow).toContain('macos-14')
+    expect(workflow).toMatch(/name: macOS arm64\s+runner: macos-14\s+platform: macos\s+arch: arm64/)
+    expect(workflow).toMatch(
+      /name: macOS x64\s+runner: macos-14\s+platform: macos\s+arch: x64\s+node_arch: x64/
+    )
+    expect(workflow).toContain('- name: Install Rosetta 2')
+    expect(workflow).toContain('architecture: ${{ matrix.node_arch }}')
+    expect(workflow.indexOf('- name: Verify native build architecture')).toBeGreaterThan(
+      workflow.indexOf('- name: Set up Node.js')
+    )
+    expect(workflow.indexOf('- name: Verify native build architecture')).toBeLessThan(
+      workflow.indexOf('- name: Install workspace dependencies')
+    )
+    expect(workflow).toContain('- name: Upload formal release verification diagnostics')
+    expect(workflow).toContain('if: failure() && matrix.platform ==')
+    expect(workflow).toContain('wework/test-results/desktop-e2e/')
+    expect(workflow).toContain('WEWORK_ELECTRON_DEPENDENCIES_READY: "true"')
+    expect(workflow).toContain('WEWORK_E2E_PARALLEL_CHECKPOINTS: "3"')
+    expect(workflow).toContain(
+      '--parallel-segments release-package-startup,component-update,app-update-differential'
+    )
     expect(workflow).toContain('windows-latest')
     expect(workflow).toContain('ubuntu-latest')
     expect(workflow).toContain('macOS arm64')

@@ -45,11 +45,13 @@ interface EnvironmentLoadDiagnostics {
 }
 
 export type EnvironmentDiffMode = 'branch' | 'unstaged' | 'staged' | 'commit'
+export type GitPatchAction = 'stage' | 'unstage' | 'revert'
 
 export interface EnvironmentInfoLoadOptions {
   changeRequestStatusEnabled?: boolean
   force?: boolean
   onPartialInfo?: (info: EnvironmentInfo) => void
+  shareInflight?: boolean
 }
 
 const ENVIRONMENT_DIFF_COMMANDS: Record<EnvironmentDiffMode, string> = {
@@ -999,9 +1001,14 @@ export async function loadProjectEnvironment(
   const now = Date.now()
   const environmentInfoCache = getEnvironmentInfoCache(api)
   const cached = environmentInfoCache.get(cacheKey)
-  // Forced polling must still share an in-flight load. Replacing a slow request
-  // on every poll prevents any result from settling the environment loading state.
-  if (cached && (!cached.settled || (!options.force && cached.expiresAt > now))) {
+  const shouldShareInflight = !options.force || options.shareInflight !== false
+  // Background polling shares an in-flight load so slow requests can settle.
+  // Explicit refreshes may supersede it to observe state that changed meanwhile.
+  if (
+    cached &&
+    ((!cached.settled && shouldShareInflight) ||
+      (cached.settled && !options.force && cached.expiresAt > now))
+  ) {
     logEnvironmentLoad(diagnostics, cached.settled ? 'cache_hit' : 'cache_joined', {
       force: Boolean(options.force),
       expiresInMs: cached.expiresAt - now,
@@ -1105,6 +1112,31 @@ export async function loadProjectEnvironmentDiff(
     timeoutSeconds: 30,
     maxOutputBytes: 5 * 1024 * 1024,
   })
+}
+
+export async function applyProjectEnvironmentPatch(
+  api: DeviceCommandApi,
+  project: ProjectWithTasks | null,
+  action: GitPatchAction,
+  patch: string,
+  target?: EnvironmentWorkspaceTarget | null
+): Promise<void> {
+  const { deviceId, path } = await commandContext(api, project, target)
+  const encodedPatch = bytesToBase64(new TextEncoder().encode(patch))
+  await runGitCommand(api, deviceId, 'git_apply_patch', path, {
+    args: [action, encodedPatch],
+    timeoutSeconds: 30,
+    maxOutputBytes: 64 * 1024,
+  })
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return btoa(binary)
 }
 
 export async function commitProjectChanges(

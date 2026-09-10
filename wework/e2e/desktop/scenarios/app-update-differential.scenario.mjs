@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { appendFile, cp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { hashComponentPath } from '../../../scripts/lib/component-content-hash.mjs'
+
 const TEST_TRAILER = Buffer.from('\nwework-e2e-differential-update\n')
+const UPDATE_CHANNEL = 'stable'
 const electronPackage = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -33,14 +37,10 @@ export async function createDesktopScenario({
   const packagedComponents = JSON.parse(
     await readFile(join(resourcesRoot, 'components.json'), 'utf8')
   )
-  assert.ok(
-    packagedComponents.channel === 'stable' || packagedComponents.channel === 'beta',
-    `Packaged component channel is invalid: ${packagedComponents.channel}`
-  )
   const releaseAssets = await readdir(releaseRoot)
   const oldZipName = findSingle(
     releaseAssets,
-    name => /^WeWork_.+_macos_arm64\.zip$/.test(name),
+    name => name === `WeWork_${packagedComponents.appVersion}_macos_arm64.zip`,
     'macOS arm64 ZIP'
   )
   const oldZip = join(releaseRoot, oldZipName)
@@ -49,7 +49,7 @@ export async function createDesktopScenario({
 
   const currentVersion = versionFromMacZip(oldZipName)
   const targetVersion = nextPatchVersion(currentVersion)
-  const targetZipName = `WeWork_${targetVersion}_macos_arm64.zip`
+  const targetZipName = `WeWorkHostUpdate_${targetVersion}_macos_arm64.zip`
   const targetZip = join(resultDir, targetZipName)
   const targetBlockmap = `${targetZip}.blockmap`
   await cp(oldZip, targetZip)
@@ -66,11 +66,20 @@ export async function createDesktopScenario({
   const appUpdateLogs = await captureAppUpdateLogs(electronUserDataDirectory)
   await rm(updaterCache, { recursive: true, force: true })
   await mkdir(updaterCache, { recursive: true })
-  await cp(oldZip, join(updaterCache, 'update.zip'))
-  await cp(oldBlockmap, join(updaterCache, 'current.blockmap'))
+  const electronRequire = createRequire(electronPackage)
+  const { saveBaseline } = electronRequire('electron-updater/out/WeworkUpdateBaseline.js')
+  await saveBaseline(updaterCache, oldZip, oldBlockmapBytes, {
+    version: currentVersion,
+    arch: 'arm64',
+    url: `https://release.invalid/${oldZipName}`,
+    sha512: createHash('sha512')
+      .update(await readFile(oldZip))
+      .digest('base64'),
+  })
 
   let origin = ''
   let rejectManifest = true
+  let targetComponentManifest
   const requests = []
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', origin)
@@ -102,11 +111,9 @@ export async function createDesktopScenario({
       response.end(manifest)
       return
     }
-    if (path === `/components-${packagedComponents.channel}-macos-arm64.json`) {
+    if (path === `/components-${UPDATE_CHANNEL}-macos-arm64.json`) {
       response.setHeader('content-type', 'application/json')
-      response.end(
-        JSON.stringify(componentManifestForTarget(packagedComponents, targetVersion, origin))
-      )
+      response.end(JSON.stringify(targetComponentManifest))
       return
     }
     if (path === `/${targetZipName}.blockmap`) {
@@ -114,7 +121,8 @@ export async function createDesktopScenario({
       return
     }
     if (path === `/${oldZipName}.blockmap`) {
-      sendBytes(response, oldBlockmapBytes, 'application/octet-stream')
+      response.statusCode = 500
+      response.end('The updater must use the verified local baseline blockmap')
       return
     }
     if (path === `/${targetZipName}`) {
@@ -149,6 +157,12 @@ export async function createDesktopScenario({
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   origin = `http://127.0.0.1:${address.port}`
+  targetComponentManifest = await componentManifestForTarget(
+    packagedComponents,
+    resourcesRoot,
+    targetVersion,
+    origin
+  )
 
   return {
     usesReleasePackageRuntimeAssets: true,
@@ -203,14 +217,29 @@ export async function createDesktopScenario({
       assert.equal(componentState.pending?.appVersion, targetVersion)
       assert.equal(componentState.pending?.stagedFromAppVersion, currentVersion)
 
-      const zipRequests = requests.filter(request => request.path === `/${targetZipName}`)
-      assert.ok(
-        requests.some(
-          request => request.path === `/components-${packagedComponents.channel}-macos-arm64.json`
-        ),
+      const componentManifestPath = `/components-${UPDATE_CHANNEL}-macos-arm64.json`
+      const componentManifestRequestIndex = requests.findIndex(
+        request => request.path === componentManifestPath
+      )
+      const firstZipRequestIndex = requests.findIndex(
+        request => request.path === `/${targetZipName}`
+      )
+      assert.notEqual(
+        componentManifestRequestIndex,
+        -1,
         'The target app component manifest was never requested'
       )
-      assert.ok(zipRequests.length > 0, 'The target ZIP was never requested')
+      assert.notEqual(firstZipRequestIndex, -1, 'The target ZIP was never requested')
+      assert.ok(
+        componentManifestRequestIndex < firstZipRequestIndex,
+        'The target app component manifest was not staged before the ZIP download'
+      )
+      assert.equal(
+        requests.some(request => request.path.startsWith('/unused-')),
+        false,
+        'The updater downloaded an unchanged packaged component'
+      )
+      const zipRequests = requests.filter(request => request.path === `/${targetZipName}`)
       assert.ok(
         zipRequests.some(request => request.range),
         'The updater did not request any ZIP byte ranges'
@@ -219,6 +248,11 @@ export async function createDesktopScenario({
         zipRequests.some(request => !request.range),
         false,
         'The updater fell back to a full ZIP download'
+      )
+      assert.equal(
+        requests.some(request => request.path === `/${oldZipName}.blockmap`),
+        false,
+        'The updater requested a guessed remote baseline blockmap'
       )
       const downloadedBytes = zipRequests.reduce(
         (total, request) => total + rangeLength(request.range),
@@ -251,28 +285,32 @@ export async function createDesktopScenario({
   }
 }
 
-function componentManifestForTarget(packaged, targetVersion, origin) {
-  return {
-    schemaVersion: 1,
-    appVersion: targetVersion,
-    channel: packaged.channel,
-    platform: 'macos',
-    arch: 'arm64',
-    components: Object.fromEntries(
-      Object.entries(packaged.components)
-        .filter(([id]) => id !== 'electron')
-        .map(([id, component]) => [
+async function componentManifestForTarget(packaged, resourcesRoot, targetVersion, origin) {
+  const components = await Promise.all(
+    Object.entries(packaged.components)
+      .filter(([id]) => id !== 'electron')
+      .map(async ([id, component]) => {
+        const contentSha256 = await hashComponentPath(join(resourcesRoot, component.path))
+        return [
           id,
           {
             version: component.version,
-            contentSha256: component.sha256,
-            archiveSha256: component.sha256,
+            contentSha256,
+            archiveSha256: contentSha256,
             archiveBytes: 1,
             downloadUrl: `${origin}/unused-${id}.tar.gz`,
             entryPath: '.',
           },
-        ])
-    ),
+        ]
+      })
+  )
+  return {
+    schemaVersion: 1,
+    appVersion: targetVersion,
+    channel: UPDATE_CHANNEL,
+    platform: 'macos',
+    arch: 'arm64',
+    components: Object.fromEntries(components),
   }
 }
 

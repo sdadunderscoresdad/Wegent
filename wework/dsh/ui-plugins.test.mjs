@@ -4,12 +4,15 @@ import test from 'node:test'
 import vm from 'node:vm'
 
 const packages = [
+  'conversation-export',
   'ui-core-apps',
   'ui-core-settings',
   'ui-plugin-center',
   'ui-applications',
   'ui-automations',
   'ui-cloud-work',
+  'ui-home-focus',
+  'ui-home-developer',
   'ui-git',
 ]
 
@@ -162,4 +165,14 @@ test('Git contributes UI only through generic positional extension points', asyn
     registrations.slice(7).map(entry => entry.options.id),
     ['git-hosting', 'worktrees']
   )
+})
+
+test('workbench modes contribute mutually exclusive home implementations', async () => {
+  const focus = await registrationsOf('ui-home-focus')
+  const developer = await registrationsOf('ui-home-developer')
+
+  assert.deepEqual(focus.injections, ['wework.home'])
+  assert.deepEqual(developer.injections, ['wework.home'])
+  assert.equal(focus.registrations[0].descriptor.id, 'focus-home')
+  assert.equal(developer.registrations[0].descriptor.id, 'developer-home')
 })

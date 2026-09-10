@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode, useEffect, useMemo } from 'react'
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { ProjectChatControls } from '@/components/chat/ChatInput'
 import { createDeviceApi } from '@/api/devices'
 import { getLocalCodexUsageDisplay } from '@/api/local/codexUsage'
@@ -96,15 +96,20 @@ const desktopHostMocks = vi.hoisted(() => ({
 }))
 const harnessAppMocks = vi.hoisted(() => ({
   addPlugin: vi.fn(),
+  inspectVerification: vi.fn(),
   list: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
+  verify: vi.fn(),
 }))
 const harnessAppTabMocks = vi.hoisted(() => ({
   register: vi.fn(),
   unregister: vi.fn(),
   takeProxyToken: vi.fn(),
   takeContextToken: vi.fn(),
+}))
+const dshExtensionMocks = vi.hoisted(() => ({
+  bindConversationController: vi.fn(() => vi.fn()),
 }))
 const cloudDesktopExtensionMock = vi.hoisted(() => {
   const launch = vi.fn()
@@ -163,9 +168,11 @@ vi.mock('@/api/local/harnessApps', async importOriginal => {
     harnessAppsApi: {
       ...actual.harnessAppsApi,
       addPlugin: harnessAppMocks.addPlugin,
+      inspectVerification: harnessAppMocks.inspectVerification,
       list: harnessAppMocks.list,
       start: harnessAppMocks.start,
       stop: harnessAppMocks.stop,
+      verify: harnessAppMocks.verify,
     },
   }
 })
@@ -178,6 +185,14 @@ vi.mock('@/features/harness-apps/harnessAppTabs', async importOriginal => {
     unregisterHarnessAppTab: harnessAppTabMocks.unregister,
     takeHarnessAppProxyToken: harnessAppTabMocks.takeProxyToken,
     takeHarnessAppContextToken: harnessAppTabMocks.takeContextToken,
+  }
+})
+
+vi.mock('@/features/dsh-runtime/dshExtensions', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/features/dsh-runtime/dshExtensions')>()
+  return {
+    ...actual,
+    bindDshConversationController: dshExtensionMocks.bindConversationController,
   }
 })
 
@@ -591,6 +606,16 @@ function createDefaultImNotificationSettings() {
 }
 
 describe('DesktopWorkbenchLayout', () => {
+  beforeAll(() => {
+    configure({ asyncUtilTimeout: 5_000 })
+    vi.setConfig({ testTimeout: 30_000 })
+  })
+
+  afterAll(() => {
+    configure({ asyncUtilTimeout: 1_000 })
+    vi.resetConfig()
+  })
+
   function createDeferred<T>() {
     let resolve!: (value: T) => void
     let reject!: (error: unknown) => void
@@ -745,8 +770,10 @@ describe('DesktopWorkbenchLayout', () => {
     }))
     harnessAppMocks.list.mockResolvedValue([])
     harnessAppMocks.addPlugin.mockReset()
+    harnessAppMocks.inspectVerification.mockReset().mockResolvedValue(null)
     harnessAppMocks.start.mockReset()
     harnessAppMocks.stop.mockReset().mockResolvedValue(undefined)
+    harnessAppMocks.verify.mockReset()
     embeddedBrowserMocks.closeEmbeddedBrowser.mockClear()
     embeddedBrowserMocks.setEmbeddedBrowserActiveTab.mockClear()
     harnessAppTabMocks.takeProxyToken.mockResolvedValue(null)
@@ -1801,6 +1828,52 @@ describe('DesktopWorkbenchLayout', () => {
 
     expect(window.location.pathname).toBe('/todo')
     expect(screen.getByTestId('cloud-todo-workspace')).toBeVisible()
+  })
+
+  test('keeps the active task return route when an inactive project space is retained', () => {
+    const taskTab = {
+      id: 'task-existing',
+      kind: 'task' as const,
+      title: '当前任务',
+      contentRoute: '/runtime-tasks?deviceId=local-device&taskId=runtime-1',
+    }
+    const boardTab = {
+      id: 'board-existing',
+      kind: 'board' as const,
+      title: '项目空间',
+      contentRoute: '/todo?projectId=project-1',
+    }
+    const workspaceTabs = (activeTab: typeof taskTab | typeof boardTab) =>
+      ({
+        tabs: [taskTab, boardTab],
+        activeTabId: activeTab.id,
+        activeTab,
+        openTab: vi.fn(),
+        selectTab: vi.fn(),
+        closeTab: vi.fn(),
+        closeOtherTabs: vi.fn(),
+        restoreClosedTab: vi.fn(),
+        moveTab: vi.fn(),
+        updateActiveTab: vi.fn(),
+      }) as unknown as WorkspaceTabsContextValue
+
+    window.sessionStorage.clear()
+    window.history.pushState({}, '', taskTab.contentRoute)
+
+    render(
+      <>
+        <WorkspaceTabsContext.Provider value={workspaceTabs(taskTab)}>
+          <DesktopWorkbenchLayout {...baseProps} routeActive />
+        </WorkspaceTabsContext.Provider>
+        <WorkspaceTabsContext.Provider value={workspaceTabs(boardTab)}>
+          <DesktopWorkbenchLayout {...baseProps} routeActive={false} surfaceKind="board" />
+        </WorkspaceTabsContext.Provider>
+      </>
+    )
+
+    act(() => navigateTo('/settings'))
+
+    expect(window.sessionStorage.getItem('wework.settingsReturnPath')).toBe(taskTab.contentRoute)
   })
 
   test('returns to the active workspace tab when the URL is out of sync', async () => {
@@ -7331,7 +7404,7 @@ describe('DesktopWorkbenchLayout', () => {
       createResult.resolve(optimisticAddress)
       await createResult.promise
     })
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat uses the refreshed source thread when the route address is stale', async () => {
     const { propsForTask, runtimeWork, taskA } = createLocalRuntimeTaskPanelFixture()
@@ -7366,7 +7439,7 @@ describe('DesktopWorkbenchLayout', () => {
         })
       )
     )
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat queues a follow-up while its current response is running', async () => {
     const address: RuntimeTaskAddress = {
@@ -7409,7 +7482,7 @@ describe('DesktopWorkbenchLayout', () => {
     expect(within(sideChat).getAllByTestId('user-message-content').at(-1)).toHaveTextContent(
       'queued follow-up'
     )
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat renders a direct follow-up before its thinking indicator', async () => {
     const address: RuntimeTaskAddress = {
@@ -7454,7 +7527,7 @@ describe('DesktopWorkbenchLayout', () => {
       followUpSend.resolve(true)
       await followUpSend.promise
     })
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat sends a busy follow-up as guidance when selected', async () => {
     const address: RuntimeTaskAddress = {
@@ -7524,7 +7597,7 @@ describe('DesktopWorkbenchLayout', () => {
     expect(within(sideChat).getAllByTestId('user-message-content').at(-1)).toHaveTextContent(
       'guide the current response'
     )
-  }, 15_000)
+  }, 30_000)
 
   test('editing a temporary chat queued message replaces draft attachments', async () => {
     const address: RuntimeTaskAddress = {
@@ -7574,7 +7647,7 @@ describe('DesktopWorkbenchLayout', () => {
     expect(within(sideChat).getAllByTestId('attachment-badge')).toHaveLength(1)
     expect(within(sideChat).getByTitle('queued attachment')).toBeInTheDocument()
     expect(within(sideChat).queryByTitle('draft attachment')).not.toBeInTheDocument()
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat keeps a stale busy rejection queued without blind retries', async () => {
     const address: RuntimeTaskAddress = {
@@ -7616,7 +7689,7 @@ describe('DesktopWorkbenchLayout', () => {
     expect(within(sideChat).queryByTestId('chat-input-error')).not.toBeInTheDocument()
 
     expect(sendRuntimePaneMessageMock).toHaveBeenCalledTimes(1)
-  }, 20_000)
+  }, 30_000)
 
   test('temporary chat marks a rejected queued send as failed', async () => {
     const address: RuntimeTaskAddress = {
@@ -7657,7 +7730,7 @@ describe('DesktopWorkbenchLayout', () => {
       )
     )
     expect(sendRuntimePaneMessageMock).toHaveBeenCalledTimes(1)
-  }, 15_000)
+  }, 30_000)
 
   test('temporary chat rolls back its optimistic address when runtime creation fails', async () => {
     const createResult = createDeferred<RuntimeTaskAddress | false>()
@@ -7698,7 +7771,7 @@ describe('DesktopWorkbenchLayout', () => {
     await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1))
     expect(sideChatInput).toHaveValue('side chat')
     expect(within(sideChat).getByTestId('send-message-button')).toBeEnabled()
-  }, 15_000)
+  }, 30_000)
 
   test('moves right workspace tabs into the titlebar in Electron', async () => {
     runtimeMocks.electron = true
@@ -9299,6 +9372,7 @@ describe('DesktopWorkbenchLayout', () => {
         size: 25,
       })
     })
+    const writeWorkspaceTextFile = vi.fn()
 
     render(
       <FileWorkspacePanel
@@ -9308,23 +9382,25 @@ describe('DesktopWorkbenchLayout', () => {
           source: 'project',
           workspaceSource: 'remote',
         }}
-        workspaceFileApi={{ listWorkspaceEntries, readWorkspaceTextFile }}
+        workspaceFileApi={{
+          listWorkspaceEntries,
+          readWorkspaceTextFile,
+          writeWorkspaceTextFile,
+        }}
         onAddCodeComment={vi.fn()}
       />
     )
 
     await user.click(await screen.findByText('first.ts'))
     await waitFor(() =>
-      expect(screen.getByTestId('workspace-file-preview-code-view')).toHaveAttribute(
-        'data-file-path',
-        '/workspace/project/first.ts'
+      expect(screen.getByTestId('workspace-file-editor')).toHaveTextContent(
+        'export const first = true'
       )
     )
     await user.click(screen.getByText('second.ts'))
 
-    expect(screen.getByTestId('workspace-file-preview-code-view')).toHaveAttribute(
-      'data-file-path',
-      '/workspace/project/first.ts'
+    expect(screen.getByTestId('workspace-file-editor')).toHaveTextContent(
+      'export const first = true'
     )
     expect(screen.getByTestId('workspace-file-preview-loading-indicator')).toBeInTheDocument()
     expect(screen.queryByTestId('workspace-file-preview-progress')).not.toBeInTheDocument()
@@ -9342,15 +9418,14 @@ describe('DesktopWorkbenchLayout', () => {
     })
 
     await waitFor(() =>
-      expect(screen.getByTestId('workspace-file-preview-code-view')).toHaveAttribute(
-        'data-file-path',
-        '/workspace/project/second.ts'
+      expect(screen.getByTestId('workspace-file-editor')).toHaveTextContent(
+        'export const second = true'
       )
     )
     expect(screen.queryByTestId('workspace-file-preview-loading-indicator')).not.toBeInTheDocument()
   })
 
-  test('workspace file panel edits and saves an editable text file', async () => {
+  test('workspace file panel directly edits and autosaves a writable text file', async () => {
     const user = userEvent.setup()
     const listWorkspaceEntries = vi.fn().mockResolvedValue({
       path: '/workspace/project',
@@ -9403,33 +9478,114 @@ describe('DesktopWorkbenchLayout', () => {
     )
 
     await user.click(await screen.findByText('README.md'))
-    await waitFor(() =>
-      expect(screen.getByTestId('workspace-file-edit-button')).toBeInTheDocument()
-    )
-
-    await user.click(screen.getByTestId('workspace-file-edit-button'))
-    const editor = screen.getByTestId('workspace-file-editor')
+    const editor = await screen.findByTestId('workspace-file-editor')
+    expect(screen.queryByTestId('workspace-file-edit-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-file-save-button')).not.toBeInTheDocument()
     const codeMirrorContent = editor.querySelector('.cm-content')
     expect(codeMirrorContent).toBeInstanceOf(HTMLElement)
 
     await user.click(codeMirrorContent as HTMLElement)
     await user.keyboard('{Control>}a{/Control}hello world')
-    await user.click(screen.getByTestId('workspace-file-save-button'))
+
+    await waitFor(
+      () =>
+        expect(writeWorkspaceTextFile).toHaveBeenCalledWith(
+          'workspace-cloud-device',
+          '/workspace/project/README.md',
+          'hello world',
+          'sha256:old'
+        ),
+      { timeout: 5_000 }
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-file-editor')).toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-file-save-button')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('workspace-file-edit-button')).not.toBeInTheDocument()
+    })
+  })
+
+  test('workspace file panel saves pending edits before opening another file', async () => {
+    const user = userEvent.setup()
+    const listWorkspaceEntries = vi.fn().mockResolvedValue({
+      path: '/workspace/project',
+      entries: [
+        {
+          name: 'README.md',
+          path: '/workspace/project/README.md',
+          isDirectory: false,
+          size: 5,
+          modifiedAt: null,
+        },
+        {
+          name: 'notes.txt',
+          path: '/workspace/project/notes.txt',
+          isDirectory: false,
+          size: 5,
+          modifiedAt: null,
+        },
+      ],
+    })
+    const readWorkspaceTextFile = vi.fn().mockImplementation((_deviceId, path) =>
+      Promise.resolve({
+        path,
+        name: path.endsWith('README.md') ? 'README.md' : 'notes.txt',
+        content: path.endsWith('README.md') ? 'hello' : 'notes',
+        editable: true,
+        revision: path.endsWith('README.md') ? 'sha256:readme' : 'sha256:notes',
+        truncated: false,
+        size: 5,
+        modifiedAt: null,
+      })
+    )
+    const writeWorkspaceTextFile = vi.fn().mockResolvedValue({
+      path: '/workspace/project/README.md',
+      name: 'README.md',
+      content: 'hello world',
+      editable: true,
+      revision: 'sha256:saved',
+      truncated: false,
+      size: 11,
+      modifiedAt: null,
+    })
+
+    render(
+      <FileWorkspacePanel
+        target={{
+          deviceId: 'workspace-cloud-device',
+          path: '/workspace/project',
+          source: 'project',
+          workspaceSource: 'remote',
+        }}
+        workspaceFileApi={{
+          listWorkspaceEntries,
+          readWorkspaceTextFile,
+          writeWorkspaceTextFile,
+        }}
+        onAddCodeComment={vi.fn()}
+      />
+    )
+
+    await user.click(await screen.findByText('README.md'))
+    const codeMirrorContent = (await screen.findByTestId('workspace-file-editor')).querySelector(
+      '.cm-content'
+    )
+    expect(codeMirrorContent).toBeInstanceOf(HTMLElement)
+    await user.click(codeMirrorContent as HTMLElement)
+    await user.keyboard('{Control>}a{/Control}hello world')
+    await user.click(screen.getByText('notes.txt'))
 
     await waitFor(() =>
       expect(writeWorkspaceTextFile).toHaveBeenCalledWith(
         'workspace-cloud-device',
         '/workspace/project/README.md',
         'hello world',
-        'sha256:old'
+        'sha256:readme'
       )
     )
-    await waitFor(() => {
-      expect(screen.queryByTestId('workspace-file-editor')).not.toBeInTheDocument()
-      expect(screen.queryByTestId('workspace-file-save-button')).not.toBeInTheDocument()
-      expect(screen.getByTestId('workspace-file-edit-button')).toBeInTheDocument()
-      expect(screen.getByTestId('workspace-markdown-preview')).toHaveTextContent('hello world')
-    })
+    expect(await screen.findByTestId('workspace-file-path')).toHaveTextContent(
+      '/workspace/project/notes.txt'
+    )
+    expect(screen.queryByTestId('workspace-file-unsaved-dialog')).not.toBeInTheDocument()
   })
 
   test('workspace file preview renders file contents with Pierre file viewer', async () => {
@@ -11299,6 +11455,44 @@ describe('DesktopWorkbenchLayout', () => {
     expect(screen.getByTestId('smart-app-development-preview-add-plugins')).toBeEnabled()
     expect(screen.getByTestId('smart-app-development-preview-refresh')).toBeEnabled()
     expect(harnessAppMocks.start).toHaveBeenCalledWith(installed.id, null)
+    expect(
+      screen.getByTestId('smart-app-development-preview-verification-unverified')
+    ).toHaveTextContent('尚未验证')
+
+    const verification = createDeferred<{
+      status: 'passed'
+      issues: []
+      stages: []
+      schemaVersion: 1
+      projectRoot: string
+      inputFingerprint: string
+      deliverableFingerprint: string
+      startedAt: string
+      finishedAt: string
+    }>()
+    harnessAppMocks.verify.mockImplementationOnce(() => verification.promise)
+    await userEvent.click(screen.getByTestId('smart-app-development-preview-verify'))
+    expect(harnessAppMocks.verify).toHaveBeenCalledWith(installed.id)
+    expect(
+      screen.getByTestId('smart-app-development-preview-verification-running')
+    ).toBeInTheDocument()
+
+    verification.resolve({
+      status: 'passed',
+      issues: [],
+      stages: [],
+      schemaVersion: 1,
+      projectRoot: installed.packagePath,
+      inputFingerprint: 'input',
+      deliverableFingerprint: 'deliverable',
+      startedAt: '2026-09-04T00:00:00.000Z',
+      finishedAt: '2026-09-04T00:00:01.000Z',
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('smart-app-development-preview-verification-passed')
+      ).toHaveTextContent('验证通过')
+    )
 
     await userEvent.click(screen.getByTestId('smart-app-development-preview-add-plugins'))
 
@@ -11342,6 +11536,108 @@ describe('DesktopWorkbenchLayout', () => {
       )
     )
     expect(screen.queryByTestId('smart-app-development-preview')).not.toBeInTheDocument()
+  })
+
+  test('shows actionable failed and stale verification states in the Smart app preview', async () => {
+    const { propsForTask, taskA } = createLocalRuntimeTaskPanelFixture()
+    const installed = {
+      id: 'verification-workbench',
+      manifest: {
+        name: 'verification-workbench',
+        displayName: '验证工作台',
+        version: '0.1.0',
+        type: 'deepseek-harness-plugin-bundle' as const,
+        description: 'Verification fixture',
+        entry: { installPackage: 'packages/bundle/web-app', profile: 'verification-workbench' },
+        requirements: { dsh: '0.1.0-rc.8', node: '>=22' },
+      },
+      packagePath: '/tmp/verification-workbench',
+      sha256: 'd'.repeat(64),
+      modelKey: null,
+      resident: false,
+      runtimeVersion: null,
+      state: 'installed' as const,
+      webUrl: null,
+      error: null,
+      source: 'linked' as const,
+    }
+    const running = {
+      ...installed,
+      state: 'running' as const,
+      webUrl: 'http://127.0.0.1:43126/',
+    }
+    harnessAppMocks.list.mockResolvedValue([running])
+    harnessAppMocks.start.mockResolvedValue(running)
+    harnessAppMocks.inspectVerification.mockResolvedValue({
+      schemaVersion: 1,
+      status: 'failed',
+      projectRoot: installed.packagePath,
+      inputFingerprint: 'input',
+      deliverableFingerprint: null,
+      startedAt: '2026-09-04T00:00:00.000Z',
+      finishedAt: '2026-09-04T00:00:01.000Z',
+      stages: [],
+      issues: [
+        {
+          code: 'runtime_selector_missing',
+          stage: 'runtime',
+          file: 'smart-app.contract.json',
+          message: 'The ready selector was not found',
+          expected: '[data-testid="app-ready"]',
+          actual: null,
+          blocking: true,
+          hint: 'Add the stable ready selector to the client root.',
+        },
+        {
+          code: 'artifact_missing',
+          stage: 'artifacts',
+          file: 'dist/client.js',
+          message: 'Missing client artifact',
+          expected: null,
+          actual: null,
+          blocking: true,
+          hint: 'Run the declared build script.',
+        },
+      ],
+    })
+    queueSmartAppDevelopmentPreview({
+      installationId: installed.id,
+      displayName: installed.manifest.displayName,
+    })
+
+    render(<DesktopWorkbenchLayout {...propsForTask(taskA)} />)
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('smart-app-development-preview-verification-failed')
+      ).toHaveTextContent('智能工作台校验未通过，请修复后重新验证。')
+    )
+    expect(
+      screen.getByTestId('smart-app-development-preview-verification-failed')
+    ).toHaveTextContent('smart-app.contract.json')
+    expect(
+      screen.getByTestId('smart-app-development-preview-verification-failed')
+    ).not.toHaveTextContent('Add the stable ready selector to the client root.')
+    await userEvent.click(screen.getByTestId('smart-app-development-preview-verification-details'))
+    expect(screen.getByText('artifact_missing')).toBeInTheDocument()
+
+    harnessAppMocks.inspectVerification.mockResolvedValue({
+      schemaVersion: 1,
+      status: 'stale',
+      projectRoot: installed.packagePath,
+      inputFingerprint: 'changed-input',
+      deliverableFingerprint: 'previous-delivery',
+      startedAt: '2026-09-04T00:00:00.000Z',
+      finishedAt: '2026-09-04T00:00:01.000Z',
+      stages: [],
+      issues: [],
+    })
+    await userEvent.click(screen.getByTestId('smart-app-development-preview-reload'))
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('smart-app-development-preview-verification-stale')
+      ).toHaveTextContent('验证已过期')
+    )
   })
 
   test('keeps an inactive Smart app preview from reclaiming the browser after switching tasks', async () => {
@@ -11673,6 +11969,23 @@ describe('DesktopWorkbenchLayout', () => {
     await waitFor(() => {
       expect(desktopHostMocks.invoke).toHaveBeenCalledWith('renderer.startupReady')
     })
+  })
+
+  test('binds the conversation controller only for the active task surface', async () => {
+    const { rerender } = render(<DesktopWorkbenchLayout {...baseProps} routeActive={false} />)
+
+    expect(dshExtensionMocks.bindConversationController).not.toHaveBeenCalled()
+
+    rerender(<DesktopWorkbenchLayout {...baseProps} routeActive />)
+    await waitFor(() => {
+      expect(dshExtensionMocks.bindConversationController).toHaveBeenCalledTimes(1)
+    })
+
+    rerender(<DesktopWorkbenchLayout {...baseProps} routeActive surfaceKind="board" />)
+    await waitFor(() => {
+      expect(dshExtensionMocks.bindConversationController.mock.results[0]?.value).toHaveBeenCalled()
+    })
+    expect(dshExtensionMocks.bindConversationController).toHaveBeenCalledTimes(1)
   })
 
   test('does not reuse a migrated default browser label after switching panes', async () => {

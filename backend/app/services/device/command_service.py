@@ -74,6 +74,7 @@ REMOTE_MUTATING_COMMAND_KEYS = frozenset(
         "git_checkout",
         "git_checkout_new",
         "git_add_all",
+        "git_apply_patch",
         "git_commit",
         "git_push",
         "sync_git_credentials",
@@ -139,6 +140,10 @@ async def _resolve_dispatch_device_id(
         raise DeviceCommandError(REMOTE_CONTROL_DISABLED_MESSAGE)
 
     if device_type in LOCAL_COMMAND_DEVICE_TYPES:
+        if device_type == DeviceType.APP:
+            from app.services.device.identity import record_route_id
+
+            return record_route_id(device_kind)
         return submitted_device_id
 
     if device_type not in {DeviceType.CLOUD, DeviceType.REMOTE}:
@@ -372,6 +377,7 @@ async def execute_configured_device_command(
         "max_output_bytes": max_output_bytes,
     }
     if command_key in {
+        "git_apply_patch",
         "workspace_tree",
         "workspace_read_text_file",
         "workspace_read_file_chunk",

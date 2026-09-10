@@ -17,7 +17,17 @@ import PluginCatalogRoute from '../dsh/ui-plugin-center/src/catalog-route'
 import PluginCreateRoute from '../dsh/ui-plugin-center/src/create-route'
 import PluginManagementRoute from '../dsh/ui-plugin-center/src/management-route'
 import './i18n'
+import { telemetryFeatureForLocation } from './telemetry/routes'
 import App from './App'
+
+const telemetryMocks = vi.hoisted(() => ({ track: vi.fn(), trackEvent: vi.fn() }))
+
+vi.mock('@/telemetry/client', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/telemetry/client')>()),
+  track: telemetryMocks.track,
+  trackEvent: telemetryMocks.trackEvent,
+  useTelemetryEnabled: () => true,
+}))
 
 const TEST_DSH_ROUTES = [
   {
@@ -93,7 +103,6 @@ const TEST_DSH_NAVIGATION = [
   {
     id: 'applications.navigation',
     activeItem: 'sites',
-    experimental: true,
     icon: 'applications',
     label: '应用',
     order: 30,
@@ -182,6 +191,7 @@ vi.mock('@/desktop/localExecutor', () => ({
     .fn()
     .mockResolvedValue({ running: true, ready: true, deviceId: 'local-device' }),
   getInitializedBundledPluginMarketplace: vi.fn().mockReturnValue(null),
+  getKnownLocalExecutorDeviceId: vi.fn().mockReturnValue('local-device'),
   requestLocalExecutor: vi.fn(async (capability: string) => {
     if (capability === 'executor.plugins.personal.list') {
       return { marketplacePath: '', plugins: [] }
@@ -1037,6 +1047,8 @@ describe('App plugins route', () => {
       runtimeMode: 'backend',
     }
     desktopHostMocks.invoke.mockClear()
+    telemetryMocks.track.mockReset()
+    telemetryMocks.trackEvent.mockReset()
     workbenchValue.state.runtimeWork = null
     workbenchValue.state.currentRuntimeTask = null
     workbenchValue.state.devices = [
@@ -1079,6 +1091,83 @@ describe('App plugins route', () => {
     await screen.findByTestId('app-shell')
     await waitFor(() => expect(workbenchProviderMocks.mounts).toHaveBeenCalledTimes(1))
     expect(workbenchProviderMocks.mounts).toHaveBeenCalledWith(true)
+  })
+
+  test('does not assign legacy generic features to smart app locations', () => {
+    expect(telemetryFeatureForLocation('/sites', '?app_type=smart_app')).toBe('sites')
+    expect(telemetryFeatureForLocation('/sites', '?app_type=smart_app&view=owned')).toBe('sites')
+    expect(telemetryFeatureForLocation('/app/harness-research-desk', '')).toBe('apps')
+    expect(telemetryFeatureForLocation('/sites', '?app_type=web')).toBe('sites')
+    expect(telemetryFeatureForLocation('/app/native-task', '')).toBe('apps')
+  })
+
+  test('automatically observes a Smart App view change when only search changes', async () => {
+    await updateAppPreferences({ experimentalFeaturesEnabled: true })
+    window.history.pushState({}, '', '/sites?app_type=smart_app')
+    renderApp()
+
+    await waitFor(() =>
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith({
+        name: 'smart_app_marketplace_opened',
+        properties: { domain: 'smart_app' },
+      })
+    )
+
+    await act(async () => {
+      window.history.pushState({}, '', '/sites?app_type=smart_app&view=owned')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() =>
+      expect(telemetryMocks.trackEvent).toHaveBeenLastCalledWith({
+        name: 'smart_app_owned_opened',
+        properties: { domain: 'smart_app' },
+      })
+    )
+
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith('feature_opened', {
+      feature: 'sites',
+    })
+  })
+
+  test('automatically observes an installed Smart App open', async () => {
+    await updateAppPreferences({ experimentalFeaturesEnabled: true })
+    window.history.pushState({}, '', '/app/harness-research-desk')
+    renderApp()
+
+    await waitFor(() =>
+      expect(telemetryMocks.trackEvent).toHaveBeenCalledWith({
+        name: 'smart_app_opened',
+        properties: { domain: 'smart_app' },
+      })
+    )
+  })
+
+  test('does not track a generic sites page again when only query state changes', async () => {
+    window.history.pushState(
+      {},
+      '',
+      '/sites?app_type=web&view=environment-variables&project_id=project-1'
+    )
+    renderApp()
+
+    await waitFor(() =>
+      expect(telemetryMocks.track).toHaveBeenCalledWith('feature_opened', {
+        feature: 'sites',
+      })
+    )
+    const openedFeatureCount = telemetryMocks.track.mock.calls.filter(
+      ([event]) => event === 'feature_opened'
+    ).length
+
+    await act(async () => {
+      window.history.pushState({}, '', '/sites?app_type=web')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    expect(
+      telemetryMocks.track.mock.calls.filter(([event]) => event === 'feature_opened')
+    ).toHaveLength(openedFeatureCount)
   })
 
   test('does not dispatch application shortcuts from editable targets', async () => {

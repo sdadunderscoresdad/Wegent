@@ -763,6 +763,16 @@ async fn app_ipc_manages_local_projects_and_nested_todos() {
     assert_eq!(todos.as_array().unwrap().len(), 2);
     assert_eq!(child["parent_id"], parent["id"]);
 
+    let read_child = server
+        .dispatch(
+            "todos.mark_read",
+            json!({"project_id": project_id, "task_id": child["id"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read_child["id"], child["id"]);
+    assert_ne!(read_child["metadata"]["is_unread"], json!(true));
+
     let updated = server
         .dispatch(
             "todos.update",
@@ -1604,6 +1614,17 @@ async fn app_ipc_lists_codex_skills_from_runtime_directories() {
     assert_eq!(response["ok"], true);
     assert_eq!(response["result"]["success"], true);
     let skills = response["result"]["stdout"].as_array().unwrap();
+    assert_eq!(skills.len(), 4);
+    let creator = skills
+        .iter()
+        .find(|skill| skill["name"] == "wework-plugin-creator")
+        .unwrap();
+    assert_eq!(creator["source"], "codex");
+    assert!(Path::new(creator["path"].as_str().unwrap()).is_file());
+    let skills = skills
+        .iter()
+        .filter(|skill| skill["name"] != "wework-plugin-creator")
+        .collect::<Vec<_>>();
     assert_eq!(skills.len(), 3);
     assert_eq!(skills[0]["name"], json!("codex-review"));
     assert_eq!(

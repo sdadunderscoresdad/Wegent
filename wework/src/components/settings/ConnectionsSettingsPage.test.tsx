@@ -9,6 +9,12 @@ import {
   getLocalCodexOfficialModels,
   saveLocalCodexModelCatalogOverride,
 } from '@/api/local/codexOfficialModels'
+import {
+  cancelLocalCodexLogin,
+  hasLocalCodexAccount,
+  startLocalCodexLogin,
+} from '@/api/local/codexAuth'
+import { getLocalCodexAuthStatus } from '@/api/local/runtimeAuthStatus'
 import { createUserApi } from '@/api/users'
 import { AppearanceProvider } from '@/features/appearance'
 import {
@@ -20,8 +26,6 @@ import { createDefaultLocalModelCatalogEntry } from '@/features/model-settings/l
 import { saveLocalModelConfig } from '@/features/model-settings/localModelSettings'
 import { openExternalUrl } from '@/lib/external-links'
 import { requestLocalExecutor } from '@/desktop/localExecutor'
-import { defaultAppPreferences } from '@/desktop/appPreferences'
-import { AppPreferencesContext } from '@/features/app-preferences/appPreferencesContext'
 import { preloadDefaultDshUiTestModules } from '@/test/setup'
 import { installGitUiTestContributions } from '../../../dsh/ui-git/test-support'
 import '@/i18n'
@@ -51,18 +55,6 @@ const remoteDeviceOnboardingExtensionMock = vi.hoisted(() => ({
   CommandDetails: vi.fn(() => null),
 }))
 const experimentalFeatures = vi.hoisted(() => ({ enabled: true }))
-const appPreferencesMocks = vi.hoisted(() => ({
-  update: vi.fn(),
-}))
-
-vi.mock('@/desktop/appPreferences', async importOriginal => {
-  const actual = await importOriginal<typeof import('@/desktop/appPreferences')>()
-  return {
-    ...actual,
-    updateAppPreferences: appPreferencesMocks.update,
-  }
-})
-
 vi.mock('@/features/experimental-features/useExperimentalFeaturesEnabled', () => ({
   useExperimentalFeaturesEnabled: () => experimentalFeatures.enabled,
 }))
@@ -102,15 +94,13 @@ vi.mock('@/api/local/codexOfficialModels', () => ({
 }))
 
 vi.mock('@/api/local/runtimeAuthStatus', () => ({
-  getLocalCodexAuthStatus: vi.fn().mockResolvedValue({
-    runtime: 'codex',
-    targetPath: '/Users/me/.codex/auth.json',
-    exists: true,
-    updatedAt: '2026-07-01T00:00:00.000Z',
-    sha256: 'abc123',
-    sizeBytes: 128,
-    error: null,
-  }),
+  getLocalCodexAuthStatus: vi.fn(),
+}))
+
+vi.mock('@/api/local/codexAuth', () => ({
+  startLocalCodexLogin: vi.fn(),
+  hasLocalCodexAccount: vi.fn(),
+  cancelLocalCodexLogin: vi.fn(),
 }))
 
 vi.mock('@/api/local/codexPlugins', () => ({
@@ -156,6 +146,10 @@ const getLocalCodexOfficialModelsMock = vi.mocked(getLocalCodexOfficialModels)
 const getLocalCodexModelCatalogOverridesMock = vi.mocked(getLocalCodexModelCatalogOverrides)
 const saveLocalCodexModelCatalogOverrideMock = vi.mocked(saveLocalCodexModelCatalogOverride)
 const deleteLocalCodexModelCatalogOverrideMock = vi.mocked(deleteLocalCodexModelCatalogOverride)
+const getLocalCodexAuthStatusMock = vi.mocked(getLocalCodexAuthStatus)
+const startLocalCodexLoginMock = vi.mocked(startLocalCodexLogin)
+const hasLocalCodexAccountMock = vi.mocked(hasLocalCodexAccount)
+const cancelLocalCodexLoginMock = vi.mocked(cancelLocalCodexLogin)
 
 function cloudDevice(overrides: Partial<DeviceInfo> = {}): DeviceInfo {
   return {
@@ -244,14 +238,26 @@ describe('ConnectionsSettingsPage', () => {
     await installGitUiTestContributions()
     experimentalFeatures.enabled = true
     vi.clearAllMocks()
-    appPreferencesMocks.update.mockResolvedValue({
-      ...defaultAppPreferences,
-      remoteControlEnabled: true,
-    })
     getLocalCodexOfficialModelsMock.mockResolvedValue({ providers: [], models: [] })
     getLocalCodexModelCatalogOverridesMock.mockResolvedValue([])
     saveLocalCodexModelCatalogOverrideMock.mockResolvedValue(undefined)
     deleteLocalCodexModelCatalogOverrideMock.mockResolvedValue(undefined)
+    getLocalCodexAuthStatusMock.mockResolvedValue({
+      runtime: 'codex',
+      targetPath: '/Users/me/.codex/auth.json',
+      exists: true,
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      sha256: 'abc123',
+      sizeBytes: 128,
+      error: null,
+    })
+    startLocalCodexLoginMock.mockResolvedValue({
+      type: 'chatgpt',
+      loginId: 'login-1',
+      authUrl: 'https://chatgpt.com/auth',
+    })
+    hasLocalCodexAccountMock.mockResolvedValue(true)
+    cancelLocalCodexLoginMock.mockResolvedValue(undefined)
     localStorage.clear()
     delete window.__WEWORK_RUNTIME_CONFIG__
     Object.defineProperty(navigator, 'clipboard', {
@@ -626,7 +632,7 @@ describe('ConnectionsSettingsPage', () => {
     expect(screen.getByTestId('codex-auth-settings')).toHaveTextContent('Codex 设置')
     expect(screen.getByTestId('codex-auth-settings')).toHaveTextContent('认证信息')
     expect(screen.getByTestId('codex-auth-settings')).toHaveTextContent('模型')
-    expect(screen.getByTestId('local-codex-model-row')).toHaveTextContent('设备认证')
+    expect(screen.getByTestId('local-codex-model-row')).toHaveTextContent('Codex 账号')
     expect(await screen.findByTestId('runtime-config-status')).toHaveTextContent('认证已保存')
     expect(screen.getByText('Codex 认证同步')).toBeInTheDocument()
     expect(
@@ -652,6 +658,77 @@ describe('ConnectionsSettingsPage', () => {
 
     expect(screen.queryByTestId('runtime-config-sync-button')).not.toBeInTheDocument()
     expect(screen.queryByTestId('runtime-config-sync-result')).not.toBeInTheDocument()
+  })
+
+  test('signs in to Codex when this computer has no reusable Codex App auth', async () => {
+    api.getAllDevices.mockResolvedValue([localDevice()])
+    getLocalCodexAuthStatusMock
+      .mockResolvedValueOnce({
+        runtime: 'codex',
+        targetPath: '/Users/me/.wework/codex/auth.json',
+        exists: false,
+        updatedAt: null,
+        sha256: null,
+        sizeBytes: null,
+        error: null,
+      })
+      .mockResolvedValue({
+        runtime: 'codex',
+        targetPath: '/Users/me/.wework/codex/auth.json',
+        exists: true,
+        updatedAt: '2026-09-10T00:00:00.000Z',
+        sha256: 'signed-in',
+        sizeBytes: 256,
+        error: null,
+      })
+
+    render(<ConnectionsSettingsPage onBack={vi.fn()} />)
+
+    await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
+    const loginButton = await screen.findByTestId('local-codex-login-button')
+    expect(loginButton).toHaveTextContent('登录')
+    expect(screen.getByTestId('local-codex-model-row')).toHaveTextContent(
+      '登录 ChatGPT 账号以在 Wework 中使用 Codex。'
+    )
+    expect(screen.getByTestId('local-codex-model-row')).not.toHaveTextContent('auth.json')
+    expect(screen.getByTestId('local-codex-model-row')).not.toHaveTextContent('SHA-256')
+
+    await userEvent.click(loginButton)
+
+    await waitFor(() => expect(startLocalCodexLoginMock).toHaveBeenCalledOnce())
+    expect(openExternalUrlMock).toHaveBeenCalledWith('https://chatgpt.com/auth', {
+      target: 'system',
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('local-codex-model-status-pill')).toHaveTextContent('已登录')
+    )
+    expect(hasLocalCodexAccountMock).toHaveBeenCalledOnce()
+    expect(screen.queryByTestId('local-codex-login-button')).not.toBeInTheDocument()
+  })
+
+  test('cancels the Codex login session when the browser cannot be opened', async () => {
+    api.getAllDevices.mockResolvedValue([localDevice()])
+    getLocalCodexAuthStatusMock.mockResolvedValue({
+      runtime: 'codex',
+      targetPath: '/Users/me/.wework/codex/auth.json',
+      exists: false,
+      updatedAt: null,
+      sha256: null,
+      sizeBytes: null,
+      error: null,
+    })
+    openExternalUrlMock.mockResolvedValue(false)
+
+    render(<ConnectionsSettingsPage onBack={vi.fn()} />)
+
+    await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
+    await userEvent.click(await screen.findByTestId('local-codex-login-button'))
+
+    await waitFor(() => expect(cancelLocalCodexLoginMock).toHaveBeenCalledWith('login-1'))
+    expect(screen.getByTestId('local-codex-login-error')).toHaveTextContent(
+      '无法打开 Codex 登录页面'
+    )
+    expect(hasLocalCodexAccountMock).not.toHaveBeenCalled()
   })
 
   test('imports shared auth from the selected device and explains a missing source file', async () => {
@@ -1461,7 +1538,7 @@ describe('ConnectionsSettingsPage', () => {
     await userEvent.click(screen.getByTestId('settings-nav-model-settings'))
 
     expect(await screen.findByTestId('model-settings-page')).toBeInTheDocument()
-    expect(screen.getByTestId('local-codex-model-row')).toHaveTextContent('设备认证')
+    expect(screen.getByTestId('local-codex-model-row')).toHaveTextContent('Codex 账号')
     const cloudSyncSection = screen.getByTestId('runtime-config-cloud-sync')
     expect(cloudSyncSection).toHaveClass('bg-background')
     expect(screen.getByTestId('runtime-config-shared-auth-unavailable')).toHaveClass(
@@ -1812,75 +1889,6 @@ describe('ConnectionsSettingsPage', () => {
     expect(screen.queryByText('Local Claude Device')).not.toBeInTheDocument()
     expect(screen.getByText('远程设备')).toBeInTheDocument()
     expect(screen.queryByTestId('connection-more-button-remote-docker')).not.toBeInTheDocument()
-  })
-
-  test('persists the remote control switch while cloud is connected', async () => {
-    api.getAllDevices.mockResolvedValue([])
-    const renderPage = (remoteControlEnabled: boolean) => (
-      <AppPreferencesContext.Provider
-        value={{
-          loaded: true,
-          preferences: { ...defaultAppPreferences, remoteControlEnabled },
-        }}
-      >
-        <ConnectionsSettingsPage onBack={vi.fn()} />
-      </AppPreferencesContext.Provider>
-    )
-    const view = render(renderPage(false))
-
-    const toggle = await screen.findByTestId('remote-control-toggle')
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
-    expect(toggle).toBeEnabled()
-
-    await userEvent.click(toggle)
-
-    await waitFor(() =>
-      expect(appPreferencesMocks.update).toHaveBeenCalledWith({ remoteControlEnabled: true })
-    )
-
-    view.rerender(renderPage(true))
-    expect(screen.getByTestId('remote-control-toggle')).toHaveAttribute('aria-checked', 'true')
-  })
-
-  test('keeps remote control unavailable until cloud is connected', async () => {
-    const disconnectedConnection: CloudConnectionContextValue = {
-      ...DISCONNECTED_STATE,
-      isConnected: false,
-      serviceKey: 'disconnected',
-      connectWithAuthorization: vi.fn(),
-      refreshUser: vi.fn(),
-      disconnect: vi.fn(),
-    }
-
-    render(
-      <AppPreferencesContext.Provider value={{ preferences: defaultAppPreferences, loaded: true }}>
-        <CloudConnectionContext.Provider value={disconnectedConnection}>
-          <ConnectionsSettingsPage onBack={vi.fn()} />
-        </CloudConnectionContext.Provider>
-      </AppPreferencesContext.Provider>
-    )
-
-    const setting = await screen.findByTestId('remote-control-setting')
-    expect(setting).toHaveTextContent('连接云端后才能开启远程控制')
-    expect(screen.getByTestId('remote-control-toggle')).toBeDisabled()
-    expect(appPreferencesMocks.update).not.toHaveBeenCalled()
-  })
-
-  test('reports a remote control preference save failure without changing state', async () => {
-    api.getAllDevices.mockResolvedValue([])
-    appPreferencesMocks.update.mockRejectedValueOnce(new Error('save failed'))
-
-    render(
-      <AppPreferencesContext.Provider value={{ preferences: defaultAppPreferences, loaded: true }}>
-        <ConnectionsSettingsPage onBack={vi.fn()} />
-      </AppPreferencesContext.Provider>
-    )
-
-    const toggle = await screen.findByTestId('remote-control-toggle')
-    await userEvent.click(toggle)
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('远程控制设置更新失败')
-    expect(toggle).toHaveAttribute('aria-checked', 'false')
   })
 
   test('shows device Git configuration after the cloud and remote device list', async () => {
