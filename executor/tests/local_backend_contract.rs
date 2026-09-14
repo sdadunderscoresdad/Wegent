@@ -74,12 +74,11 @@ async fn local_backend_registers_device_with_python_compatible_payload() {
         StaticCapabilityReporter,
     );
 
-    let registered = client
+    client
         .register_device(Duration::from_secs(2))
         .await
         .unwrap();
 
-    assert!(registered);
     let calls = transport.calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].event, "device:register");
@@ -133,12 +132,10 @@ async fn local_backend_accepts_socketio_wrapped_registration_ack() {
     ])]);
     let client = LocalBackendClient::new(local_backend_config(), transport);
 
-    let registered = client
+    client
         .register_device(Duration::from_secs(2))
         .await
         .unwrap();
-
-    assert!(registered);
 }
 
 #[tokio::test]
@@ -230,12 +227,18 @@ async fn local_backend_event_sink_emits_responses_api_event_names() {
 
 #[tokio::test]
 async fn local_backend_disconnects_when_registration_is_rejected() {
-    let transport = RecordingTransport::with_responses(vec![json!({"success": false})]);
+    let transport = RecordingTransport::with_responses(vec![json!({
+        "success": false,
+        "error": "Registration failed: App device ID mismatch for device device-1",
+    })]);
     let runner = LocalBackendRunner::new(local_backend_config(), transport.clone());
 
     let error = runner.connect_and_register().await.unwrap_err();
 
-    assert_eq!(error, "device registration was rejected by backend");
+    assert_eq!(
+        error,
+        "Registration failed: App device ID mismatch for device device-1"
+    );
     assert_eq!(transport.disconnects(), 1);
 }
 

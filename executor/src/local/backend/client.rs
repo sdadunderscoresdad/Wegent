@@ -118,17 +118,16 @@ where
         self.transport.disconnect().await
     }
 
-    pub async fn register_device(&self, timeout: Duration) -> Result<bool, String> {
+    /// Register this Runtime, surfacing the reason the backend rejected it.
+    pub async fn register_device(&self, timeout: Duration) -> Result<(), String> {
         if self.config.device_id.is_empty() || self.config.runtime_instance_id.is_empty() {
             return Err(
                 "persistent device and Runtime identities are required for registration".to_owned(),
             );
         }
-        let response = self
-            .transport
-            .call(REGISTER_EVENT, self.registration_payload(), timeout)
-            .await?;
-        Ok(ack_success(&response))
+        self.call_raw_event(REGISTER_EVENT, self.registration_payload(), timeout)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     pub async fn send_heartbeat(&self, timeout: Duration) -> Result<bool, String> {

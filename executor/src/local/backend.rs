@@ -607,7 +607,7 @@ where
             .register_device(self.client.config.registration_timeout)
             .await
         {
-            Ok(true) => {
+            Ok(()) => {
                 if let Err(error) = self.client.emit_liveness_heartbeat().await {
                     let _ = self.client.disconnect().await;
                     return Err(error);
@@ -620,10 +620,6 @@ where
                 }
                 self.trigger_runtime_work_poll();
                 Ok(())
-            }
-            Ok(false) => {
-                let _ = self.client.disconnect().await;
-                Err("device registration was rejected by backend".to_owned())
             }
             Err(error) => {
                 let _ = self.client.disconnect().await;
