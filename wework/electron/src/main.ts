@@ -1,4 +1,5 @@
 import './host/process-output-bootstrap.js'
+import { mainProcessLog } from './host/main-process-log.js'
 import { SchemeQueue } from './host/scheme-queue.js'
 
 import {
@@ -185,6 +186,9 @@ const configuredUserDataPath = process.env.WEWORK_USER_DATA_DIR?.trim()
 const userDataPath = resolve(configuredUserDataPath || join(app.getPath('appData'), applicationId))
 app.setPath('userData', userDataPath)
 if (configuredUserDataPath) app.setAppLogsPath(join(userDataPath, 'logs'))
+const mainLogPath = join(app.getPath('logs'), 'app.log')
+mainProcessLog().persistTo(mainLogPath)
+console.info('[main-log] recording main process output', { path: mainLogPath })
 
 let mainWindow: BrowserWindow | null = null
 let startupSplashWindow: BrowserWindow | null = null
@@ -1249,6 +1253,7 @@ async function shutdown(): Promise<void> {
     desktopRuntime?.stop(),
   ])
   await pluginDevelopmentChildRuntime?.writeState('stopped')
+  await mainProcessLog().flush()
 }
 
 function requestApplicationShutdown(exit: () => void): void {
@@ -1645,6 +1650,7 @@ function startDesktopRuntime(): Promise<void> {
     .catch(async error => {
       if (await componentUpdates?.rollbackStartup()) {
         console.error('[components] startup failed after activation; rolling back and relaunching')
+        await mainProcessLog().flush()
         app.relaunch()
         app.exit(1)
         return

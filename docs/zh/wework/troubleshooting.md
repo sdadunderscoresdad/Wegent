@@ -91,3 +91,10 @@ localStorage.setItem("wework:debug-runtime", "1");
 - `Feedback submission completed`：提交成功，包含反馈单编号、反馈项 ID、是否为重复提交和耗时。
 
 使用界面显示的问题编号搜索这些日志，例如 `report_id=WF-...`。日志中的端点只保留协议、域名、端口和路径，不包含查询参数或 URL 凭据；日志也不会记录反馈正文、任务上下文和附件内容。
+
+### 启动失败排查
+
+主进程从进程启动起就把自身的 stdout 和 stderr 写入应用日志目录下的 `app.log`，内容包括
+`[startup]` 各阶段耗时、本地执行服务与 Core DSH 的启动结果，以及启动失败的原因。该文件
+和其他日志一样会被收集进反馈诊断包（`logs/app.log`），因此启动卡住或启动报错时可以直接
+取日志，不必先复现。

@@ -74,3 +74,7 @@ When feedback is submitted, the native application log records these events with
 - `Feedback submission completed`: submission succeeded, with the report ID, feedback item ID, duplicate status, and elapsed time.
 
 Search the logs using the report ID shown in the UI, for example `report_id=WF-...`. Endpoint logs retain only the scheme, host, port, and path; they exclude query parameters and URL credentials. The logs also exclude feedback text, task context, and attachment contents.
+
+### Startup failures
+
+From process start onwards, the main process writes its stdout and stderr to `app.log` in the application log directory. It records the elapsed time of every `[startup]` step, the local runtime and Core DSH startup results, and the reason a startup failed. The file is collected into the feedback diagnostics bundle like any other log (`logs/app.log`), so a stalled or failed launch can be diagnosed from the log without reproducing it first.
