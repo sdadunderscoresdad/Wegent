@@ -1632,7 +1632,6 @@
   flex-direction: column;
   overflow: hidden;
   padding: 0;
-  background: #fff;
 }
 
 .collaboration-group-create-heading,
@@ -1691,7 +1690,6 @@
   gap: 4px;
   padding: 16px 12px;
   border-right: 1px solid rgb(var(--color-border));
-  background: #fff;
 }
 
 .collaboration-group-create-steps button {
@@ -1731,14 +1729,14 @@
   border: 1px solid rgb(var(--color-border));
   border-radius: 50%;
   color: rgb(var(--color-text-muted));
-  background: #fff;
+  background: rgb(var(--color-bg-base));
   font-size: 11px;
   font-weight: 500;
 }
 
 .collaboration-group-create-steps button.active > span {
   border-color: rgb(var(--color-text-primary));
-  color: #fff;
+  color: rgb(var(--color-bg-base));
   background: rgb(var(--color-text-primary));
 }
 
@@ -1747,14 +1745,12 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  background: #fff;
 }
 
 .collaboration-group-create-content {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
-  background: #fff;
 }
 
 .collaboration-group-create-panel {
@@ -1762,7 +1758,6 @@
   align-content: start;
   gap: 16px;
   padding: 22px 24px 24px;
-  background: #fff;
 }
 
 .collaboration-group-create-member-list {
@@ -1776,16 +1771,10 @@
   flex: none;
   padding: 14px 24px;
   border-top: 1px solid rgb(var(--color-border));
-  background: #fff;
 }
 
 .collaboration-group-create-actions > span {
   flex: 1;
-}
-
-.collaboration-group-create-actions .collaboration-primary-button {
-  color: #fff;
-  background: rgb(var(--color-text-primary));
 }
 
 .collaboration-group-create-actions .collaboration-primary-button:disabled {
@@ -2193,7 +2182,6 @@
   border: 0;
   border-bottom: 1px solid rgb(var(--color-border));
   border-radius: 0;
-  background: #fff;
 }
 
 .collaboration-group-create-member-list

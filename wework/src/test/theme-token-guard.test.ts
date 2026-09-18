@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 const sourceRoot = resolve(process.cwd(), 'src')
@@ -75,6 +75,16 @@ const forbiddenGlobalZIndexClasses = [
   /\bz-(?:50|60|70|80|90)\b/g,
   /\bz-\[(?:[5-9]\d|[1-9]\d{2,})\]/g,
 ]
+
+const collaborationPackageRoot = resolve(process.cwd(), '../packages/collaboration/src')
+
+function collectStylesheetPaths(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const entryPath = resolve(directory, entry.name)
+    if (entry.isDirectory()) return collectStylesheetPaths(entryPath)
+    return entry.name.endsWith('.css') ? [entryPath] : []
+  })
+}
 
 describe('theme token guard', () => {
   test('uses the ChatGPT Electron default UI weight without changing medium emphasis', () => {
@@ -218,4 +228,18 @@ describe('theme token guard', () => {
       expect(violations).toEqual([])
     }
   )
+
+  test('collaboration stylesheets paint surfaces with theme tokens', () => {
+    const hardcodedSurface =
+      /background(?:-color)?:\s*(?:#fff(?:fff)?|white|#000(?:000)?|black)\b/gi
+    const violations = collectStylesheetPaths(collaborationPackageRoot).flatMap(filePath => {
+      const source = readFileSync(filePath, 'utf8')
+
+      return [...source.matchAll(hardcodedSurface)].map(
+        match => `${relative(process.cwd(), filePath)}: ${match[0].trim()}`
+      )
+    })
+
+    expect(violations).toEqual([])
+  })
 })
