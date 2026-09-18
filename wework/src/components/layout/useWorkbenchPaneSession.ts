@@ -78,6 +78,7 @@ import type {
 import { getDesktopE2ERuntimeConfig } from '@/e2e/runtime-config'
 import type {
   GuidanceWorkbenchMessage,
+  RuntimeConversationTurn,
   RuntimePaneQueuedMessage,
   RuntimePaneTranscript,
   RuntimeSubagentStatus,
@@ -340,12 +341,16 @@ export function useWorkbenchPaneSession({
   const [answeredRequestUserInputIds, setAnsweredRequestUserInputIds] = useState<
     ReadonlySet<string>
   >(() => new Set())
-  const [transcriptLoading, setTranscriptLoading] = useState(() => Boolean(currentRuntimeTask))
+  const [transcriptLoadingKey, setTranscriptLoadingKey] = useState<string | null>(() =>
+    currentRuntimeTask ? runtimeTaskLoadAddressKey(currentRuntimeTask) : null
+  )
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcriptReloadVersion, setTranscriptReloadVersion] = useState(0)
   const [transcriptHasMoreBefore, setTranscriptHasMoreBefore] = useState(false)
   const [transcriptBeforeCursor, setTranscriptBeforeCursor] = useState<string | null>(null)
-  const [transcriptLoadingMoreBefore, setTranscriptLoadingMoreBefore] = useState(false)
+  const [transcriptLoadingMoreBeforeKey, setTranscriptLoadingMoreBeforeKey] = useState<
+    string | null
+  >(null)
   const [transcriptFullContent, setTranscriptFullContent] = useState(false)
   const [loadedTranscriptRanges, setLoadedTranscriptRanges] = useState<LoadedTranscriptRange[]>([])
   const [turnNavigation, setTurnNavigation] = useState<RuntimeTurnNavigationItem[]>([])
@@ -392,8 +397,15 @@ export function useWorkbenchPaneSession({
       currentRuntimeTask ? runtimeTaskLoadTargetFromAddress(currentRuntimeTask) : null
     )
   const runtimeTaskLoadTarget = retainedRuntimeTaskLoadTarget
+  const transcriptLoading =
+    runtimeTaskLoadTarget !== null && transcriptLoadingKey === runtimeTaskLoadTarget.key
+  const transcriptLoadingMoreBefore =
+    runtimeTaskLoadTarget !== null && transcriptLoadingMoreBeforeKey === runtimeTaskLoadTarget.key
   const [messages, setMessages] = useState<WorkbenchMessage[]>(() =>
     currentRuntimeTask ? getRuntimeConversationMessages(currentRuntimeTask) : []
+  )
+  const [turns, setTurns] = useState<RuntimeConversationTurn[]>(() =>
+    currentRuntimeTask ? getRuntimeConversationTurns(currentRuntimeTask) : []
   )
   const messagesRef = useRef<WorkbenchMessage[]>(messages)
   const applyMessageActions = useCallback((actions: RuntimePaneMessageAction[]) => {
@@ -572,6 +584,7 @@ export function useWorkbenchPaneSession({
   useEffect(() => {
     if (!runtimeTaskLoadTarget) {
       setMessages([])
+      setTurns([])
       setSubagentStatuses([])
       setTaskPlan(null)
       return
@@ -586,6 +599,7 @@ export function useWorkbenchPaneSession({
         )
       }
       setMessages(getRuntimeConversationMessages(address))
+      setTurns(getRuntimeConversationTurns(address))
       setSubagentStatuses(metadata.subagentStatuses)
       setTaskPlan(metadata.taskPlan)
       setGoalContinuation(metadata.goalContinuation)
@@ -691,9 +705,9 @@ export function useWorkbenchPaneSession({
 
   useEffect(() => {
     if (!runtimeTaskLoadTarget) {
-      setTranscriptLoading(false)
+      setTranscriptLoadingKey(null)
       setTranscriptError(null)
-      setTranscriptLoadingMoreBefore(false)
+      setTranscriptLoadingMoreBeforeKey(null)
       return
     }
 
@@ -702,6 +716,7 @@ export function useWorkbenchPaneSession({
       loadedRuntimeTranscriptKeyRef.current === loadKey &&
       displayedTranscriptIdentityRef.current === runtimeTaskLoadTarget.identityKey
     ) {
+      setTranscriptLoadingKey(current => (current === loadKey ? null : current))
       return
     }
 
@@ -725,11 +740,11 @@ export function useWorkbenchPaneSession({
       seededMessages: summarizeWorkbenchMessages(seededMessages),
     })
     dispatchMessages({ type: 'reset', messages: seededMessages })
-    setTranscriptLoading(true)
+    setTranscriptLoadingKey(loadKey)
     setTranscriptError(null)
     setTranscriptHasMoreBefore(false)
     setTranscriptBeforeCursor(null)
-    setTranscriptLoadingMoreBefore(false)
+    setTranscriptLoadingMoreBeforeKey(null)
     setTranscriptFullContent(false)
     setLoadedTranscriptRanges([])
     setTurnNavigation([])
@@ -820,7 +835,7 @@ export function useWorkbenchPaneSession({
       })
       .finally(() => {
         if (!cancelled) {
-          setTranscriptLoading(false)
+          setTranscriptLoadingKey(current => (current === loadKey ? null : current))
         }
       })
 
@@ -927,12 +942,13 @@ export function useWorkbenchPaneSession({
 
     const { key: loadKey, address } = runtimeTaskLoadTarget
     const beforeCursor = transcriptBeforeCursor
-    setTranscriptLoadingMoreBefore(true)
+    setTranscriptLoadingMoreBeforeKey(loadKey)
     try {
       const transcript = await loadRuntimeTranscriptForPaneRef.current(address, {
         limit: runtimeTranscriptPageSize,
         beforeCursor,
       })
+      if (runtimeTaskLoadTargetRef.current?.key !== loadKey) return
       const nextMessages = reconcileRuntimeConversationSnapshot(address, transcript.turns)
       const nextRanges = mergeTranscriptRanges(
         loadedTranscriptRangesRef.current,
@@ -955,7 +971,7 @@ export function useWorkbenchPaneSession({
         error,
       })
     } finally {
-      setTranscriptLoadingMoreBefore(false)
+      setTranscriptLoadingMoreBeforeKey(current => (current === loadKey ? null : current))
     }
   }, [
     dispatchMessages,
@@ -978,13 +994,14 @@ export function useWorkbenchPaneSession({
         return
       }
 
-      const { address } = runtimeTaskLoadTarget
+      const { key: loadKey, address } = runtimeTaskLoadTarget
       const loadOptions = runtimeTurnNavigationLoadOptions(
         item,
         loadedTranscriptRangesRef.current,
         runtimeTranscriptPageSize
       )
       const transcript = await loadRuntimeTranscriptForPaneRef.current(address, loadOptions)
+      if (runtimeTaskLoadTargetRef.current?.key !== loadKey) return
       const nextHasMoreBefore =
         loadOptions.beforeCursor === undefined
           ? transcriptHasMoreBefore
@@ -1022,13 +1039,14 @@ export function useWorkbenchPaneSession({
     async (gap: LoadedTranscriptRange) => {
       if (!runtimeTaskLoadTarget || transcriptFullContent || gap.end <= gap.start) return
 
-      const { address } = runtimeTaskLoadTarget
+      const { key: loadKey, address } = runtimeTaskLoadTarget
       const limit = Math.min(runtimeTranscriptPageSize, gap.end - gap.start)
       const loadOptions = {
         limit,
         afterCursor: `offset:${gap.start}`,
       }
       const transcript = await loadRuntimeTranscriptForPaneRef.current(address, loadOptions)
+      if (runtimeTaskLoadTargetRef.current?.key !== loadKey) return
       const nextMessages = reconcileRuntimeConversationSnapshot(address, transcript.turns)
       const nextRanges = mergeTranscriptRanges(
         loadedTranscriptRangesRef.current,
@@ -3104,6 +3122,7 @@ export function useWorkbenchPaneSession({
     handleFileSelect,
     removeAttachment,
     messages,
+    turns,
     queuedMessages,
     queuedMessagesPaused,
     guidanceMessages,
