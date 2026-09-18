@@ -367,6 +367,22 @@ fn classify_project_path(path: &Path) -> ProjectPathState {
     }
 }
 
+/// Builds a git command that operates on the prepared workspace, never on the
+/// repository of the process that launched the executor.
+///
+/// `-C <path>` only changes directories: an inherited `GIT_DIR` (git exports it
+/// to every hook) still redirects the command to the caller's repository, which
+/// would validate, clone into, or configure the wrong workspace.
+fn workspace_git_command() -> Command {
+    let mut command = Command::new("git");
+    crate::process::hide_windows_console(&mut command);
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    command
+}
+
 async fn clone_repo(
     request: &ExecutionRequest,
     git_url: &str,
@@ -408,8 +424,7 @@ async fn clone_repo(
         ));
     }
 
-    let mut command = Command::new("git");
-    crate::process::hide_windows_console(&mut command);
+    let mut command = workspace_git_command();
     command.arg("clone");
     let branch = branch_name(request);
     if let Some(branch) = branch.as_deref() {
@@ -499,8 +514,7 @@ async fn clone_repo(
 }
 
 async fn validate_existing_git_repository(project_path: &Path) -> Result<(), String> {
-    let mut command = Command::new("git");
-    crate::process::hide_windows_console(&mut command);
+    let mut command = workspace_git_command();
     command
         .arg("-C")
         .arg(project_path)
@@ -734,8 +748,7 @@ async fn setup_git_config(request: &ExecutionRequest, project_path: &Path) {
         return;
     };
     for (key, value) in [("user.name", git_login), ("user.email", git_email)] {
-        let mut command = Command::new("git");
-        crate::process::hide_windows_console(&mut command);
+        let mut command = workspace_git_command();
         let _ = command
             .arg("-C")
             .arg(project_path)
@@ -843,6 +856,7 @@ fn home_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::process::{Command as StdCommand, Output};
 
     use super::*;
@@ -1143,6 +1157,22 @@ mod tests {
                 "HEAD^{commit}",
             ]),
         );
+    }
+
+    #[test]
+    fn workspace_git_commands_ignore_caller_repository_pointers() {
+        let command = workspace_git_command();
+        let removed: Vec<&OsStr> = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then_some(key))
+            .collect();
+
+        // A pre-push hook inherits GIT_DIR from git; the workspace probe must
+        // still resolve the workspace path instead of the caller's repository.
+        assert!(removed.contains(&OsStr::new("GIT_DIR")));
+        assert!(removed.contains(&OsStr::new("GIT_WORK_TREE")));
+        assert!(removed.contains(&OsStr::new("GIT_INDEX_FILE")));
     }
 
     #[test]
