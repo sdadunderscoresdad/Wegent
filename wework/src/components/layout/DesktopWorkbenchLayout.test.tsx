@@ -3953,7 +3953,6 @@ describe('DesktopWorkbenchLayout', () => {
       />
     )
 
-    const scrollContainer = screen.getByTestId('desktop-chat-scroll')
     const scroller = screen.getByTestId('desktop-workbench-content')
     Object.defineProperty(scroller, 'clientHeight', {
       value: 200,
@@ -3964,12 +3963,14 @@ describe('DesktopWorkbenchLayout', () => {
       configurable: true,
     })
     Object.defineProperty(scroller, 'scrollTop', {
-      value: -200,
+      value: 0,
       writable: true,
       configurable: true,
     })
 
-    fireEvent.scroll(scrollContainer)
+    // The desktop transcript scrolls top-origin and the conversation viewport
+    // is the external element, so reading upward goes through its own input.
+    fireEvent.wheel(scroller, { deltaY: -20 })
 
     expect(await screen.findByTestId('scroll-to-bottom-button')).toHaveClass('bottom-4', 'z-10')
   })

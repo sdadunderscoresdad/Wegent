@@ -1362,7 +1362,9 @@ describe('ToolBlocksDisplay', () => {
     })
 
     expect(screen.getByRole('button', { name: '调用 1 个工具 已处理' })).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId('processing-summary-toggle'))
+    // A segment that mounted while running stays disclosed, so the finished
+    // duration is visible without toggling the summary again.
+    expect(screen.getByTestId('processing-summary-toggle')).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('3.0s')).toBeInTheDocument()
   })
 
