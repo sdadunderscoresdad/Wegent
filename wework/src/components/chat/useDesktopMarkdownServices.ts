@@ -47,7 +47,6 @@ export function useDesktopMarkdownServices(): MarkdownServices {
       openHtmlFile: requestEmbeddedBrowserOpen,
       fetchAttachmentBlob,
       readLocalFile: isElectronRuntime() ? readLocalFile : undefined,
-      windowMarkdown: isElectronRuntime(),
       renderVisualization: part => createElement(CodexInlineVisualizationHost, part),
       theme,
       plantumlServerUrl,

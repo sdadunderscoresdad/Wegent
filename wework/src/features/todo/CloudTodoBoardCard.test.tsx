@@ -32,7 +32,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
     collapseComposerWhenIdle,
     runtimeContext,
     initialScrollPosition,
-    scrollOrigin,
   }: {
     initialAddress: {
       deviceId: string
@@ -44,7 +43,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
     collapseComposerWhenIdle: boolean
     runtimeContext?: { cloudProjectId?: string }
     initialScrollPosition?: 'restore' | 'latest'
-    scrollOrigin?: 'top' | 'bottom'
   }) => (
     <section
       data-testid={testId}
@@ -55,7 +53,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
       data-cloud-project-id={runtimeContext?.cloudProjectId}
       data-model-name={initialAddress.runtimeHandle?.modelSelection?.modelName}
       data-initial-scroll-position={initialScrollPosition}
-      data-scroll-origin={scrollOrigin}
     >
       Shared task conversation
     </section>

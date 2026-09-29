@@ -804,6 +804,8 @@ function WorkbenchProbeSessionProvider({ children }: { children: React.ReactNode
   )
 }
 
+const onUserMessageCommitted = vi.fn()
+
 function WorkbenchProbePaneSession({
   children,
   workbench,
@@ -815,6 +817,7 @@ function WorkbenchProbePaneSession({
 }) {
   const paneSession = useWorkbenchPaneSession({
     currentRuntimeTask,
+    onUserMessageCommitted,
   })
 
   return (
@@ -13425,6 +13428,7 @@ describe('WorkbenchProvider runtime tasks', () => {
     await userEvent.click(screen.getByText('send follow-up'))
 
     await waitFor(() => expect(sendRuntimeMessage).toHaveBeenCalledTimes(1))
+    expect(onUserMessageCommitted).toHaveBeenCalledOnce()
     expect(sendRuntimeMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         message: '继续修',
@@ -15852,6 +15856,7 @@ describe('WorkbenchProvider runtime tasks', () => {
 
     await waitFor(() => expect(sendRuntimeMessage).toHaveBeenCalledTimes(1))
     expect(sendRuntimeMessage.mock.calls[0][0].attachmentIds).toEqual([45])
+    expect(onUserMessageCommitted).not.toHaveBeenCalled()
     expect(screen.getByTestId('queued-messages')).toHaveTextContent('sending:继续修')
     await act(async () => {
       streamHandlers.onChatStart?.({
@@ -17183,6 +17188,7 @@ describe('WorkbenchProvider runtime tasks', () => {
     expect(sendRuntimeMessage).not.toHaveBeenCalled()
     expect(screen.getByTestId('queued-messages')).toHaveTextContent('sending:继续修')
     expect(screen.getByTestId('queued-guidance-acceptance')).toHaveTextContent('pending')
+    expect(onUserMessageCommitted).toHaveBeenCalledOnce()
     expect(screen.getByTestId('runtime-open-messages').textContent).toBe(
       'first message|working\n\nbefore '
     )
@@ -17202,6 +17208,7 @@ describe('WorkbenchProvider runtime tasks', () => {
     })
     expect(screen.getByTestId('queued-messages')).toHaveTextContent('sending:继续修')
     expect(screen.getByTestId('queued-guidance-acceptance')).toHaveTextContent('accepted')
+    expect(onUserMessageCommitted).toHaveBeenCalledOnce()
     expect(screen.getByTestId('runtime-open-blocks')).not.toHaveTextContent(
       'tool:conversation_guidance:done'
     )

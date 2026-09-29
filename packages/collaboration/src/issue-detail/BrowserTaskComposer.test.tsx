@@ -35,6 +35,7 @@ const attachment = {
   subtask_id: null,
 }
 const translate = createCollaborationTranslator('zh-CN')
+const onSendIntent = vi.fn()
 const task = {
   taskId: 'task-1',
   workspacePath: '/actual/workspace',
@@ -110,6 +111,7 @@ function Harness({
           imageServices={{ identity: file => String(file.id), load: vi.fn(), download: vi.fn() }}
           translate={translate}
           onAccepted={async () => {}}
+          onSendIntent={onSendIntent}
         />
       )}
     </>
@@ -121,6 +123,7 @@ describe('browser adapter for the PC task composer', () => {
   let container: HTMLDivElement
   let runtime: SharedWorkspaceRuntimeApi
   beforeEach(() => {
+    onSendIntent.mockClear()
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     // jsdom has no text-range geometry; ProseMirror reads it after selection changes.
     Object.defineProperty(Range.prototype, 'getClientRects', {
@@ -197,6 +200,23 @@ describe('browser adapter for the PC task composer', () => {
       )
     )
   }
+
+  it('announces sending before acceptance and never follows again on the delayed reply', async () => {
+    let accept!: (result: { accepted: true }) => void
+    vi.mocked(runtime.work.sendRuntimeMessage).mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          accept = resolve
+        })
+    )
+    await mount()
+    await click('seed')
+    await click('send-message-button')
+    expect(onSendIntent).toHaveBeenCalledOnce()
+    onSendIntent.mockClear()
+    await act(async () => accept({ accepted: true }))
+    expect(onSendIntent).not.toHaveBeenCalled()
+  })
 
   it('displays the addressed task usage and sends its confirmed compact command', async () => {
     const breakdown = {

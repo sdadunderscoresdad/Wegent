@@ -50,7 +50,7 @@ describe('AssistantMarkdown streaming stability', () => {
     expect(reopened.container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
   })
 
-  test('mounts a growing atomic chunk while bounded chunks remain windowed', () => {
+  test('renders short and growing Markdown without estimated placeholders', () => {
     runtimeMock.electron = true
     vi.stubGlobal(
       'IntersectionObserver',
@@ -60,7 +60,8 @@ describe('AssistantMarkdown streaming stability', () => {
       }
     )
     const { container, rerender } = render(<AssistantMarkdown content="Short paragraph." />)
-    expect(container.querySelector('[data-markdown-window-placeholder]')).not.toBeNull()
+    expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
+    expect(container.querySelector('p')).toHaveTextContent('Short paragraph.')
 
     rerender(<AssistantMarkdown content={'Long paragraph. '.repeat(400)} />)
     expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
@@ -102,7 +103,7 @@ describe('AssistantMarkdown streaming stability', () => {
     expect(scrollContainer).toHaveAttribute('data-syntax-highlighted', 'true')
   })
 
-  test('keeps code DOM mounted when growing content enters Markdown windowing', async () => {
+  test('keeps code DOM mounted when a long response gains more sections', async () => {
     runtimeMock.electron = true
     const codeContent = [
       'Before code.',
@@ -123,13 +124,12 @@ describe('AssistantMarkdown streaming stability', () => {
     const codeBlock = screen.getByTestId('markdown-code-block')
     const code = codeBlock.querySelector('code')
 
-    expect(container.querySelectorAll('[data-markdown-window-chunk]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-markdown-window-chunk]')).toHaveLength(0)
 
     rerender(<AssistantMarkdown content={`${codeContent}\n\n${windowedTail}`} />)
 
-    await waitFor(() =>
-      expect(container.querySelectorAll('[data-markdown-window-chunk]').length).toBeGreaterThan(1)
-    )
+    await waitFor(() => expect(container.querySelectorAll('h3')).toHaveLength(8))
+    expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
     expect(screen.getByTestId('markdown-code-block')).toBe(codeBlock)
     expect(screen.getByTestId('markdown-code-block').querySelector('code')).toBe(code)
   })

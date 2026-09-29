@@ -51,6 +51,7 @@ import {
   composerPathReference,
 } from '../composer/composerMentions'
 import { parseComposerReferences } from '../composer/composerReference'
+import { usePersistentProcessingExpansion } from './blocks/processingExpansionState'
 
 import type { ComposerEditorServices } from '../composer/ComposerEditorServices'
 import type { ComposerTransferServices } from '../composer/useComposerTransfers'
@@ -90,6 +91,7 @@ const LOCAL_IMAGE_MIME_TYPES: Record<string, string> = {
 export function UserMessage({
   services,
   message,
+  stateKey,
   onBeforeToggle,
   onOpenWorkspaceFile,
   onOpenLocalSkillFile,
@@ -102,6 +104,7 @@ export function UserMessage({
 }: {
   services: UserMessageServices
   message: WorkbenchMessage
+  stateKey?: string
   onBeforeToggle?: () => void
   onOpenWorkspaceFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
   onOpenLocalSkillFile?: (path: string) => void
@@ -113,7 +116,7 @@ export function UserMessage({
   onSubmitEdit?: (content: string) => Promise<boolean | void> | boolean | void
 }) {
   const { t } = useConversationTranslation()
-  const [isExpanded, setIsExpanded] = useState(false)
+  const [isExpanded, setIsExpanded] = usePersistentProcessingExpansion(stateKey)
   const [areHoverActionsVisible, setAreHoverActionsVisible] = useState(false)
   const codexLocalFileMentions = useMemo(
     () => parseCodexLocalFileMentions(message.content),
@@ -710,7 +713,11 @@ function renderUserContent(
             {mentionKind === 'folder' ? (
               <Folder data-testid={iconTestId} className="h-3.5 w-3.5 shrink-0 text-blue-600" />
             ) : mentionKind === 'file' ? (
-              <FileReferenceIcon path={pathReference?.path ?? href} data-testid={iconTestId} className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+              <FileReferenceIcon
+                path={pathReference?.path ?? href}
+                data-testid={iconTestId}
+                className="h-3.5 w-3.5 shrink-0 text-blue-600"
+              />
             ) : mentionKind === 'cloud' ? (
               cloudKind === 'todo' ? (
                 <ListTodo data-testid={iconTestId} className="h-3.5 w-3.5 shrink-0 text-blue-600" />
@@ -751,8 +758,8 @@ function renderUserContent(
             )}
             <span className="min-w-0 truncate">
               {mentionKind === 'skill'
-                ? skill.displayLabel ??
-                  (knownSkill ? displayCodexMentionName(knownSkill.name) : `$${skill.name}`)
+                ? (skill.displayLabel ??
+                  (knownSkill ? displayCodexMentionName(knownSkill.name) : `$${skill.name}`))
                 : mentionKind === 'file' ||
                     mentionKind === 'folder' ||
                     mentionKind === 'cloud' ||

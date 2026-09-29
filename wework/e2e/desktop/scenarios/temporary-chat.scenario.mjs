@@ -261,18 +261,18 @@ async function waitForThinkingToSettle(control, timeoutMs) {
   throw new Error('The temporary-chat response did not settle before the direct follow-up')
 }
 
-async function assertSideChatBottomOrigin(control) {
+async function assertSideChatBottomPinned(control) {
   assert.equal(
     await control.command('getAttribute', SIDE_SCROLL, {
       value: 'data-scroll-origin',
     }),
-    'bottom',
-    'The temporary chat did not use bottom-origin scrolling'
+    'top',
+    'The temporary chat did not use top-origin scrolling'
   )
   const [metrics] = JSON.parse(await control.command('getElementMetrics', SIDE_SCROLL))
   assert.ok(metrics, 'The temporary-chat scroll container was not measurable')
   assert.ok(
-    metrics.scrollTop >= -1,
+    Math.abs(metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop) <= 1,
     `The temporary chat was not anchored at the bottom: ${JSON.stringify(metrics)}`
   )
 }
@@ -489,7 +489,7 @@ export function createDesktopScenario({
         text: INITIAL_COMPLETION,
         timeoutMs: taskTimeoutMs,
       })
-      await assertSideChatBottomOrigin(control)
+      await assertSideChatBottomPinned(control)
       const [scrollMetrics] = JSON.parse(await control.command('getElementMetrics', SIDE_SCROLL))
       const [firstUserMetrics] = JSON.parse(
         await control.command('getElementMetrics', `${SIDE_CHAT} [data-testid="message-user"]`)
@@ -572,7 +572,7 @@ export function createDesktopScenario({
           text: FOLLOW_UP_PROMPT,
           timeoutMs: taskTimeoutMs,
         })
-        await assertSideChatBottomOrigin(control)
+        await assertSideChatBottomPinned(control)
 
         const restoredSideChat = JSON.parse(await control.command('snapshot', SIDE_CHAT))
         assert.ok(

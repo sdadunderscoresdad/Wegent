@@ -55,7 +55,7 @@ describe('MessageList', () => {
     'opens sent text attachments with the current workspace preference in $name',
     async ({ Conversation }) => {
       runtimeMock.electron = true
-      // Supply a mounted viewport before the virtualizer's initial measurement.
+      // Supply mounted viewport geometry for layout-dependent message behavior.
       vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(800)
       vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1000)
       vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(800)
@@ -983,7 +983,7 @@ describe('MessageList', () => {
     expect(screen.queryByTestId('generated-image')).not.toBeInTheDocument()
   })
 
-  test('uses browser-native content visibility without message window placeholders', () => {
+  test('renders both hosts without message containment or window placeholders', () => {
     render(
       <MessageList
         messages={[
@@ -1005,8 +1005,10 @@ describe('MessageList', () => {
       />
     )
 
-    expect(screen.getByTestId('message-user').className).toContain('[content-visibility:auto]')
-    expect(screen.getByTestId('message-assistant').className).toContain('[content-visibility:auto]')
+    expect(screen.getByTestId('message-user').className).not.toContain('[content-visibility:auto]')
+    expect(screen.getByTestId('message-assistant').className).not.toContain(
+      '[content-visibility:auto]'
+    )
     expect(screen.getByTestId('message-user')).toHaveTextContent('hello')
     expect(screen.getByTestId('message-assistant')).toHaveTextContent('world')
     expect(screen.getByTestId('message-user').style.containIntrinsicSize).toBe('')
@@ -1049,7 +1051,7 @@ describe('MessageList', () => {
     }
   })
 
-  test('windows oversized streaming Markdown before mounting every chunk', () => {
+  test('keeps every streaming Markdown section mounted outside the viewport', () => {
     runtimeMock.electron = true
     const intersectionCallbacks: IntersectionObserverCallback[] = []
     class IntersectionObserverMock {
@@ -1086,25 +1088,9 @@ describe('MessageList', () => {
       />
     )
 
-    const chunks = Array.from(container.querySelectorAll('[data-markdown-window-chunk]'))
-    expect(chunks.length).toBeGreaterThan(2)
-    expect(chunks[0]).not.toBeEmptyDOMElement()
-    expect(chunks.at(-1)).not.toBeEmptyDOMElement()
-    expect(
-      chunks
-        .slice(1, -1)
-        .every(chunk => Boolean(chunk.querySelector('[data-markdown-window-placeholder]')))
-    ).toBe(true)
-    expect(chunks.slice(1, -1).every(chunk => Boolean(chunk.textContent?.trim()))).toBe(true)
-    expect(
-      chunks.slice(1, -1).every(chunk => {
-        const placeholder = chunk.querySelector<HTMLElement>('[data-markdown-window-placeholder]')
-        return (
-          placeholder?.style.maxHeight === (chunk as HTMLElement).style.minHeight &&
-          placeholder.classList.contains('overflow-hidden')
-        )
-      })
-    ).toBe(true)
+    const headings = Array.from(container.querySelectorAll('h3'))
+    expect(headings).toHaveLength(60)
+    expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
 
     act(() => {
       intersectionCallbacks.forEach(callback =>
@@ -1115,17 +1101,12 @@ describe('MessageList', () => {
       )
     })
 
-    expect(chunks[0]).not.toBeEmptyDOMElement()
-    expect(chunks.at(-1)).not.toBeEmptyDOMElement()
-    expect(
-      chunks
-        .slice(1, -1)
-        .every(chunk => Boolean(chunk.querySelector('[data-markdown-window-placeholder]')))
-    ).toBe(true)
-    expect(chunks.slice(1, -1).every(chunk => Boolean(chunk.textContent?.trim()))).toBe(true)
+    expect(Array.from(container.querySelectorAll('h3'))).toEqual(headings)
+    expect(headings[0]).toHaveTextContent('Streaming section 1')
+    expect(headings.at(-1)).toHaveTextContent('Streaming section 60')
   })
 
-  test('releases eager Markdown chunks after streaming completes', () => {
+  test('mounts all completed Markdown without waiting for intersection events', () => {
     runtimeMock.electron = true
     const intersectionCallbacks: IntersectionObserverCallback[] = []
     class IntersectionObserverMock {
@@ -1160,11 +1141,9 @@ describe('MessageList', () => {
       />
     )
 
-    const chunks = Array.from(container.querySelectorAll('[data-markdown-window-chunk]'))
-    expect(chunks.length).toBeGreaterThan(2)
-    expect(
-      chunks.every(chunk => Boolean(chunk.querySelector('[data-markdown-window-placeholder]')))
-    ).toBe(true)
+    const headings = Array.from(container.querySelectorAll('h3'))
+    expect(headings).toHaveLength(60)
+    expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
 
     act(() => {
       intersectionCallbacks.at(-1)?.(
@@ -1173,8 +1152,7 @@ describe('MessageList', () => {
       )
     })
 
-    expect(chunks.at(-1)?.querySelector('[data-markdown-window-placeholder]')).toBeNull()
-    expect(chunks[0].querySelector('[data-markdown-window-placeholder]')).not.toBeNull()
+    expect(Array.from(container.querySelectorAll('h3'))).toEqual(headings)
   })
 
   test('keeps a streamed oversized code chunk mounted after completion', () => {
@@ -1242,14 +1220,10 @@ describe('MessageList', () => {
     })
 
     expect(container.querySelector('code')).toBe(codeNode)
-    expect(
-      codeNode
-        ?.closest('[data-markdown-window-chunk]')
-        ?.querySelector('[data-markdown-window-placeholder]')
-    ).toBeNull()
+    expect(container.querySelector('[data-markdown-window-placeholder]')).toBeNull()
   })
 
-  test('keeps message row containment during a plain text click', () => {
+  test('keeps message rows uncontained during a plain text click', () => {
     const getSelectionSpy = vi.spyOn(document, 'getSelection')
     getSelectionSpy.mockReturnValue({
       isCollapsed: true,
@@ -1275,12 +1249,12 @@ describe('MessageList', () => {
 
       const article = screen.getByTestId('message-user')
       const content = screen.getByTestId('user-message-content')
-      expect(article.className).toContain('[content-visibility:auto]')
+      expect(article.className).not.toContain('[content-visibility:auto]')
 
       fireEvent.pointerDown(content, { button: 0 })
       fireEvent.pointerUp(document)
 
-      expect(article.className).toContain('[content-visibility:auto]')
+      expect(article.className).not.toContain('[content-visibility:auto]')
       expect(article.style.containIntrinsicSize).toBe('')
       expect(article.style.contentVisibility).toBe('')
     } finally {
@@ -1356,20 +1330,22 @@ describe('MessageList', () => {
       )
 
       const article = screen.getByTestId('message-assistant')
-      expect(article.className).toContain('[content-visibility:auto]')
+      expect(article.className).not.toContain('[content-visibility:auto]')
 
       fireEvent.click(screen.getByRole('button', { name: /已处理/ }))
       fireEvent.click(screen.getByRole('button', { name: /编辑 config\.ts/ }))
 
       const diff = screen.getByTestId('process-file-change-diff')
-      expect(diff).toHaveAttribute('data-message-content-visibility-lock', 'true')
-      expect(article.style.contentVisibility).toBe('visible')
+      expect(diff).toBeVisible()
+      expect(article.style.contentVisibility).toBe('')
 
       fireEvent.pointerDown(diff, { button: 0 })
       fireEvent.pointerUp(document)
 
       await waitFor(() => {
-        expect(article.style.contentVisibility).toBe('visible')
+        expect(screen.getByTestId('process-file-change-diff')).toBe(diff)
+        expect(diff).toBeVisible()
+        expect(article.style.contentVisibility).toBe('')
       })
     } finally {
       getSelectionSpy.mockRestore()
@@ -1398,15 +1374,15 @@ describe('MessageList', () => {
     )
 
     fireEvent.pointerDown(paragraph, { button: 0, detail: 1 })
-    expect(article.className).toContain('[content-visibility:auto]')
+    expect(article.className).not.toContain('[content-visibility:auto]')
     expect(article.style.contentVisibility).toBe('')
 
     fireEvent.pointerDown(paragraph, { button: 0, detail: 2 })
-    expect(article.className).toContain('[content-visibility:auto]')
+    expect(article.className).not.toContain('[content-visibility:auto]')
     expect(article.style.contentVisibility).toBe('')
   })
 
-  test('disables message row containment only while selected message text is active', async () => {
+  test('does not change message containment when a text selection changes', async () => {
     const getSelectionSpy = vi.spyOn(document, 'getSelection')
     const requestAnimationFrameSpy = vi
       .spyOn(window, 'requestAnimationFrame')
@@ -1433,7 +1409,7 @@ describe('MessageList', () => {
       const article = screen.getByTestId('message-assistant')
       const paragraph = screen.getByText('Select this assistant paragraph.')
       const textNode = paragraph.firstChild
-      expect(article.className).toContain('[content-visibility:auto]')
+      expect(article.className).not.toContain('[content-visibility:auto]')
 
       getSelectionSpy.mockReturnValue({
         isCollapsed: false,
@@ -1457,7 +1433,7 @@ describe('MessageList', () => {
       fireEvent.pointerUp(document)
 
       await waitFor(() => {
-        expect(article.className).toContain('[content-visibility:auto]')
+        expect(article.className).not.toContain('[content-visibility:auto]')
         expect(article.style.containIntrinsicSize).toBe('')
       })
     } finally {
@@ -5880,7 +5856,7 @@ describe('MessageList', () => {
     expect(screen.getByTestId('thinking-indicator')).toHaveTextContent('正在思考')
   })
 
-  test('collapses at final text, preserves expansion, and keeps the final text mounted', () => {
+  test('keeps streaming process open, preserves explicit expansion, and keeps the final text mounted', () => {
     const completedBlock: ProcessingBlock = {
       id: 'call-1',
       subtaskId: 1,
@@ -5912,6 +5888,8 @@ describe('MessageList', () => {
     expect(screen.queryByTestId('thinking-indicator')).not.toBeInTheDocument()
     expect(screen.queryByTestId('tool-block-thinking')).not.toBeInTheDocument()
     expect(screen.queryByTestId('processing-live-preview')).not.toBeInTheDocument()
+    expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByTestId('final-processing-toggle'))
     expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(screen.getByTestId('final-processing-toggle'))
     expect(screen.getByTestId('processing-summary-header')).not.toHaveTextContent('已处理')

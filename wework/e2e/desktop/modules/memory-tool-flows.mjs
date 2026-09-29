@@ -179,6 +179,15 @@ async function verifyToolBlockChronologicalOrder({ composerSelector, control }) 
     text: TOOL_BLOCK_ORDER_COMPLETION_TEXT,
     timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
   })
+  // Final text can precede turn completion. Expand only after the completion
+  // default applies, so the inspection is an explicit persisted user choice.
+  await control.command(
+    'waitFor',
+    '[data-testid="final-processing-toggle"][aria-expanded="false"]',
+    {
+      timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+    }
+  )
   await ensureToggleExpanded(control, '[data-testid="final-processing-toggle"]')
   await ensureToggleExpanded(control, '[data-testid="processing-summary-toggle"]')
 

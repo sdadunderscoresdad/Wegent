@@ -66,6 +66,7 @@ export function BrowserTaskComposer({
   imageServices,
   translate: t,
   onAccepted,
+  onSendIntent,
   collapseWhenIdle = false,
 }: {
   runtime: SharedWorkspaceRuntimeApi
@@ -78,6 +79,7 @@ export function BrowserTaskComposer({
   translate: CollaborationTranslate
   collapseWhenIdle?: boolean
   onAccepted(): Promise<void>
+  onSendIntent?(): void
 }) {
   const {
     draft,
@@ -200,9 +202,13 @@ export function BrowserTaskComposer({
         recordPluginUsageFromInput(value)
         setDraft('')
         attachments.resetAttachments()
-        if (submitOptions?.guideWhenBusy) await queue.guide(queuedMessage.id)
+        if (submitOptions?.guideWhenBusy) {
+          onSendIntent?.()
+          await queue.guide(queuedMessage.id)
+        }
         return
       }
+      onSendIntent?.()
       {
         const result = await (running && submitOptions?.interruptWhenBusy
           ? runtime.work.interruptAndSendRuntimeMessage(payload)
@@ -251,6 +257,7 @@ export function BrowserTaskComposer({
         guidanceMessages={[]}
         onCancelQueuedMessage={id => queue.queue.cancel(id)}
         onSendQueuedAsGuidance={id => {
+          onSendIntent?.()
           void queue.guide(id, true)
         }}
         onEditQueuedMessage={id => {

@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCollaborationTranslator } from "../i18n";
 import { ConversationTranslationProvider } from "./ConversationTranslation";
-import { ToolBlocksDisplay } from "./blocks/ToolBlocksDisplay";
+import { ToolBlocksDisplay } from "./blocks/ProcessingSegment";
 import { WebSearchSourcesChip } from "./blocks/WebSearchSources";
 import type { ToolBlock } from "./blocks/types";
 import {

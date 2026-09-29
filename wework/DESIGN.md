@@ -516,6 +516,11 @@ The active-conversation capture is also normative:
   status. They must not refresh the whole sidebar work list. A generated task
   title is authoritative over older list requests already in flight until the
   local executor confirms the same title.
+- Starting final assistant output must not automatically collapse processing content
+  while the turn is still running. Successful turn completion defaults the processing
+  summary to collapsed, matching reopened history; explicit user disclosure choices
+  override that default. Keep chronological answer nodes mounted during collapse or
+  later tool insertion, and preserve paused reading intent through the layout change.
 - When opening, closing, or resizing a side panel reflows conversation content,
   preserve the reader's visible message or content anchor. Continue following
   the bottom only when the reader was already at the bottom before the reflow.
@@ -597,19 +602,25 @@ recipe closely:
 - In an active desktop thread, the workbench viewport owns vertical scrolling.
   Its conversation column must be a `min-height: 100%`, non-shrinking flex
   column, with the composer rendered as the sticky footer inside that flow.
-  Short threads therefore fill the viewport while long and virtualized threads
-  grow naturally. Keep bottom following stable across delayed virtual
-  measurements, but stop following immediately after an explicit user scroll.
-- The active-thread viewport uses bottom-origin scrolling and may expose a
-  negative `scrollTop` range. A custom scrollbar must map its track, thumb,
-  pointer, and keyboard positions to that real range instead of assuming the
-  usual `0..max` coordinates. Keep the overlay track at the workbench's outer
+  Short threads fill the viewport while all loaded messages in long threads
+  remain mounted and grow naturally. Only `use-stick-to-bottom` owns automatic
+  following; explicit reader input cancels it immediately.
+- The first visible conversation frame must already show its target position:
+  latest messages on first open, or the saved reading anchor on return. Initial
+  placement runs synchronously before revealing the laid-out transcript and is
+  separate from continuous streaming follow, including external viewport binding
+  and asynchronous history restoration.
+- The active-thread viewport uses normal top-origin scrolling in the
+  `0..max(0, scrollHeight - clientHeight)` range. The custom scrollbar maps its
+  track, thumb, pointer, and keyboard positions to that same range.
+  Keep the overlay track at the workbench's outer
   edge, use the sidebar scrollbar's theme tokens, and treat track clicks and
   thumb drags as explicit user scrolling.
-- When guidance or another runtime event inserts, removes, or reorders messages
-  inside a virtualized thread, remeasure mounted rows from the first changed
-  index. The virtual container must include every rendered row so no message can
-  appear below or behind the sticky composer.
+- Runtime changes preserve stable message/block identities and normal flow.
+  Reading-mode history insertion relies on native scroll anchoring, not estimated
+  row heights or a second compensation engine. Disclosure pauses following before
+  layout changes and has no external-height animation. Width reflow does not
+  promise character-level position locking.
 
 The Composer is not a green brand block, a thick outlined form, or a card with
 an exaggerated shadow.
@@ -911,7 +922,7 @@ semantics for all three.
     Content --> Cards[Shared file changes, references, plans, runtime questions and selection actions]
     Cards --> Markdown
     Content --> Scroll[ScrollableMessageArea: history loading, restoration and streaming follow]
-    Scroll --> List[MessageList: visible rows, virtual measurements, selection and editing]
+    Scroll --> List[MessageList: mounted rows, stable identities, selection and editing]
     List --> User[UserMessage: Markdown, mentions, images, attachments and comments]
     User --> Edit[UserMessageEditForm and ComposerTextInput]
     Edit --> InputPolicy[Shared IME, submit, transfers and link editing]
@@ -921,7 +932,7 @@ semantics for all three.
     Assistant --> Images[GeneratedImageGallery with host image services]
     Assistant --> Actions[MessageHoverActions with shared clipboard services]
     Content --> Preview[CodeCommentPreview and ImSourceBadge]
-    Content --> Viewport[Shared viewport cache, height estimation and bottom-origin virtualizer]
+    Content --> Viewport[Semantic viewport snapshots and one top-origin follow engine]
     Tools --> ToolHost[Host file reads, URL opening, settings navigation and telemetry]
     Message --> Markdown[Shared AssistantMarkdown: code, tables, diagrams, links and images]
     Web --> Services[MarkdownServices: links, clipboard, attachments and theme]
@@ -997,19 +1008,20 @@ semantics for all three.
   failure details, retry controls, generated-image galleries and final artifacts.
   Its native adapter supplies image loading/downloading and inline visualization
   services. `MessageHoverActions` owns copy/edit/fork controls and localized time
-  labels. `MessageList` owns the complete message-row composition, visibility,
-  virtual measurements, text selection and edit lifecycle. `UserMessage` and
+  labels. `MessageList` owns mounted message-row composition, stable identities,
+  text selection and edit lifecycle. `UserMessage` and
   `UserMessageEditForm` preserve native rich Markdown, image/document attachment
   layout, mentions, code comments, collapse controls and edit submission. Hosts
   provide user-message services for files, images, plugin navigation, editor
   focus/transfer handling and preview boundaries. Reference tokens keep their
   source URI even when no host action exists; those tokens are marked disabled.
   `ScrollableMessageArea` owns the complete scroll surface, history loading,
-  turn navigation, saved reading positions, text anchors during width changes
-  and streaming follow. Its controller and geometry helpers preserve the native
-  top/bottom-origin semantics; hosts supply real loaders and explicit rendering
+  turn navigation and semantic reading snapshots. `use-stick-to-bottom` owns
+  automatic follow; the controller only handles explicit, cancellable business
+  intents and finite DOM positioning. Every host uses top-origin coordinates,
+  with native anchoring during reading; hosts supply real loaders and rendering
   capabilities. Missing history remains visible but cannot be clicked without
-  a loader. Desktop adapters share their visualization and measurement services.
+  a loader. Desktop adapters supply visualization services, not height estimates.
 
   `CodeCommentPreview` owns code/browser annotation content and hover/focus timing;
   hosts can supply a right viewport boundary, without embedding desktop DOM
@@ -1022,10 +1034,13 @@ semantics for all three.
   transport effects remain outside the pure turn state machine.
   Full runtime conversation/annotation contracts and live activity projection
   belong to `@wegent/chat-core/runtime-conversation` and related core modules.
-  `conversationViewportCache`, `messagePretextLayout` and
-  `useBottomOriginVirtualizer` preserve the native bounded LRU cache, intrinsic
-  height estimates and bottom-origin resize anchoring. Native conversation
-  eviction must also clear the corresponding shared viewport entry.
+  `conversationViewportCache` preserves bounded semantic snapshots by conversation.
+  Native conversation eviction also clears its shared viewport and persistent
+  disclosure state. Active viewports and pending operations remain instance-local.
+  Markdown stays mounted with Streamdown; estimated placeholders and virtual item
+  measurement caches are not part of the timeline architecture. See
+  [message scroll architecture](../docs/en/wegent/developer-guide/wework-message-scroll.md)
+  for intent contracts, dependency-patch ownership, and verification limits.
 
   Runtime RPC transport belongs to `@wegent/chat-core`: both hosts must use the
   same request envelope, acknowledgement deadlines, compressed response decoding

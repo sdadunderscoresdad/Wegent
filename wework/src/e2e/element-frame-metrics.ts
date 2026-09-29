@@ -9,6 +9,7 @@ export function createElementFrameSampler(root: HTMLElement, selector: string) {
       const style = getComputedStyle(element)
       return {
         identity: identities.get(element),
+        testId: element.dataset.testid,
         className: element.className,
         left: rect.left,
         right: rect.right,
@@ -18,6 +19,9 @@ export function createElementFrameSampler(root: HTMLElement, selector: string) {
         height: rect.height,
         scrollLeft: element.scrollLeft,
         scrollTop: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+        clientHeight: element.clientHeight,
+        visibility: style.visibility,
         display: style.display,
         transform: style.transform,
         border: [

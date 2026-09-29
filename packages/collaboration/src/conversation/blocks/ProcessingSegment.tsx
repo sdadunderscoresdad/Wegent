@@ -37,14 +37,6 @@ import {
   ContextCompactionIndicator,
 } from './ProcessingActivity'
 
-/**
- * What a turn's process section occupies while it is collapsed, which is how a finished turn renders:
- * the summary row's `min-h-8` (32px) plus the section's own `mb-3` (12px). `messagePretextLayout` keeps
- * its intrinsic-height estimate in step with this, so the height a row is laid out at before it is
- * measured does not depend on how many blocks the turn happened to run.
- */
-export const COLLAPSED_PROCESSING_HEIGHT = 44
-
 const EMPTY_HIDDEN_REQUEST_USER_INPUT_IDS = new Set<string>()
 
 interface ToolBlocksDisplayProps {
@@ -95,10 +87,11 @@ export function ToolBlocksDisplay({
   const hasRunningBlock = blocks.some(b => b.status !== 'done' && b.status !== 'error')
   const isRunning =
     (isStreaming && (processingPhase === 'live' || showInterToolThinking)) || hasRunningBlock
+  const [initiallyExpanded] = useState(isRunning)
   const [userExpanded, setUserExpanded] = usePersistentProcessingExpansion(
-    stateKey ? `${stateKey}:processing` : undefined
+    stateKey ? `${stateKey}:processing` : undefined,
+    initiallyExpanded
   )
-  const [livePreviewCollapsed, setLivePreviewCollapsed] = useState(false)
   const [mountedAt] = useState(() => Date.now())
   const turnStartedAt = startedAt ?? mountedAt
   const [hasRenderedRunning, setHasRenderedRunning] = useState(isRunning)
@@ -227,37 +220,10 @@ export function ToolBlocksDisplay({
   const expanded = isLockedOpen || (userExpanded && !usesUnifiedToolList)
   const canToggleSummary =
     showSummary && !isLockedOpen && !hasRunningToolActivity && rows.length > 0
-  const hasLivePreview =
-    isRunning &&
-    (!hasClosedToolSegment || hasRunningToolActivity || showInterToolThinking) &&
-    !expanded &&
-    rows.length > 0
-  const previewRows = useMemo(
-    () =>
-      !expanded &&
-      (hasRunningToolActivity ||
-        (hasLivePreview && !livePreviewCollapsed) ||
-        (usesUnifiedToolList && userExpanded))
-        ? rows
-        : [],
-    [
-      expanded,
-      hasLivePreview,
-      hasRunningToolActivity,
-      livePreviewCollapsed,
-      rows,
-      userExpanded,
-      usesUnifiedToolList,
-    ]
-  )
+  // Runtime phase controls status labels; only disclosure state controls row visibility.
+  const previewRows = !expanded && userExpanded ? rows : []
   const summaryExpanded = expanded || previewRows.length > 0
-  const toggleSummary = () => {
-    if (hasLivePreview) {
-      setLivePreviewCollapsed(value => !value)
-      return
-    }
-    setUserExpanded(value => !value)
-  }
+  const toggleSummary = () => setUserExpanded(value => !value)
   const hasToolActivity = rows.some(
     row =>
       row.type === 'activity_group' ||
@@ -315,6 +281,7 @@ export function ToolBlocksDisplay({
             ) : item.type === 'activity_group' ? (
               <ToolActivityGroup
                 key={item.id}
+                stateKey={stateKey ? `${stateKey}:${item.id}` : undefined}
                 row={item}
                 onOpenWorkspaceFile={onOpenWorkspaceFile}
               />

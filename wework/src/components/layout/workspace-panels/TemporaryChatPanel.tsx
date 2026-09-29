@@ -22,6 +22,7 @@ import {
 import { TemporaryConversationLayout } from '@wegent/collaboration/conversation'
 import { createCollaborationTranslator } from '@wegent/collaboration'
 import { ScrollableMessageArea } from '@/components/chat/ScrollableMessageArea'
+import type { ConversationViewportActions } from '@wegent/collaboration/conversation'
 import type { RequestUserInputPayload } from '@/components/chat/RequestUserInputCard'
 import {
   applyRequestUserInputResponseToBlock,
@@ -121,7 +122,6 @@ interface TemporaryChatPanelProps {
   projectWorkBarTrailingContext?: ReactNode
   onRestoreConversation?: () => void
   initialScrollPosition?: 'restore' | 'latest'
-  scrollOrigin?: 'top' | 'bottom'
   onOpenRuntimeTask?: (address: RuntimeTaskAddress) => Promise<void> | void
 }
 
@@ -149,7 +149,6 @@ export function TemporaryChatPanel({
   projectWorkBarTrailingContext,
   onRestoreConversation,
   initialScrollPosition = 'restore',
-  scrollOrigin = 'bottom',
   onOpenRuntimeTask,
 }: TemporaryChatPanelProps) {
   const { t, i18n } = useTranslation('common')
@@ -502,13 +501,16 @@ export function TemporaryChatPanel({
     if (address) void conversationQueue.pump(queuePort, busy)
   }, [address, busy, taskLifecycle, queuedMessages, conversationQueue, queuePort])
 
+  const viewportActionsRef = useRef<ConversationViewportActions | null>(null)
   const sendQueuedMessageAsGuidance = useCallback(
-    (message: RuntimePaneQueuedMessage, forceActiveTurn = false) =>
-      conversationQueue.guide(
+    (message: RuntimePaneQueuedMessage, forceActiveTurn = false) => {
+      viewportActionsRef.current?.follow()
+      return conversationQueue.guide(
         message.id,
         queuePort,
         forceActiveTurn || Boolean(address && lifecycleStore.getTask(address)?.derived.isTurnActive)
-      ),
+      )
+    },
     [address, conversationQueue, lifecycleStore, queuePort]
   )
 
@@ -565,6 +567,7 @@ export function TemporaryChatPanel({
           id: queuedMessage.id,
         })
         setMessages(current => [...current, optimisticUserMessage])
+        viewportActionsRef.current?.follow()
         const handleOptimisticOpen = (nextAddress: RuntimeTaskAddress) => {
           optimisticAddress = nextAddress
           createdAddressKeyRef.current = `${nextAddress.deviceId}:${nextAddress.taskId}`
@@ -621,6 +624,7 @@ export function TemporaryChatPanel({
         })
       )
       let sendError: string | null = null
+      viewportActionsRef.current?.follow()
       const sendMessage =
         busy && options.interruptWhenBusy
           ? interruptAndSendRuntimePaneMessage
@@ -678,6 +682,7 @@ export function TemporaryChatPanel({
       busy,
       queuedMessages.length,
       conversationQueue,
+      lifecycleStore,
       sideChatProjectChat,
       selectedModelFields,
       runtimeContext,
@@ -864,6 +869,7 @@ export function TemporaryChatPanel({
       }
     >
       <ScrollableMessageArea
+        viewportActionsRef={viewportActionsRef}
         messages={messages}
         turns={turns}
         isWaitingForAssistant={busy}
@@ -901,7 +907,6 @@ export function TemporaryChatPanel({
         onOpenAssistantPlan={onOpenRuntimeTask ? openRuntimeTask : undefined}
         hiddenRequestUserInputIds={hiddenRequestUserInputIds}
         initialScrollPosition={initialScrollPosition}
-        scrollOrigin={scrollOrigin}
       />
     </TemporaryConversationLayout>
   )

@@ -1,0 +1,313 @@
+diff --git a/dist/useStickToBottom.d.ts b/dist/useStickToBottom.d.ts
+index d30cdd9dd9657ba149d79d4ff7322ac76d9961ef..fba937d07d80df8146344a26d2747921b2a8a8ec 100644
+--- a/dist/useStickToBottom.d.ts
++++ b/dist/useStickToBottom.d.ts
+@@ -22,6 +22,7 @@ export interface StickToBottomState {
+     isAtBottom: boolean;
+     isNearBottom: boolean;
+     resizeObserver?: ResizeObserver;
++    scrollResizeObserver?: ResizeObserver;
+ }
+ declare const DEFAULT_SPRING_ANIMATION: {
+     /**
+diff --git a/dist/useStickToBottom.js b/dist/useStickToBottom.js
+index 7d659edace3f497dc867d3ce24d31180e18cf909..8f3df2429948cd3dc192bb2bb84d18ad7b16be26 100644
+--- a/dist/useStickToBottom.js
++++ b/dist/useStickToBottom.js
+@@ -44,6 +44,9 @@ export const useStickToBottom = (options = {}) => {
+     const [isNearBottom, setIsNearBottom] = useState(false);
+     const optionsRef = useRef(null);
+     optionsRef.current = options;
++    const generation = useRef(0);
++    const pendingFrames = useRef(new Map());
++    const geometry = useRef({ maximum: 0 });
+     const isSelecting = useCallback(() => {
+         if (!mouseDown) {
+             return false;
+@@ -97,7 +100,7 @@ export const useStickToBottom = (options = {}) => {
+                 if (!scrollRef.current || !contentRef.current) {
+                     return 0;
+                 }
+-                return (scrollRef.current.scrollHeight - 1 - scrollRef.current.clientHeight);
++                return Math.max(0, scrollRef.current.scrollHeight - scrollRef.current.clientHeight);
+             },
+             get calculatedTargetScrollTop() {
+                 if (!scrollRef.current || !contentRef.current) {
+@@ -128,16 +131,38 @@ export const useStickToBottom = (options = {}) => {
+             },
+         };
+     }, []);
++    const cancelAnimation = useCallback(() => {
++        generation.current++;
++        for (const [frame, resolve] of pendingFrames.current) {
++            cancelAnimationFrame(frame);
++            resolve(false);
++        }
++        pendingFrames.current.clear();
++        state.animation = undefined;
++        state.lastTick = undefined;
++        state.velocity = 0;
++        state.accumulated = 0;
++    }, [state]);
+     const scrollToBottom = useCallback((scrollOptions = {}) => {
+         if (typeof scrollOptions === "string") {
+             scrollOptions = { animation: scrollOptions };
+         }
++        if (!scrollRef.current || !contentRef.current ||
++            (scrollOptions.preserveScrollPosition && !state.isAtBottom)) {
++            return false;
++        }
+         if (!scrollOptions.preserveScrollPosition) {
++            setEscapedFromLock(false);
+             setIsAtBottom(true);
+         }
+         const waitElapsed = Date.now() + (Number(scrollOptions.wait) || 0);
+         const behavior = mergeAnimations(optionsRef.current, scrollOptions.animation);
+         const { ignoreEscapes = false } = scrollOptions;
++        if (scrollOptions.wait === true && state.animation?.behavior === behavior) {
++            return state.animation.promise;
++        }
++        cancelAnimation();
++        const operation = generation.current;
+         let durationElapsed;
+         let startTarget = state.calculatedTargetScrollTop;
+         if (scrollOptions.duration instanceof Promise) {
+@@ -149,9 +174,15 @@ export const useStickToBottom = (options = {}) => {
+             durationElapsed = waitElapsed + (scrollOptions.duration ?? 0);
+         }
+         const next = async () => {
+-            const promise = new Promise(requestAnimationFrame).then(() => {
+-                if (!state.isAtBottom) {
+-                    state.animation = undefined;
++            const promise = new Promise((resolve) => {
++                const frame = requestAnimationFrame(() => {
++                    pendingFrames.current.delete(frame);
++                    resolve(true);
++                });
++                pendingFrames.current.set(frame, resolve);
++            }).then((active) => {
++                if (!active || operation !== generation.current ||
++                    !scrollRef.current || !contentRef.current || !state.isAtBottom) {
+                     return false;
+                 }
+                 const { scrollTop } = state;
+@@ -205,27 +236,22 @@ export const useStickToBottom = (options = {}) => {
+                 return state.isAtBottom;
+             });
+             return promise.then((isAtBottom) => {
+-                requestAnimationFrame(() => {
+-                    if (!state.animation) {
+-                        state.lastTick = undefined;
+-                        state.velocity = 0;
+-                    }
+-                });
++                if (operation === generation.current && !state.animation) {
++                    state.lastTick = undefined;
++                    state.velocity = 0;
++                }
+                 return isAtBottom;
+             });
+         };
+-        if (scrollOptions.wait !== true) {
+-            state.animation = undefined;
+-        }
+-        if (state.animation?.behavior === behavior) {
+-            return state.animation.promise;
+-        }
+-        return next();
+-    }, [setIsAtBottom, isSelecting, state]);
++        const promise = next();
++        state.animation = { behavior, promise, ignoreEscapes };
++        return promise;
++    }, [cancelAnimation, setEscapedFromLock, setIsAtBottom, isSelecting, state]);
+     const stopScroll = useCallback(() => {
++        cancelAnimation();
+         setEscapedFromLock(true);
+         setIsAtBottom(false);
+-    }, [setEscapedFromLock, setIsAtBottom]);
++    }, [cancelAnimation, setEscapedFromLock, setIsAtBottom]);
+     const handleScroll = useCallback(({ target }) => {
+         if (target !== scrollRef.current) {
+             return;
+@@ -243,23 +269,16 @@ export const useStickToBottom = (options = {}) => {
+             lastScrollTop = ignoreScrollToTop;
+         }
+         setIsNearBottom(state.isNearBottom);
+-        /**
+-         * Scroll events may come before a ResizeObserver event,
+-         * so in order to ignore resize events correctly we use a
+-         * timeout.
+-         *
+-         * @see https://github.com/WICG/resize-observer/issues/25#issuecomment-248757228
+-         */
+-        setTimeout(() => {
+-            /**
+-             * When theres a resize difference ignore the resize event.
+-             */
+-            if (state.resizeDifference || scrollTop === ignoreScrollToTop) {
++            // Recognize an actual boundary clamp, not every scroll near a resize.
++            // This works whether the scroll event or ResizeObserver arrives first.
++            const maximum = state.targetScrollTop;
++            const clamped = maximum < geometry.current.maximum &&
++                lastScrollTop > maximum && Math.abs(scrollTop - maximum) <= 2;
++            if (clamped || scrollTop === ignoreScrollToTop) {
+                 return;
+             }
+             if (isSelecting()) {
+-                setEscapedFromLock(true);
+-                setIsAtBottom(false);
++                stopScroll();
+                 return;
+             }
+             const isScrollingDown = scrollTop > lastScrollTop;
+@@ -269,20 +288,18 @@ export const useStickToBottom = (options = {}) => {
+                 return;
+             }
+             if (isScrollingUp) {
+-                setEscapedFromLock(true);
+-                setIsAtBottom(false);
++                stopScroll();
+             }
+             if (isScrollingDown) {
+                 setEscapedFromLock(false);
+             }
+-            if (!state.escapedFromLock && state.isNearBottom) {
++            if (isScrollingDown && !state.escapedFromLock && state.scrollDifference <= 2) {
+                 setIsAtBottom(true);
+             }
+-        }, 1);
+-    }, [setEscapedFromLock, setIsAtBottom, isSelecting, state]);
++    }, [setEscapedFromLock, setIsAtBottom, stopScroll, isSelecting, state]);
+     const handleWheel = useCallback(({ target, deltaY }) => {
+         let element = target;
+-        while (!["scroll", "auto"].includes(getComputedStyle(element).overflow)) {
++        while (!["scroll", "auto"].includes(getComputedStyle(element).overflowY)) {
+             if (!element.parentElement) {
+                 return;
+             }
+@@ -297,77 +314,55 @@ export const useStickToBottom = (options = {}) => {
+             deltaY < 0 &&
+             scrollRef.current.scrollHeight > scrollRef.current.clientHeight &&
+             !state.animation?.ignoreEscapes) {
+-            setEscapedFromLock(true);
+-            setIsAtBottom(false);
++            stopScroll();
++        }
++    }, [stopScroll, state]);
++    const handleResize = useCallback(() => {
++        if (!scrollRef.current || !contentRef.current) return;
++        const maximum = state.targetScrollTop;
++        const previousMaximum = geometry.current.maximum;
++        geometry.current = { maximum };
++        if (maximum < previousMaximum &&
++            (state.lastScrollTop ?? state.scrollTop) > maximum &&
++            Math.abs(state.scrollTop - maximum) <= 2) {
++            state.ignoreScrollToTop = state.scrollTop;
++        }
++        setIsNearBottom(state.isNearBottom);
++        // Resizing is never permission to resume a reader's paused follow.
++        if (state.isAtBottom && state.scrollDifference > 0) {
++            const animation = mergeAnimations(optionsRef.current, optionsRef.current.resize);
++            scrollToBottom({
++                animation,
++                wait: true,
++                preserveScrollPosition: true,
++                duration: animation === "instant" ? undefined : RETAIN_ANIMATION_DURATION_MS,
++            });
+         }
+-    }, [setEscapedFromLock, setIsAtBottom, state]);
++    }, [state, scrollToBottom]);
+     const scrollRef = useRefCallback((scroll) => {
+         scrollRef.current?.removeEventListener("scroll", handleScroll);
+         scrollRef.current?.removeEventListener("wheel", handleWheel);
++        cancelAnimation();
++        state.scrollResizeObserver?.disconnect();
++        state.scrollResizeObserver = undefined;
++        state.lastScrollTop = undefined;
++        state.ignoreScrollToTop = undefined;
+         scroll?.addEventListener("scroll", handleScroll, { passive: true });
+         scroll?.addEventListener("wheel", handleWheel, { passive: true });
++        if (scroll) {
++            geometry.current = { maximum: Math.max(0, scroll.scrollHeight - scroll.clientHeight) };
++            state.scrollResizeObserver = new ResizeObserver(handleResize);
++            state.scrollResizeObserver.observe(scroll);
++        }
+     }, []);
+     const contentRef = useRefCallback((content) => {
++        cancelAnimation();
+         state.resizeObserver?.disconnect();
+         state.resizeObserver = undefined;
+         if (!content) {
+             return;
+         }
+-        let previousHeight;
+-        state.resizeObserver = new ResizeObserver(([entry]) => {
+-            const { height } = entry.contentRect;
+-            const difference = height - (previousHeight ?? height);
+-            state.resizeDifference = difference;
+-            /**
+-             * Sometimes the browser can overscroll past the target,
+-             * so check for this and adjust appropriately.
+-             */
+-            if (state.scrollTop > state.targetScrollTop) {
+-                state.scrollTop = state.targetScrollTop;
+-            }
+-            setIsNearBottom(state.isNearBottom);
+-            if (difference >= 0) {
+-                /**
+-                 * If it's a positive resize, scroll to the bottom when
+-                 * we're already at the bottom.
+-                 */
+-                const animation = mergeAnimations(optionsRef.current, previousHeight
+-                    ? optionsRef.current.resize
+-                    : optionsRef.current.initial);
+-                scrollToBottom({
+-                    animation,
+-                    wait: true,
+-                    preserveScrollPosition: true,
+-                    duration: animation === "instant" ? undefined : RETAIN_ANIMATION_DURATION_MS,
+-                });
+-            }
+-            else {
+-                /**
+-                 * Else if it's a negative resize, check if we're near the bottom
+-                 * if we are want to un-escape from the lock, because the resize
+-                 * could have caused the container to be at the bottom.
+-                 */
+-                if (state.isNearBottom) {
+-                    setEscapedFromLock(false);
+-                    setIsAtBottom(true);
+-                }
+-            }
+-            previousHeight = height;
+-            /**
+-             * Reset the resize difference after the scroll event
+-             * has fired. Requires a rAF to wait for the scroll event,
+-             * and a setTimeout to wait for the other timeout we have in
+-             * resizeObserver in case the scroll event happens after the
+-             * resize event.
+-             */
+-            requestAnimationFrame(() => {
+-                setTimeout(() => {
+-                    if (state.resizeDifference === difference) {
+-                        state.resizeDifference = 0;
+-                    }
+-                }, 1);
+-            });
+-        });
++        state.resizeObserver = new ResizeObserver(handleResize);
+         state.resizeObserver?.observe(content);
+     }, []);
+     return {
+@@ -384,8 +379,10 @@ export const useStickToBottom = (options = {}) => {
+ function useRefCallback(callback, deps) {
+     // biome-ignore lint/correctness/useExhaustiveDependencies: not needed
+     const result = useCallback((ref) => {
++        if (result.current === ref) return;
++        const cleanup = callback(ref);
+         result.current = ref;
+-        return callback(ref);
++        return cleanup;
+     }, deps);
+     return result;
+ }

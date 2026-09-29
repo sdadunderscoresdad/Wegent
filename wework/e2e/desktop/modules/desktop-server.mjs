@@ -3681,7 +3681,7 @@ class DesktopE2EServer {
         ...Array.from(
           { length: 6 },
           (_, paragraphIndex) =>
-            `Virtualized navigation response ${turnNumber}.${paragraphIndex + 1}. ${'Measured content '.repeat(12)}`
+            `Navigation response ${turnNumber}.${paragraphIndex + 1}. ${'Measured content '.repeat(12)}`
         ),
       ].join('\n\n')
       this.writeSse(response, [

@@ -8,14 +8,12 @@ import {
   beginRuntimeConversationHydration,
   beginRuntimeGoalSnapshot,
   cacheConversationScrollSnapshot,
-  cacheConversationVirtualMeasurements,
   cacheRuntimeConversationQueuedMessages,
   cacheRuntimeConversationQueuePaused,
   clearRuntimeConversationCacheForTests,
   completeRuntimeConversationHydration,
   evictRuntimeConversation,
   getConversationScrollSnapshot,
-  getConversationVirtualMeasurements,
   getRuntimeConversationCacheStats,
   getRuntimeConversationMetadata,
   getRuntimeConversationMessages,
@@ -1480,12 +1478,11 @@ describe('runtimeConversationCache', () => {
       },
     })
     cacheConversationScrollSnapshot('device-1:task-1', {
-      distanceFromBottomPx: 240,
-      pinnedToBottom: false,
+      schemaVersion: 1,
+      mode: 'reading',
+      messageId: 'user-1',
+      offsetWithinAnchorPx: 24,
     })
-    cacheConversationVirtualMeasurements('device-1:task-1', [
-      { index: 0, key: 'user-1', start: 0, end: 120, size: 120, lane: 0 },
-    ])
     cacheRuntimeConversationQueuedMessages(address, [
       {
         id: 'queued-1',
@@ -1503,7 +1500,6 @@ describe('runtimeConversationCache', () => {
     expect(getRuntimeConversationQueuedMessages(address)).toEqual([])
     expect(getRuntimeConversationQueuePaused(address)).toBe(false)
     expect(getConversationScrollSnapshot('device-1:task-1')).toBeUndefined()
-    expect(getConversationVirtualMeasurements('device-1:task-1')).toBeUndefined()
     expect(takeInterruptedRuntimeConversationGuidance(address, 'client-guidance-1')).toBe(false)
   })
 })

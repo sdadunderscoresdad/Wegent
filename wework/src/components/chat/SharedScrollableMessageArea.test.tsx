@@ -23,7 +23,6 @@ function renderArea(
 ) {
   const props: ScrollableMessageAreaProps = {
     messages: [message],
-    virtualize: false,
     userMessageServices: {
       images: { identity: image => String(image.id), load: vi.fn(), download: vi.fn() },
     },

@@ -58,43 +58,43 @@ function renderConversation() {
   track.setPointerCapture = vi.fn()
   track.hasPointerCapture = vi.fn().mockReturnValue(true)
   track.releasePointerCapture = vi.fn()
-  // Match Chromium's flex-column-reverse scroll range: positive writes clamp to zero.
+  // Match a normal top-origin viewport, including native boundary clamping.
   let position = 0
   Object.defineProperty(viewport, 'scrollTop', {
     configurable: true,
     get: () => position,
     set: value => {
-      position = Math.max(400 - contentHeight, Math.min(0, value))
+      position = Math.max(0, Math.min(contentHeight - 400, value))
     },
   })
   return { viewport, track, thumb: screen.getByTestId('desktop-workbench-scrollbar-thumb') }
 }
 
-test('maps track clicks and continuous dragging to the negative conversation scroll range', () => {
+test('maps track clicks and continuous dragging to the top-origin conversation range', () => {
   const { viewport, track, thumb } = renderConversation()
   expect(thumb.style.height).toBe('98.5px')
-  expect(thumb.style.transform).toBe('translateY(295.5px)')
+  expect(thumb.style.transform).toBe('translateY(0px)')
 
   fireEvent.pointerDown(track, { button: 0, pointerId: 1, clientY: 200 })
-  expect(viewport.scrollTop).toBe(-600)
+  expect(viewport.scrollTop).toBe(600)
   fireEvent.pointerMove(track, { buttons: 1, pointerId: 1, clientY: 3 })
-  expect(viewport.scrollTop).toBe(-1200)
-  fireEvent.pointerMove(track, { buttons: 1, pointerId: 1, clientY: 397 })
   expect(viewport.scrollTop).toBe(0)
+  fireEvent.pointerMove(track, { buttons: 1, pointerId: 1, clientY: 397 })
+  expect(viewport.scrollTop).toBe(1200)
   fireEvent.pointerUp(track, { pointerId: 1 })
   fireEvent.pointerMove(track, { pointerId: 1, clientY: 3 })
-  expect(viewport.scrollTop).toBe(0)
+  expect(viewport.scrollTop).toBe(1200)
 })
 
 test('synchronizes keyboard scrolling, thumb position, and content resizing', () => {
   const { viewport, track, thumb } = renderConversation()
   fireEvent.keyDown(track, { key: 'Home' })
   fireEvent.scroll(viewport)
-  expect(viewport.scrollTop).toBe(-1200)
+  expect(viewport.scrollTop).toBe(0)
   expect(thumb.style.transform).toBe('translateY(0px)')
   expect(track).toHaveAttribute('aria-valuenow', '0')
   fireEvent.keyDown(track, { key: 'End' })
-  expect(viewport.scrollTop).toBe(0)
+  expect(viewport.scrollTop).toBe(1200)
 
   contentHeight = 300
   act(() => resizes.forEach(callback => callback()))

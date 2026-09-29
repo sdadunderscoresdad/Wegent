@@ -57,7 +57,7 @@ import {
   TURN_NAVIGATION_REGRESSION_COMPLETION_PREFIX,
   TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX,
   TURN_NAVIGATION_REGRESSION_TURN_COUNT,
-  TURN_NAVIGATION_VIRTUALIZED_BOUNDARY_TURN,
+  TURN_NAVIGATION_HISTORY_TARGET_TURN,
   VIEW_IMAGE_COMPLETION_TEXT,
   VIEW_IMAGE_PROMPT,
   VISION_SIDECAR_COMPLETION_TEXT,
@@ -786,7 +786,7 @@ async function verifyForegroundGuidanceScroll({ composerSelector, control, retur
 
 async function verifyTurnNavigationTracksVisibleTurnMessages(
   control,
-  turnNumber = TURN_NAVIGATION_VIRTUALIZED_BOUNDARY_TURN + 1
+  turnNumber = TURN_NAVIGATION_HISTORY_TARGET_TURN + 1
 ) {
   const promptText = `${TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX}_${turnNumber}`
   const previewSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-turn-navigation-preview"]`
@@ -799,7 +799,7 @@ async function verifyTurnNavigationTracksVisibleTurnMessages(
     value: 'data-turn-index',
   })
   assert.match(turnIndex, /^\d+$/, `Unable to identify the navigation marker for "${promptText}"`)
-  const targetResponseText = `Virtualized navigation response ${turnNumber}.6`
+  const targetResponseText = `Navigation response ${turnNumber}.6`
 
   const markerSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-turn-navigation-marker"][data-turn-index="${turnIndex}"]`
   await control.command('click', markerSelector)
@@ -823,27 +823,19 @@ async function verifyTurnNavigationTracksVisibleTurnMessages(
     `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"] p`,
     { text: targetResponseText }
   )
-  const turnMatch = assistantText.match(/Virtualized navigation response (\d+)\.\d+/)
-  assert.ok(turnMatch, `Unable to identify the virtualized navigation turn from "${assistantText}"`)
+  const turnMatch = assistantText.match(/Navigation response (\d+)\.\d+/)
+  assert.ok(turnMatch, `Unable to identify the navigation turn from "${assistantText}"`)
 
   assert.equal(Number(turnMatch[1]), turnNumber, 'Scrolled to the wrong navigation turn')
 
-  const virtualizedOutPrompt = `${TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX}_1`
-  let mountedUserMessages = ''
-  const virtualizationStartedAt = Date.now()
-  while (Date.now() - virtualizationStartedAt < DEFAULT_STEP_TIMEOUT_MS) {
-    mountedUserMessages = await control.command(
-      'getText',
-      `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-user"]`
-    )
-    if (!mountedUserMessages.includes(virtualizedOutPrompt)) {
-      break
-    }
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
-  }
+  const oldestPrompt = `${TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX}_1`
+  const mountedUserMessages = await control.command(
+    'getText',
+    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-user"]`
+  )
   assert.ok(
-    !mountedUserMessages.includes(virtualizedOutPrompt),
-    'The oldest user row remained mounted, so the turn navigation fixture was not virtualized'
+    mountedUserMessages.includes(oldestPrompt),
+    'Navigating to a later turn unmounted the oldest loaded user message'
   )
 
   await control.command('waitFor', `${markerSelector}[data-active="true"]`, {
@@ -1067,7 +1059,7 @@ async function reopenCurrentTurnNavigationTask(
     await verifyEnvironmentPanelScrollStability(control)
   }
   await control.command('waitFor', '[data-testid="message-turn-navigation-preview"]', {
-    text: `${TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX}_${TURN_NAVIGATION_VIRTUALIZED_BOUNDARY_TURN}`,
+    text: `${TURN_NAVIGATION_REGRESSION_PROMPT_PREFIX}_${TURN_NAVIGATION_HISTORY_TARGET_TURN}`,
     timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
   })
   return restartedApp

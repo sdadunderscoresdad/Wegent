@@ -83,6 +83,7 @@ import {
 
 import {
   ensureTaskRowVisible,
+  ensureToggleExpanded,
   verifyConcurrentTaskMemory,
   verifyLocalMarkdownImage,
   verifyMemoryGrowth,
@@ -2920,7 +2921,7 @@ source = ${JSON.stringify(staleBundledMarketplacePath)}`
         visible: true,
         timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
       })
-      await control.command('click', '[data-testid="final-processing-toggle"]')
+      await ensureToggleExpanded(control, '[data-testid="final-processing-toggle"]')
       await control.command('waitFor', '[data-testid="processing-summary-toggle"]', {
         timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
       })
@@ -2953,7 +2954,7 @@ source = ${JSON.stringify(staleBundledMarketplacePath)}`
           Buffer.from(processingSummaryScreenshot.replace(/^data:image\/png;base64,/, ''), 'base64')
         )
       }
-      await control.command('click', '[data-testid="processing-summary-toggle"]')
+      await ensureToggleExpanded(control, '[data-testid="processing-summary-toggle"]')
       await control.command('waitFor', '[data-testid="file-change-stats-label"]', {
         text: '+1',
         timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
@@ -4653,7 +4654,7 @@ async function verifyMcpElicitationInFullAccess(control) {
       snapshot.pane?.status?.isBusy === false,
     'The MCP elicitation task did not settle after the accepted form response'
   )
-  await control.command('click', '[data-testid="final-processing-toggle"]')
+  await ensureToggleExpanded(control, '[data-testid="final-processing-toggle"]')
   await control.command('waitFor', '[data-testid="request-user-input-summary"]', {
     text: '仅自己',
     visible: true,

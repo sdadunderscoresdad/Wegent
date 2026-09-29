@@ -27,6 +27,7 @@ import {
   isWeWorkCompatibleDevice,
 } from '@/lib/device-capabilities'
 import { ScrollableMessageArea } from '@/components/chat/ScrollableMessageArea'
+import type { ConversationViewportActions } from '@wegent/collaboration/conversation'
 import { ConversationDeviceOfflineBanner } from './ConversationDeviceOfflineBanner'
 import { DeviceStatusPrompt } from './DeviceStatusPrompt'
 import { MobileDrawer } from './MobileDrawer'
@@ -140,7 +141,12 @@ const MobileWorkbenchPane = memo(function MobileWorkbenchPane({
   } | null>(null)
   const currentRuntimeTask = pane.currentRuntimeTask
   const activePaneProject = pane.currentProject
-  const paneSession = useWorkbenchPaneSession({ currentRuntimeTask })
+  const viewportActionsRef = useRef<ConversationViewportActions | null>(null)
+  const followUserMessage = useCallback(() => viewportActionsRef.current?.follow(), [])
+  const paneSession = useWorkbenchPaneSession({
+    currentRuntimeTask,
+    onUserMessageCommitted: followUserMessage,
+  })
   const refinePluginTrialPrompt = usePluginTrialPromptRefinement({
     source: currentRuntimeTask,
     project: activePaneProject,
@@ -398,6 +404,7 @@ const MobileWorkbenchPane = memo(function MobileWorkbenchPane({
               )}
             </header>
             <ScrollableMessageArea
+              viewportActionsRef={viewportActionsRef}
               workspacePath={workspaceTarget?.path}
               messages={paneMessages}
               loading={paneSession.transcriptLoading}

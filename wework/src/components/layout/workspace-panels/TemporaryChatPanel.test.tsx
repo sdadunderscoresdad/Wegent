@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { StrictMode } from 'react'
+import { StrictMode, useImperativeHandle, type Ref } from 'react'
+import type { ConversationViewportActions } from '@wegent/collaboration/conversation'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import enCommon from '@/i18n/locales/en/common.json'
@@ -40,6 +41,7 @@ const address: RuntimeTaskAddress = {
 }
 
 const mocks = vi.hoisted(() => ({
+  follow: vi.fn(),
   catalogBindings: new Map<string, ComposerCatalogBinding>(),
   readCatalog: vi.fn(),
   mainListApps: vi.fn(),
@@ -95,7 +97,7 @@ vi.mock('@/components/chat/ScrollableMessageArea', () => ({
     onOpenAssistantPlan,
     onRequestUserInputSubmit,
     onRequestUserInputIgnore,
-    scrollOrigin,
+    viewportActionsRef,
   }: {
     messages: Array<{
       id: string
@@ -114,80 +116,83 @@ vi.mock('@/components/chat/ScrollableMessageArea', () => ({
       answers: Record<string, { answers: string[] }>
     }) => void
     onRequestUserInputIgnore?: (payload: { kind: string; request_id: string }) => void
-    scrollOrigin?: 'top' | 'bottom'
-  }) => (
-    <div data-testid="mock-message-list" data-scroll-origin={scrollOrigin}>
-      {messages.flatMap(message =>
-        (message.attachments ?? []).map(messageAttachment => (
-          <span key={messageAttachment.id} data-testid="sent-message-attachment">
-            {messageAttachment.filename}:{messageAttachment.local_preview_url}
-          </span>
-        ))
-      )}
-      {onRetryFailedMessage && messages[0] ? (
-        <button
-          type="button"
-          data-testid="mock-retry"
-          onClick={() => onRetryFailedMessage(messages[0])}
-        >
-          重试
-        </button>
-      ) : null}
-      {onSwitchModelForFailedMessage && messages[0] ? (
-        <button
-          type="button"
-          data-testid="mock-switch-model"
-          onClick={() => onSwitchModelForFailedMessage(messages[0])}
-        >
-          切换模型
-        </button>
-      ) : null}
-      {onOpenWorkspaceFile ? (
-        <button
-          type="button"
-          data-testid="mock-open-file"
-          onClick={() => onOpenWorkspaceFile('/tmp/workspace/file.ts')}
-        >
-          打开文件
-        </button>
-      ) : null}
-      {onOpenFileChangesReview ? (
-        <button type="button" data-testid="mock-open-review" onClick={onOpenFileChangesReview}>
-          打开 Review
-        </button>
-      ) : null}
-      {onOpenAssistantPlan ? (
-        <button type="button" data-testid="mock-open-plan" onClick={onOpenAssistantPlan}>
-          打开 Plan
-        </button>
-      ) : null}
-      {onRequestUserInputSubmit ? (
-        <button
-          type="button"
-          data-testid="mock-submit-input"
-          onClick={() =>
-            onRequestUserInputSubmit({
-              requestId: 'request-1',
-              answers: { choice: { answers: ['继续'] } },
-            })
-          }
-        >
-          回答
-        </button>
-      ) : null}
-      {onRequestUserInputIgnore ? (
-        <button
-          type="button"
-          data-testid="mock-ignore-input"
-          onClick={() =>
-            onRequestUserInputIgnore({ kind: 'request_user_input', request_id: 'request-1' })
-          }
-        >
-          忽略
-        </button>
-      ) : null}
-    </div>
-  ),
+    viewportActionsRef?: Ref<ConversationViewportActions>
+  }) => {
+    useImperativeHandle(viewportActionsRef, () => ({ follow: mocks.follow }))
+    return (
+      <div data-testid="mock-message-list">
+        {messages.flatMap(message =>
+          (message.attachments ?? []).map(messageAttachment => (
+            <span key={messageAttachment.id} data-testid="sent-message-attachment">
+              {messageAttachment.filename}:{messageAttachment.local_preview_url}
+            </span>
+          ))
+        )}
+        {onRetryFailedMessage && messages[0] ? (
+          <button
+            type="button"
+            data-testid="mock-retry"
+            onClick={() => onRetryFailedMessage(messages[0])}
+          >
+            重试
+          </button>
+        ) : null}
+        {onSwitchModelForFailedMessage && messages[0] ? (
+          <button
+            type="button"
+            data-testid="mock-switch-model"
+            onClick={() => onSwitchModelForFailedMessage(messages[0])}
+          >
+            切换模型
+          </button>
+        ) : null}
+        {onOpenWorkspaceFile ? (
+          <button
+            type="button"
+            data-testid="mock-open-file"
+            onClick={() => onOpenWorkspaceFile('/tmp/workspace/file.ts')}
+          >
+            打开文件
+          </button>
+        ) : null}
+        {onOpenFileChangesReview ? (
+          <button type="button" data-testid="mock-open-review" onClick={onOpenFileChangesReview}>
+            打开 Review
+          </button>
+        ) : null}
+        {onOpenAssistantPlan ? (
+          <button type="button" data-testid="mock-open-plan" onClick={onOpenAssistantPlan}>
+            打开 Plan
+          </button>
+        ) : null}
+        {onRequestUserInputSubmit ? (
+          <button
+            type="button"
+            data-testid="mock-submit-input"
+            onClick={() =>
+              onRequestUserInputSubmit({
+                requestId: 'request-1',
+                answers: { choice: { answers: ['继续'] } },
+              })
+            }
+          >
+            回答
+          </button>
+        ) : null}
+        {onRequestUserInputIgnore ? (
+          <button
+            type="button"
+            data-testid="mock-ignore-input"
+            onClick={() =>
+              onRequestUserInputIgnore({ kind: 'request_user_input', request_id: 'request-1' })
+            }
+          >
+            忽略
+          </button>
+        ) : null}
+      </div>
+    )
+  },
 }))
 
 vi.mock('@/components/layout/BufferedChatInput', () => ({
@@ -648,7 +653,8 @@ describe('TemporaryChatPanel', () => {
     expect(screen.getByTestId('mock-composer')).not.toHaveAttribute('data-trial-plugin')
   })
 
-  it('uses bottom-origin scrolling by default and allows an explicit override', () => {
+  it('connects explicit sends to the shared viewport actions', async () => {
+    mocks.activeModelSelection = { modelName: 'test-model', modelType: 'public', options: {} }
     mocks.conversationMessages = [
       {
         id: 'existing-message',
@@ -658,28 +664,18 @@ describe('TemporaryChatPanel', () => {
         createdAt: '2026-09-15T00:00:00.000Z',
       },
     ]
-    const { rerender } = render(
+    render(
       <TemporaryChatPanel
         currentProject={null}
         source={address}
-        instanceId="bottom-origin-default"
+        instanceId="send-intent"
         initialAddress={address}
       />
     )
 
-    expect(screen.getByTestId('mock-message-list')).toHaveAttribute('data-scroll-origin', 'bottom')
-
-    rerender(
-      <TemporaryChatPanel
-        currentProject={null}
-        source={address}
-        instanceId="top-origin-override"
-        initialAddress={address}
-        scrollOrigin="top"
-      />
-    )
-
-    expect(screen.getByTestId('mock-message-list')).toHaveAttribute('data-scroll-origin', 'top')
+    mocks.follow.mockClear()
+    await userEvent.click(screen.getByTestId('mock-send'))
+    expect(mocks.follow).toHaveBeenCalledOnce()
   })
 
   it('passes the collapsed idle state through to the shared composer', () => {

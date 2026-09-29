@@ -4,7 +4,15 @@ import {
   runtimeTurnNavigationLoadOptions,
 } from '@wegent/chat-core/runtime-transcript-page'
 export { runtimeTurnNavigationLoadOptions } from '@wegent/chat-core/runtime-transcript-page'
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type SetStateAction,
+} from 'react'
 import i18n from '@/i18n'
 import { useWorkbenchPaneContext } from '@/features/workbench/useWorkbench'
 import {
@@ -134,6 +142,7 @@ import {
 import { RUNTIME_RETRY_CONTINUATION_PROMPT } from './runtimeRetry'
 
 interface WorkbenchPaneSessionOptions {
+  onUserMessageCommitted?: () => void
   currentRuntimeTask: RuntimeTaskAddress | null
   debugSnapshotEnabled?: boolean
 }
@@ -202,7 +211,12 @@ const EMPTY_ATTACHMENT_STATE = {
 export function useWorkbenchPaneSession({
   currentRuntimeTask,
   debugSnapshotEnabled = true,
+  onUserMessageCommitted,
 }: WorkbenchPaneSessionOptions) {
+  const onUserMessageCommittedRef = useRef(onUserMessageCommitted)
+  useLayoutEffect(() => {
+    onUserMessageCommittedRef.current = onUserMessageCommitted
+  })
   const runtimeTranscriptPageSize = resolveRuntimeTranscriptPageSize()
   const {
     state: workbenchState,
@@ -1089,6 +1103,7 @@ export function useWorkbenchPaneSession({
         type: 'user_added',
         message: createRuntimeUserMessage(content, attachments, options),
       })
+      onUserMessageCommittedRef.current?.()
     },
     [dispatchMessages]
   )
@@ -1142,6 +1157,7 @@ export function useWorkbenchPaneSession({
             message: visibleMessage,
           })
         )
+        onUserMessageCommittedRef.current?.()
       }
       const messageAttachments = message.attachments ?? []
       const attachmentIds = remoteAttachmentIds(messageAttachments)
@@ -1868,6 +1884,7 @@ export function useWorkbenchPaneSession({
         const messageAttachments = queuedMessage.attachments ?? []
         const attachmentIds = remoteAttachmentIds(messageAttachments)
         const attachments = localRuntimeAttachments(messageAttachments)
+        onUserMessageCommittedRef.current?.()
         const guidanceRequest = sendRuntimePaneGuidance({
           address: currentRuntimeTask,
           message: queuedMessage.content,

@@ -103,9 +103,9 @@ async function verifyShortConversationLayout({ composerSelector, control, restar
     control,
     `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"]`
   )
-  const virtualRows = await getElementMetrics(
+  const mountedRows = await getElementMetrics(
     control,
-    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="desktop-chat-scroll-content"] [data-index]`
+    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="desktop-chat-scroll-content"] [data-message-id]`
   )
   assert.equal(userMessages.length, 2, 'The short conversation did not render both user messages')
   assert.equal(
@@ -113,19 +113,15 @@ async function verifyShortConversationLayout({ composerSelector, control, restar
     2,
     'The reopened short conversation did not render both assistant messages'
   )
-  assert.equal(
-    virtualRows.length,
-    4,
-    'The unified virtual list did not mount every short-conversation turn'
-  )
+  assert.equal(mountedRows.length, 4, 'The timeline did not mount every short-conversation turn')
   assert.equal(
     await control.command(
       'getStyle',
-      `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="desktop-chat-scroll-content"] [data-index]`,
+      `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="desktop-chat-scroll-content"] [data-message-id]`,
       { value: 'position' }
     ),
-    'absolute',
-    'Short conversations did not use the unified virtual row layout'
+    'static',
+    'Conversation rows must use normal document flow'
   )
   const conversationSnapshot = JSON.parse(
     await control.command(
@@ -135,11 +131,11 @@ async function verifyShortConversationLayout({ composerSelector, control, restar
   )
   assert.ok(
     countTextOccurrences(conversationSnapshot.text, FRESH_CHAT_PROMPT) >= 2,
-    'The reopened virtualized conversation lost an earlier user message'
+    'The reopened conversation lost an earlier user message'
   )
   assert.ok(
     countTextOccurrences(conversationSnapshot.text, FRESH_CHAT_COMPLETION_TEXT) >= 2,
-    'The reopened virtualized conversation lost an earlier assistant message'
+    'The reopened conversation lost an earlier assistant message'
   )
   const firstMessage = userMessages[0]
   const messageTopOffset = firstMessage.top - scroller.top
@@ -152,7 +148,7 @@ async function verifyShortConversationLayout({ composerSelector, control, restar
         messageTopOffset,
         scroller,
         userMessages,
-        virtualRows,
+        mountedRows,
       },
       null,
       2
@@ -870,16 +866,10 @@ async function verifyViewImageProcessingBlock(control) {
 }
 
 function distanceFromBottom(metrics) {
-  if (metrics.scrollOrigin === 'bottom') {
-    return Math.max(0, -metrics.scrollTop)
-  }
   return Math.max(0, metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop)
 }
 
 function distanceFromTop(metrics) {
-  if (metrics.scrollOrigin === 'bottom') {
-    return Math.max(0, metrics.scrollHeight - metrics.clientHeight + metrics.scrollTop)
-  }
   return Math.max(0, metrics.scrollTop)
 }
 

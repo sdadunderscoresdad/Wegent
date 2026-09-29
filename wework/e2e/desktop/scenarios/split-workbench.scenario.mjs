@@ -201,8 +201,6 @@ async function verifyMultilineComposerCaret(control, captureScreenshot) {
     /\bcomposer-prosemirror-editor\b/,
     'The split workbench did not render the ProseMirror composer'
   )
-  await verifyComposerLineNavigation(control)
-  await verifyComposerMarkdownEditing(control)
   const beforePaste = '0123456789'
   const pastedText = 'PASTED'
   const afterPaste = 'abcdefghij'
@@ -320,6 +318,10 @@ async function verifyMultilineComposerCaret(control, captureScreenshot) {
     1,
     'Clearing the multiline composer did not restore a single empty paragraph'
   )
+  // Native key input activates the window; verify inactive caret behavior first.
+  await verifyComposerLineNavigation(control)
+  await verifyComposerMarkdownEditing(control)
+  await control.command('fill', COMPOSER, { value: '' })
 }
 
 async function verifyComposerLineNavigation(control) {

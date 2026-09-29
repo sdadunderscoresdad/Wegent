@@ -26,6 +26,7 @@ import { saveLocalUserPreferences } from '@/api/local/localSession'
 import { desktopControlExtension } from '@extensions/desktop-control'
 import type { DesktopControlCommand } from '@/extensions/desktop-control-contract'
 import { parseDesktopControlKey } from './desktop-control-keyboard'
+import { dispatchDesktopControlTouchGesture } from './desktop-control-touch'
 import { getWorkbenchDebugSnapshot } from '@/lib/debugPanel'
 import { getComposerDiagnosticsSnapshot } from '@/components/chat/composer/composerDiagnostics'
 import {
@@ -82,7 +83,7 @@ interface ScrollStabilitySamplePoint {
   anchorTop: number
   clientHeight: number
   scrollHeight: number
-  scrollOrigin: 'bottom' | 'top'
+  scrollOrigin: 'top'
   scrollTop: number
   time: number
 }
@@ -571,7 +572,7 @@ function desktopControlElementMetrics(selector: string): string {
         right: rect.right,
         scrollHeight: element.scrollHeight,
         scrollLeft: element.scrollLeft,
-        scrollOrigin: element.dataset.scrollOrigin === 'bottom' ? 'bottom' : 'top',
+        scrollOrigin: 'top',
         scrollTop: element.scrollTop,
         scrollWidth: element.scrollWidth,
         top: rect.top,
@@ -579,16 +580,6 @@ function desktopControlElementMetrics(selector: string): string {
       }
     })
   )
-}
-
-function desktopControlContentScrollTop(element: HTMLElement): number {
-  if (element.dataset.scrollOrigin !== 'bottom') return element.scrollTop
-  return Math.max(0, element.scrollHeight - element.clientHeight + element.scrollTop)
-}
-
-function desktopControlDomScrollTop(element: HTMLElement, contentScrollTop: number): number {
-  if (element.dataset.scrollOrigin !== 'bottom') return contentScrollTop
-  return contentScrollTop - Math.max(0, element.scrollHeight - element.clientHeight)
 }
 
 function desktopControlSnapshot(selector = 'body'): string {
@@ -2263,7 +2254,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
           anchorTop: anchor.getBoundingClientRect().top,
           clientHeight: scroller.clientHeight,
           scrollHeight: scroller.scrollHeight,
-          scrollOrigin: scroller.dataset.scrollOrigin === 'bottom' ? 'bottom' : 'top',
+          scrollOrigin: 'top',
           scrollTop: scroller.scrollTop,
           time: time - startedAt,
         }
@@ -2435,10 +2426,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
           deltaY: 120,
         })
       )
-      element.scrollTop =
-        element.dataset.scrollOrigin === 'bottom'
-          ? 0
-          : Math.max(0, element.scrollHeight - element.clientHeight)
+      element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
       element.dispatchEvent(new Event('scroll', { bubbles: true }))
       return String(element.scrollTop)
     }
@@ -2459,10 +2447,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
         })
       )
       const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
-      scroller.scrollTop =
-        scroller.dataset.scrollOrigin === 'bottom'
-          ? -Math.min(distance, maxScrollTop)
-          : Math.max(0, maxScrollTop - distance)
+      scroller.scrollTop = Math.max(0, maxScrollTop - distance)
       scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
       return String(scroller.scrollTop)
     }
@@ -2476,7 +2461,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
 
       const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
       const nextContentScrollTop = maxScrollTop * ratio
-      const currentContentScrollTop = desktopControlContentScrollTop(scroller)
+      const currentContentScrollTop = scroller.scrollTop
       scroller.dispatchEvent(
         new WheelEvent('wheel', {
           bubbles: true,
@@ -2485,7 +2470,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
           deltaY: nextContentScrollTop < currentContentScrollTop ? -120 : 120,
         })
       )
-      scroller.scrollTop = desktopControlDomScrollTop(scroller, nextContentScrollTop)
+      scroller.scrollTop = nextContentScrollTop
       scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
       return String(scroller.scrollTop)
     }
@@ -2512,7 +2497,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
       const viewport = scroller.getBoundingClientRect()
       const samples = ratios.map(ratio => {
         const nextContentScrollTop = maxScrollTop * ratio
-        const currentContentScrollTop = desktopControlContentScrollTop(scroller)
+        const currentContentScrollTop = scroller.scrollTop
         scroller.dispatchEvent(
           new WheelEvent('wheel', {
             bubbles: true,
@@ -2521,7 +2506,7 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
             deltaY: nextContentScrollTop < currentContentScrollTop ? -120 : 120,
           })
         )
-        scroller.scrollTop = desktopControlDomScrollTop(scroller, nextContentScrollTop)
+        scroller.scrollTop = nextContentScrollTop
         scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
 
         const hasVisibleContent = Array.from(
@@ -2809,6 +2794,13 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
       return moveDesktopControlPointer(command)
     case 'press': {
       return pressDesktopControlKey(command.selector, command.key ?? '')
+    }
+    case 'touchGesture': {
+      const element = findDesktopControlElements(command.selector)[0]
+      if (!element) throw new Error(`Unable to find selector "${command.selector}"`)
+      dispatchDesktopControlTouchGesture(element, command.value ?? '')
+      await waitForDesktopControlTick()
+      return element.textContent?.trim() ?? ''
     }
     case 'nativePress': {
       return pressNativeDesktopControlKey(command.selector, command.key ?? '')

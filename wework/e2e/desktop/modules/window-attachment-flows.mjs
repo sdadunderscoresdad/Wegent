@@ -78,6 +78,17 @@ async function waitForProcessExit(processId, message) {
   throw new Error(message)
 }
 
+async function waitForNativeWindowVisibility(control, visible) {
+  const startedAt = Date.now()
+  let state
+  while (Date.now() - startedAt < DEFAULT_STEP_TIMEOUT_MS) {
+    state = JSON.parse(await control.command('getNativeWindowState', 'body'))
+    if (state.visible === visible && (!visible || !state.minimized)) return state
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 100))
+  }
+  assert.fail(`Expected native window visible=${visible}: ${JSON.stringify(state)}`)
+}
+
 async function waitForProcessExitWithin(processId, timeoutMs, message) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
@@ -430,6 +441,7 @@ async function verifyBackgroundTaskWindowLifecycle({
     })
     await control.command('click', '[data-testid="runtime-task-close-confirm-button"]')
     await waitForLogPattern(desktopWindowLogPath(app.pid), /windowWillClose:/)
+    const hiddenWindow = await waitForNativeWindowVisibility(control, false)
     assert.equal(processIsAlive(app.pid), true, 'Closing to tray terminated the Wework process')
     assert.equal(
       processIsAlive(executorProcessId),
@@ -447,16 +459,37 @@ async function verifyBackgroundTaskWindowLifecycle({
       assertionIds: backgroundAssertionIds,
     })
 
-    await reactivateMacApplication(appIdentifier, appBundlePath)
+    await control.command('activateTray', 'body', {
+      value: JSON.stringify({ type: 'click' }),
+    })
+    const restoredWindow = await waitForNativeWindowVisibility(control, true)
+    assert.equal(
+      control.readyCount,
+      readyCountBeforeClose,
+      'Restoring a hidden Electron window unnecessarily reloaded its renderer'
+    )
+    assert.equal(
+      control.ready?.clientId,
+      controlClientIdBeforeClose,
+      'Restoring a hidden Electron window replaced its control client'
+    )
+    await writeFile(
+      join(resultDir, 'window-hide-restore-state.json'),
+      JSON.stringify({ hiddenWindow, restoredWindow, rendererPreserved: true }, null, 2)
+    )
+
+    // Closing to tray hides Electron's renderer. Explicit reload, not reopen,
+    // is the lifecycle boundary at which the old control client must be retired.
+    await control.command('reloadMainWindow', 'body')
     await withTimeout(
       control.awaitReadyAfter(readyCountBeforeClose),
       WORKBENCH_READY_TIMEOUT_MS,
-      'The reopened Wework WebView did not reconnect to the desktop controller'
+      'The explicitly reloaded Wework WebView did not reconnect to the desktop controller'
     )
     assert.notEqual(
       control.ready?.clientId,
       controlClientIdBeforeClose,
-      'The reopened WebView reused the closed control client identity'
+      'The reloaded WebView reused the old control client identity'
     )
     const reopenedTaskWait = control.command('waitFor', `[data-testid="${taskRowTestId}"]`, {
       stableMs: COMPOSER_READY_STABILITY_MS,
@@ -611,10 +644,7 @@ async function verifyBackgroundTaskWindowLifecycle({
   )
 
   setPhase('completed-task-scroll-position')
-  const middleMarkdownSelector = [
-    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"] [data-scroll-anchor]`,
-    `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"] [data-markdown-window-placeholder]`,
-  ].join(', ')
+  const middleMarkdownSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-assistant"] [data-scroll-anchor]`
   await control.command('waitFor', middleMarkdownSelector, {
     text: WINDOW_LIFECYCLE_SCROLL_MARKER,
     timeoutMs: DEFAULT_STEP_TIMEOUT_MS,
@@ -718,7 +748,7 @@ async function verifyBackgroundTaskWindowLifecycle({
     `The middle distance from bottom moved from ${middleDistanceBeforeSwitch}px to ${middleDistanceAfterSwitch}px`
   )
 
-  setPhase('turn-navigation-virtualized-anchor')
+  setPhase('turn-navigation-dom-anchor')
   control.setScenario('turn_navigation')
   for (let index = 0; index < TURN_NAVIGATION_REGRESSION_TURN_COUNT; index += 1) {
     const turnNumber = index + 1
@@ -752,11 +782,11 @@ async function verifyBackgroundTaskWindowLifecycle({
   const navigationTopMetrics = await waitForTopMetrics(
     control,
     '[data-testid="desktop-workbench-content"]',
-    'The conversation after jumping to the first virtualized turn'
+    'The conversation after jumping to the first loaded turn'
   )
   assert.ok(
     navigationTopMetrics.scrollHeight > navigationTopMetrics.clientHeight * 4,
-    'The turn navigation regression conversation was not long enough to exercise virtualization'
+    'The turn navigation regression conversation must span more than four viewports'
   )
   await control.command('waitFor', `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="message-user"]`, {
     text: WINDOW_LIFECYCLE_PROMPT,
@@ -764,7 +794,7 @@ async function verifyBackgroundTaskWindowLifecycle({
   })
   await captureVerificationScreenshot(
     control,
-    lifecycleScreenshotName('09-first-virtualized-turn-navigation-target.png')
+    lifecycleScreenshotName('09-first-loaded-turn-navigation-target.png')
   )
   setPhase('archived-task-cache-eviction')
   const cacheBeforeArchive = JSON.parse(
@@ -802,8 +832,7 @@ async function verifyBackgroundTaskWindowLifecycle({
     `Archiving retained conversation messages (${cacheBeforeArchive.messageEntries} -> ${cacheAfterArchive.messageEntries})`
   )
   assert.ok(
-    cacheAfterArchive.scrollSnapshotEntries <= cacheBeforeArchive.scrollSnapshotEntries &&
-      cacheAfterArchive.virtualMeasurementEntries <= cacheBeforeArchive.virtualMeasurementEntries,
+    cacheAfterArchive.scrollSnapshotEntries <= cacheBeforeArchive.scrollSnapshotEntries,
     'Archiving increased retained conversation view state'
   )
   await writeFile(
@@ -933,6 +962,9 @@ async function verifyBackgroundTaskWindowLifecycle({
 }
 
 async function verifyPopoutWindowLifecycle(control, composerSelector) {
+  // Native window presentation requires activation; otherwise the isolated
+  // background policy hides the whole application on did-become-active.
+  await control.command('focusMainWindow', 'body')
   await control.command('showPopoutWindow', 'body', {
     timeoutMs: WORKBENCH_READY_TIMEOUT_MS,
   })

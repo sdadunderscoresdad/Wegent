@@ -74,10 +74,6 @@
       "types": "./src/markdown/link-preview.ts",
       "import": "./src/markdown/link-preview.ts"
     },
-    "./markdown/assistantMarkdownWindowing": {
-      "types": "./src/markdown/assistantMarkdownWindowing.ts",
-      "import": "./src/markdown/assistantMarkdownWindowing.ts"
-    },
     "./markdown/Button": {
       "types": "./src/markdown/Button.tsx",
       "import": "./src/markdown/Button.tsx"
@@ -134,10 +130,6 @@
       "types": "./src/conversation/index.ts",
       "import": "./src/conversation/index.ts"
     },
-    "./conversation/bottomOriginScroll": {
-      "types": "./src/conversation/bottomOriginScroll.ts",
-      "import": "./src/conversation/bottomOriginScroll.ts"
-    },
     "./conversation/codexReferences": {
       "types": "./src/conversation/codexReferences.ts",
       "import": "./src/conversation/codexReferences.ts"
@@ -174,14 +166,6 @@
       "types": "./src/conversation/blocks/subagentPresentation.ts",
       "import": "./src/conversation/blocks/subagentPresentation.ts"
     },
-    "./conversation/messagePretextLayout": {
-      "types": "./src/conversation/messagePretextLayout.ts",
-      "import": "./src/conversation/messagePretextLayout.ts"
-    },
-    "./conversation/useBottomOriginVirtualizer": {
-      "types": "./src/conversation/useBottomOriginVirtualizer.ts",
-      "import": "./src/conversation/useBottomOriginVirtualizer.ts"
-    },
     "./conversation/conversationViewportCache": {
       "types": "./src/conversation/conversationViewportCache.ts",
       "import": "./src/conversation/conversationViewportCache.ts"
@@ -217,10 +201,6 @@
     "./composer": {
       "types": "./src/composer/index.ts",
       "import": "./src/composer/index.ts"
-    },
-    "./conversation/streamingScrollFollow": {
-      "types": "./src/conversation/streamingScrollFollow.ts",
-      "import": "./src/conversation/streamingScrollFollow.ts"
     },
     "./conversation/conversationLayout": {
       "types": "./src/conversation/conversationLayout.ts",
@@ -445,13 +425,13 @@
   },
   "devDependencies": {
     "@types/hast": "^3.0.5",
+    "@types/mdast": "^4.0.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "typescript": "~6.0.2",
-    "vitest": "^4.1.7",
-    "@types/mdast": "^4.0.4"
+    "vitest": "^4.1.7"
   },
   "dependencies": {
     "@file-viewer/preset-engineering": "2.1.26",
@@ -462,10 +442,6 @@
     "@wegent/chat-core": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "highlight.js": "11.11.1",
-    "streamdown": "2.5.0",
-    "tailwind-merge": "^3.6.0",
-    "@chenglou/pretext": "0.0.8",
-    "@tanstack/react-virtual": "3.14.2",
     "prosemirror-commands": "^1.7.1",
     "prosemirror-history": "^1.5.0",
     "prosemirror-keymap": "^1.2.3",
@@ -476,6 +452,9 @@
     "prosemirror-view": "^1.42.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
-    "unified": "^11.0.5"
+    "streamdown": "2.5.0",
+    "tailwind-merge": "^3.6.0",
+    "unified": "^11.0.5",
+    "use-stick-to-bottom": "1.1.6"
   }
 }

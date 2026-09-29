@@ -2,8 +2,6 @@ export {
   getConversationScrollSnapshot,
   hasConversationScrollSnapshot,
   cacheConversationScrollSnapshot,
-  getConversationVirtualMeasurements,
-  cacheConversationVirtualMeasurements,
   type ConversationScrollSnapshot,
 } from '@wegent/collaboration/conversation/conversationViewportCache'
 import {

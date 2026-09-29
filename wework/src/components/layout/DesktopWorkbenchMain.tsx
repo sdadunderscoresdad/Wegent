@@ -33,6 +33,7 @@ import { ConnectorAuthCard } from '@/components/chat/ConnectorAuthCard'
 import { PluginWorkspaceConversationResult } from '@/components/plugins/PluginWorkspaceConversationResult'
 import { useLocalConnectorAuthGate } from '@/features/plugins/useLocalConnectorAuthGate'
 import { ScrollableMessageArea } from '@/components/chat/ScrollableMessageArea'
+import type { ConversationViewportActions } from '@wegent/collaboration/conversation'
 import {
   SubagentConversationPanel,
   SubagentEnvironmentSummary,
@@ -1187,9 +1188,12 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
   const initialBlankWorkspaceState =
     currentRuntimeTask && initialWorkspaceState?.transferredFromBlank ? initialWorkspaceState : null
   const [environmentInfoTransitionEnabled, setEnvironmentInfoTransitionEnabled] = useState(false)
+  const conversationViewportActions = useRef<ConversationViewportActions | null>(null)
+  const followUserMessage = useCallback(() => conversationViewportActions.current?.follow(), [])
   const paneSession = useWorkbenchPaneSession({
     currentRuntimeTask,
     debugSnapshotEnabled: paneActive && paneVisible && workbenchVisible,
+    onUserMessageCommitted: followUserMessage,
   })
   const startupSurfaceReady =
     state.runtimeWork !== null && paneActive && paneVisible && workbenchVisible
@@ -5098,6 +5102,7 @@ const DesktopWorkbenchPane = memo(function DesktopWorkbenchPane({
                   onClick={focusComposerFromConversationClick}
                 >
                   <ScrollableMessageArea
+                    viewportActionsRef={conversationViewportActions}
                     workspacePath={composerWorkspaceTarget?.path}
                     messages={paneMessages}
                     turns={paneSession.turns}

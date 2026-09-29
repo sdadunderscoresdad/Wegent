@@ -7,8 +7,7 @@ interface TaskDetailScrollbarProps {
   viewportId: string
 }
 
-// The conversation uses bottom-origin scrolling (-range..0). Radix's vertical
-// scrollbar only supports 0..range, so it cannot drive this viewport.
+// The host owns this viewport; preserve its overlay scrollbar and keyboard contract.
 export function TaskDetailScrollbar({
   viewportRef,
   scrollbarRef,
@@ -31,7 +30,7 @@ export function TaskDetailScrollbar({
         track.clientHeight,
         Math.max(18, (track.clientHeight * viewport.clientHeight) / viewport.scrollHeight)
       )
-      const position = Math.max(0, Math.min(range, range + viewport.scrollTop))
+      const position = Math.max(0, Math.min(range, viewport.scrollTop))
       thumb.style.height = `${size}px`
       thumb.style.transform = `translateY(${range ? (position / range) * (track.clientHeight - size) : 0}px)`
       track.setAttribute('aria-valuemax', String(range))
@@ -60,7 +59,7 @@ export function TaskDetailScrollbar({
       0,
       Math.min(1, (clientY - track.getBoundingClientRect().top - offset) / travel)
     )
-    viewport.scrollTop = (ratio - 1) * (viewport.scrollHeight - viewport.clientHeight)
+    viewport.scrollTop = ratio * Math.max(0, viewport.scrollHeight - viewport.clientHeight)
   }
 
   return (
@@ -109,13 +108,13 @@ export function TaskDetailScrollbar({
           ArrowDown: viewport.scrollTop + 40,
           PageUp: viewport.scrollTop - viewport.clientHeight,
           PageDown: viewport.scrollTop + viewport.clientHeight,
-          Home: -range,
-          End: 0,
+          Home: 0,
+          End: range,
         }
         const position = positions[event.key]
         if (position === undefined) return
         event.preventDefault()
-        viewport.scrollTop = Math.max(-range, Math.min(0, position))
+        viewport.scrollTop = Math.max(0, Math.min(range, position))
       }}
     >
       <div

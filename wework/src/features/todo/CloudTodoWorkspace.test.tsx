@@ -118,7 +118,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
     testId,
     initialAddress,
     collapseComposerWhenIdle,
-    scrollOrigin,
   }: {
     testId: string
     initialAddress?: {
@@ -127,7 +126,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
       runtimeHandle?: { modelSelection?: { modelName?: string } }
     } | null
     collapseComposerWhenIdle?: boolean
-    scrollOrigin?: 'top' | 'bottom'
   }) => (
     <div
       data-testid={testId}
@@ -135,7 +133,6 @@ vi.mock('@/components/layout/workspace-panels/TemporaryChatPanel', () => ({
       data-task-id={initialAddress?.taskId}
       data-model-name={initialAddress?.runtimeHandle?.modelSelection?.modelName}
       data-collapse-composer={String(collapseComposerWhenIdle)}
-      data-scroll-origin={scrollOrigin}
     >
       <div
         data-testid={testId.replace('popup-conversation', 'popup-scroll')}

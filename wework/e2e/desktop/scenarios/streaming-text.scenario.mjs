@@ -3,6 +3,9 @@ import { mkdir, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL, selectE2EModel } from '../modules/shared.mjs'
+import { createFinalAnswerReadingRegression } from '../modules/final-answer-reading.mjs'
+import { verifyToolDetailDisclosure } from '../modules/conversation-disclosure.mjs'
+import { verifyConversationInitialPosition } from '../modules/conversation-initial-position.mjs'
 
 const ACTIVE_WORKBENCH_SELECTOR =
   '[data-testid="desktop-workbench-main"][data-active-workbench-pane="true"]'
@@ -10,6 +13,13 @@ const COMPOSER_SELECTOR = `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="chat-messa
 const TOOL_REGRESSION_PROMPT = 'WEWORK_DESKTOP_E2E_TOOL_TEXT_OFFSET'
 const TOOL_PREAMBLE = '找到了关键错误。看一下失败前后的上下文：'
 const TOOL_COMPLETION = '本地分支落后于 main，CI 跑的提交是 719f99694。'
+// Keep real scroll range below the tool row for the PR #3697 disclosure regression.
+const TOOL_COMPLETION_BODY = Array.from(
+  { length: 20 },
+  (_, index) =>
+    `第 ${index + 1} 段复核：本地分支落后于 main，先同步远端再重跑 CI，确认修复提交已在流水线里生效。`
+).join('\n\n')
+const TOOL_OUTPUT_COMMAND = 'node -e "for(let i=1;i<=200;i++) console.log(i)"'
 const LEGACY_CONVERSATION_PROMPT = 'WEWORK_DESKTOP_E2E_LEGACY_CONVERSATION_INITIAL'
 const LEGACY_CONVERSATION_COMPLETION = 'WEWORK_DESKTOP_E2E_LEGACY_CONVERSATION_COMPLETE'
 const LEGACY_TRANSCRIPT_ITEM_ID = 'wework-desktop-e2e-legacy-assistant-text'
@@ -17,7 +27,7 @@ const LONG_CODE_PROMPT = 'WEWORK_DESKTOP_E2E_LONG_CODE_TERMINAL_BURST'
 const LONG_CODE_STREAM_MARKER = 'WEWORK_DESKTOP_E2E_LONG_CODE_LINE_055'
 const LONG_CODE_MARKER = 'WEWORK_DESKTOP_E2E_LONG_CODE_LINE_110'
 const LONG_CODE_COMPLETION = [
-  'The completed response contains one long SQL block and a windowed Markdown tail.',
+  'The completed response contains one long SQL block and a fully mounted Markdown tail.',
   '',
   '```sql',
   ...Array.from({ length: 110 }, (_, index) => {
@@ -83,7 +93,7 @@ const VIEWPORT_MARKER = 'WEWORK_DESKTOP_E2E_STREAMING_TEXT_VIEWPORT_ANCHOR'
 const APPEND_MARKER = 'WEWORK_DESKTOP_E2E_STREAMING_TEXT_APPENDED'
 const SCROLL_BUTTON_APPEND_MARKER = 'WEWORK_DESKTOP_E2E_SCROLL_BUTTON_APPEND'
 const COMPLETED_SCROLL_ANCHOR_TEXT =
-  'Scroll button growth paragraph 21: the click must continue following the virtualized conversation bottom.'
+  'Scroll button growth paragraph 21: the click must continue following the conversation bottom.'
 const COMPLETED_SCROLL_ANCHOR_E2E_ID = 'streaming-text-completed-scroll-anchor'
 const ATTACHMENT_FILENAME = 'streaming-turn-navigation.png'
 const ATTACHMENT_BASE64 =
@@ -121,7 +131,7 @@ const HISTORY_TURNS = Array.from({ length: 4 }, (_, index) => ({
   completion: `WEWORK_DESKTOP_E2E_STREAMING_TEXT_HISTORY_COMPLETE_${index + 1}\n\n${Array.from(
     { length: 4 },
     (_, paragraphIndex) =>
-      `Follow-up history paragraph ${index + 1}.${paragraphIndex + 1}: this turn keeps the conversation on the virtualized path.`
+      `Follow-up history paragraph ${index + 1}.${paragraphIndex + 1}: this turn keeps the loaded conversation mounted.`
   ).join('\n\n')}`,
 }))
 const STREAMING_TURN_INDEX = HISTORY_TURNS.length + 1
@@ -141,7 +151,7 @@ const APPENDED_TEXT = `\n\n${APPENDED_PARAGRAPHS.join('\n\n')}`
 const SCROLL_BUTTON_APPENDED_TEXT = `\n\n${Array.from({ length: 24 }, (_, index) =>
   index === 0
     ? `${SCROLL_BUTTON_APPEND_MARKER}: content keeps growing after the user clicks the jump-to-bottom button.`
-    : `Scroll button growth paragraph ${index + 1}: the click must continue following the virtualized conversation bottom.`
+    : `Scroll button growth paragraph ${index + 1}: the click must continue following the conversation bottom.`
 ).join('\n\n')}`
 
 async function openNewChatWithE2EModel(control, timeoutMs) {
@@ -587,16 +597,10 @@ async function getSingleElementMetrics(control, selector, description) {
 }
 
 function distanceFromBottom(metrics) {
-  if (metrics.scrollOrigin === 'bottom') {
-    return Math.max(0, -metrics.scrollTop)
-  }
   return Math.max(0, metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop)
 }
 
 function distanceFromTop(metrics) {
-  if (metrics.scrollOrigin === 'bottom') {
-    return Math.max(0, metrics.scrollHeight - metrics.clientHeight + metrics.scrollTop)
-  }
   return Math.max(0, metrics.scrollTop)
 }
 
@@ -728,7 +732,7 @@ async function waitForRenderedAppend(control, previousContentLength, timeoutMs) 
       return getSingleElementMetrics(
         control,
         SCROLLER_SELECTOR,
-        'The virtualized streaming conversation after the append rendered'
+        'The streaming conversation after the append rendered'
       )
     }
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -883,10 +887,17 @@ async function retainSecondTaskWorkspace(control, timeoutMs) {
 
 export function createDesktopScenario({
   captureScreenshot,
+  resultDir,
   standalone,
   uiTimeoutMs,
   workspacePath,
 }) {
+  const finalAnswerReading = createFinalAnswerReadingRegression({
+    sse,
+    streamingEvents,
+    textDeltaEvents,
+    reasoningEvents,
+  })
   const capture = (control, name) => captureScreenshot(control, name, ACTIVE_WORKBENCH_SELECTOR)
   const captureSubagent = (control, name) => captureScreenshot(control, name, 'body')
   let active = false
@@ -1054,10 +1065,34 @@ export function createDesktopScenario({
       'The completed long code block did not restore its horizontal scrollbar'
     )
     await waitForBottom(control, 'The terminal-burst long-code conversation', uiTimeoutMs)
+    const mountedRows = Number(
+      await control.command('getElementCount', `${SCROLLER_SELECTOR} [data-message-id]`)
+    )
+    assert.equal(
+      Number(await control.command('getElementCount', `${ASSISTANT_CONTENT_SELECTOR} h3`)),
+      24,
+      'All loaded Markdown sections must be real DOM before scrolling'
+    )
+    assert.equal(
+      Number(
+        await control.command(
+          'getElementCount',
+          `${SCROLLER_SELECTOR} [data-markdown-window-placeholder]`
+        )
+      ),
+      0,
+      'The conversation must not substitute estimated-height Markdown placeholders'
+    )
+    assert.equal(
+      await control.command('getAttribute', SCROLLER_SELECTOR, { value: 'data-scroll-origin' }),
+      'top',
+      'The desktop conversation must use positive top-origin coordinates'
+    )
     const rapidScrollSamples = JSON.parse(
       await control.command('sampleRapidScrollContent', SCROLLER_SELECTOR, {
         value: JSON.stringify({
-          contentSelector: '[data-markdown-window-chunk] > *',
+          contentSelector:
+            '.assistant-markdown [data-scroll-anchor], [data-testid="markdown-code-block"]',
           ratios: [0.75, 0.5, 0.25],
         }),
       })
@@ -1067,7 +1102,17 @@ export function createDesktopScenario({
       true,
       `Rapid scrolling exposed an empty Markdown viewport: ${JSON.stringify(rapidScrollSamples)}`
     )
+    assert.equal(
+      Number(await control.command('getElementCount', `${SCROLLER_SELECTOR} [data-message-id]`)),
+      mountedRows,
+      'Scrolling must not unmount loaded conversation messages'
+    )
     await capture(control, 'streaming-text-00-long-code-terminal-burst.png')
+    await verifyConversationInitialPosition({
+      control,
+      scope: ACTIVE_WORKBENCH_SELECTOR,
+      timeoutMs: uiTimeoutMs,
+    })
   }
 
   const verifyWindowsDriveLinkRendering = async control => {
@@ -1147,10 +1192,40 @@ export function createDesktopScenario({
       stableMs: 750,
       timeoutMs: uiTimeoutMs,
     })
-    assert.equal(
-      Number(await control.command('getElementCount', '[data-testid="assistant-stopped-notice"]')),
-      0,
-      'The latest transcript position remained on the older stopped turn'
+    const restoredViewport = await waitForBottom(
+      control,
+      'The restored stopped-turn conversation',
+      uiTimeoutMs
+    )
+    await control.command('markElementWithText', ASSISTANT_CONTENT_SELECTOR, {
+      text: latestOrderCompletion,
+      value: 'stopped-turn-latest-completion',
+    })
+    const [latestCompletionMetrics] = JSON.parse(
+      await control.command(
+        'getElementMetrics',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-e2e-anchor-id="stopped-turn-latest-completion"]`
+      )
+    )
+    const stoppedNotices = JSON.parse(
+      await control.command(
+        'getElementMetrics',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="assistant-stopped-notice"]`
+      )
+    )
+    assert.equal(stoppedNotices.length, 1, 'The stopped turn must remain mounted exactly once')
+    assert.ok(
+      stoppedNotices[0].bottom <= restoredViewport.top &&
+        stoppedNotices[0].bottom < latestCompletionMetrics.top &&
+        latestCompletionMetrics.bottom > restoredViewport.top &&
+        latestCompletionMetrics.top < restoredViewport.bottom,
+      `The restored viewport must show the latest turn, with the mounted stopped turn above it: ${JSON.stringify(
+        {
+          restoredViewport,
+          latestCompletionMetrics,
+          stoppedNotices,
+        }
+      )}`
     )
     const restoredDuration = await control.command('getText', durationSelector)
     assert.match(restoredDuration, /用时/)
@@ -1518,7 +1593,7 @@ export function createDesktopScenario({
         const codeEnd = LONG_CODE_COMPLETION.indexOf('\n```\n\n')
         assert.ok(codeEnd >= 0, 'The long-code fixture is missing its closing fence')
         const streamedCode = LONG_CODE_COMPLETION.slice(0, codeEnd + '\n```'.length)
-        const windowedTail = LONG_CODE_COMPLETION.slice(streamedCode.length)
+        const markdownTail = LONG_CODE_COMPLETION.slice(streamedCode.length)
         for (const chunk of streamedCode.match(/[\s\S]{1,48}/g) ?? []) {
           response.write(sse(textDeltaEvents(stream.itemId, chunk, offset)))
           response.flush?.()
@@ -1530,7 +1605,7 @@ export function createDesktopScenario({
           }
           await new Promise(resolve => setTimeout(resolve, 16))
         }
-        response.write(sse(textDeltaEvents(stream.itemId, windowedTail, offset)))
+        response.write(sse(textDeltaEvents(stream.itemId, markdownTail, offset)))
         response.end(sse(stream.finish))
         return true
       }
@@ -1573,7 +1648,8 @@ export function createDesktopScenario({
         toolRegressionStage = 'awaiting-completion-release'
         resolveToolFollowUp()
         await toolCompletionRelease
-        const stream = streamingEvents(responseId, TOOL_COMPLETION, null)
+        const toolCompletionText = `${TOOL_COMPLETION}\n\n${TOOL_COMPLETION_BODY}`
+        const stream = streamingEvents(responseId, toolCompletionText, null)
         response.writeHead(200, {
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
@@ -1581,7 +1657,7 @@ export function createDesktopScenario({
         })
         response.flushHeaders()
         response.write(sse(stream.start))
-        await writeSseEvents(response, textDeltaEvents(stream.itemId, TOOL_COMPLETION))
+        await writeSseEvents(response, textDeltaEvents(stream.itemId, toolCompletionText))
         resolveToolFinalTextStarted()
         await toolFinalCompletionRelease
         toolRegressionStage = 'complete'
@@ -1604,6 +1680,11 @@ export function createDesktopScenario({
           return true
         }
         throw new Error(`Unexpected running-timer stage: ${timerStage}`)
+      }
+
+      if (finalAnswerReading.matches(body)) {
+        await finalAnswerReading.respond(response, responseId)
+        return true
       }
 
       if (requestContainsPrompt(body)) {
@@ -1651,7 +1732,7 @@ export function createDesktopScenario({
 
       if (requestContainsToolRegressionPrompt(body)) {
         if (toolRegressionStage === 'initial') {
-          const tool = selectShellTool(body, workspacePath)
+          const tool = selectShellTool(body, workspacePath, TOOL_OUTPUT_COMMAND, 5_000)
           toolRegressionStage = 'awaiting-tool-output'
           response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
           response.end(
@@ -2051,7 +2132,7 @@ export function createDesktopScenario({
           value: 'aria-expanded',
         }),
         'false',
-        'The completed stream left its process timeline expanded instead of collapsing it'
+        'The completed turn did not collapse its default process timeline'
       )
       const toolRegressionSnapshot = JSON.parse(
         await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR)
@@ -2066,7 +2147,32 @@ export function createDesktopScenario({
         'The collapsed reasoning disclosure exposed its full summary'
       )
       await capture(control, 'streaming-text-03-processing-collapsed.png')
-      await control.command('click', '[data-testid="final-processing-toggle"]')
+      const completedTask = JSON.parse(await control.command('getWorkbenchDebugSnapshot', 'body'))
+        .workbench.currentRuntimeTask
+      assert.ok(completedTask?.taskId, 'The completed tool conversation has no task ID')
+      for (const expanded of [false, true]) {
+        if (expanded) await control.command('click', completedProcessingToggle)
+        await control.command('click', '[data-testid="new-chat-button"]')
+        await control.command('waitFor', COMPOSER_SELECTOR, { timeoutMs: uiTimeoutMs })
+        await control.command(
+          'clickWhenEnabled',
+          `[data-testid="runtime-local-task-row-${completedTask.taskId}"]`,
+          {
+            timeoutMs: uiTimeoutMs,
+          }
+        )
+        await control.command('waitFor', ASSISTANT_CONTENT_SELECTOR, {
+          text: TOOL_COMPLETION,
+          timeoutMs: uiTimeoutMs,
+        })
+        assert.equal(
+          await control.command('getAttribute', completedProcessingToggle, {
+            value: 'aria-expanded',
+          }),
+          String(expanded),
+          'Reopening changed the completed process disclosure choice'
+        )
+      }
       const expandedProcessingSnapshot = JSON.parse(
         await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR)
       )
@@ -2081,6 +2187,19 @@ export function createDesktopScenario({
         'The completed response retained its reasoning summary'
       )
       await capture(control, 'streaming-text-04-reasoning-removed.png')
+      await expandCompletedProcessing(control, uiTimeoutMs)
+      const disclosureMetrics = await verifyToolDetailDisclosure({
+        control,
+        scope: ACTIVE_WORKBENCH_SELECTOR,
+        timeoutMs: uiTimeoutMs,
+      })
+      await writeFile(
+        join(resultDir, 'tool-detail-disclosure-metrics.json'),
+        `${JSON.stringify(disclosureMetrics, null, 2)}\n`
+      )
+      await capture(control, 'streaming-text-04b-tool-detail-open.png')
+      // Disclosure pauses following; returning to the bottom is an explicit reader action.
+      await control.command('scrollFromBottomAsUser', SCROLLER_SELECTOR, { value: '0' })
       const shortConversationScroller = await waitForBottom(
         control,
         'The short control conversation',
@@ -2299,6 +2418,17 @@ export function createDesktopScenario({
         scrollerAfterSend,
         'The latest user message after sending'
       )
+      // Only upward reading gestures may pause follow. These events exercise the
+      // real input handlers; subsequent model output supplies the actual resize.
+      for (const end of [
+        { x: 102, y: 103 },
+        { x: 150, y: 120 },
+        { x: 100, y: 50 },
+      ]) {
+        await control.command('touchGesture', SCROLLER_SELECTOR, {
+          value: JSON.stringify([{ x: 100, y: 100 }, end]),
+        })
+      }
       releaseStart()
       await partialWritten
       const runtimeTask = JSON.parse(await control.command('getWorkbenchDebugSnapshot', 'body'))
@@ -2322,6 +2452,11 @@ export function createDesktopScenario({
         immediatelyRenderedPartial.replace(/\s+/g, ''),
         PARTIAL_TEXT.replace(/\s+/g, ''),
         `The active conversation displayed only ${immediatelyRenderedPartial.length} of ${PARTIAL_TEXT.length} streamed characters`
+      )
+      await waitForBottom(
+        control,
+        'Content growth after jitter, horizontal and downward touch input',
+        uiTimeoutMs
       )
       await control.command('waitFor', PROCESS_TEXT_SELECTOR, {
         text: MARKER,
@@ -2427,7 +2562,7 @@ export function createDesktopScenario({
         `The viewport anchor was not visible after the user scroll (top=${anchorBeforeAppend.top}px, bottom=${anchorBeforeAppend.bottom}px)`
       )
       // Small consecutive wheel steps must move the same text by the requested pixels, including
-      // after virtual measurements settle. Return to the starting position before testing append.
+      // after content layout settles. Return to the starting position before testing append.
       const anchorStartTop = anchorBeforeAppend.top
       for (const delta of [12, 24, 36, 0]) {
         await control.command('scrollFromBottomAsUser', SCROLLER_SELECTOR, {
@@ -2541,7 +2676,7 @@ export function createDesktopScenario({
       await assertComposerDocked(
         control,
         scrollerAfterAppend,
-        'The composer after streamed content changed the virtualized conversation height'
+        'The composer after streamed content changed the conversation height'
       )
       await capture(control, 'streaming-text-13-anchor-stable-after-append.png')
 
@@ -2611,7 +2746,7 @@ export function createDesktopScenario({
       await assertComposerDocked(
         control,
         pinnedAfterSwitch,
-        'The composer after reopening the long virtualized conversation'
+        'The composer after reopening the long conversation'
       )
       await capture(control, 'streaming-text-14-bottom-restored-after-task-switch.png')
 
@@ -2629,13 +2764,13 @@ export function createDesktopScenario({
       })
       const remountedScroller = await waitForBottom(
         control,
-        'The remounted long virtualized conversation',
+        'The remounted long conversation',
         uiTimeoutMs
       )
       await assertComposerDocked(
         control,
         remountedScroller,
-        'The composer after remounting the long virtualized conversation'
+        'The composer after remounting the long conversation'
       )
       await capture(control, 'streaming-text-15-composer-docked-after-pane-remount.png')
       assert.equal(
@@ -2821,6 +2956,18 @@ export function createDesktopScenario({
         'The pause button remained after completion'
       )
       await capture(control, 'streaming-text-17-response-completed.png')
+
+      await finalAnswerReading.verify({
+        control,
+        scope: ACTIVE_WORKBENCH_SELECTOR,
+        historyText: HISTORY_PARAGRAPHS[10],
+        timeoutMs: uiTimeoutMs,
+      })
+      await waitForBottom(
+        control,
+        'The final-answer reading regression after explicit resume',
+        uiTimeoutMs
+      )
 
       await verifyStoppedTurnOrder(control)
       await verifySubagentStreamingPanel(control)

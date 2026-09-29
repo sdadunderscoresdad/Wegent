@@ -5,13 +5,8 @@ import {
 import type {
   WorkbenchMessage,
   ProcessingBlock,
-  RuntimeAssistantDisplayItem,
   RuntimeConversationTurn,
 } from "@wegent/chat-core/runtime-conversation";
-import {
-  isContextCompactionToolName,
-  isGuidanceToolName,
-} from "./blocks/toolBlockKinds";
 import {
   buildProcessingDisplayRows,
   isWebSearchToolName,
@@ -185,112 +180,6 @@ export function getMessageDisplayStateKey(
 export function hasRunningProcessingBlocks(blocks: ProcessingBlock[]): boolean {
   return blocks.some(
     (block) => block.status !== "done" && block.status !== "error",
-  );
-}
-
-type ProcessingSegment = {
-  kind: "tool" | "narrative";
-  blocks: ProcessingBlock[];
-};
-
-type RuntimeDisplaySegment =
-  | {
-      kind: "content";
-      content: string;
-    }
-  | {
-      kind: "processing";
-      blocks: ProcessingBlock[];
-    };
-
-export function getOrderedRuntimeDisplaySegments(
-  items: RuntimeAssistantDisplayItem[] | undefined,
-  displayBlocks: ProcessingBlock[],
-): RuntimeDisplaySegment[] {
-  if (!items?.length) return [];
-
-  const blocksById = new Map(displayBlocks.map((block) => [block.id, block]));
-  const subagentsByAnchorId = new Map(
-    displayBlocks.flatMap((block) =>
-      block.type === "subagent" && block.anchorBlockId
-        ? [[block.anchorBlockId, block] as const]
-        : [],
-    ),
-  );
-  const renderedAnchoredSubagentIds = new Set<string>();
-  const segments: RuntimeDisplaySegment[] = [];
-
-  items.forEach((item) => {
-    if (item.type === "assistant_text") {
-      if (!item.content.trim()) return;
-      const previous = segments.at(-1);
-      if (previous?.kind === "content") {
-        previous.content = `${previous.content}\n\n${item.content}`;
-      } else {
-        segments.push({ kind: "content", content: item.content });
-      }
-      return;
-    }
-
-    const block = subagentsByAnchorId.get(item.id) ?? blocksById.get(item.id);
-    if (!block) return;
-    if (block.type === "subagent" && block.anchorBlockId) {
-      if (renderedAnchoredSubagentIds.has(block.id)) return;
-      renderedAnchoredSubagentIds.add(block.id);
-    }
-    const previous = segments.at(-1);
-    if (previous?.kind === "processing") {
-      previous.blocks.push(block);
-    } else {
-      segments.push({ kind: "processing", blocks: [block] });
-    }
-  });
-
-  return segments;
-}
-
-export function getProcessingPhase(
-  segments: ProcessingSegment[],
-  index: number,
-  hasFinalContent: boolean,
-): "live" | "intermediate" | "final" {
-  const laterSegments = segments.slice(index + 1);
-  if (
-    hasFinalContent &&
-    !laterSegments.some((segment) => segment.kind === "tool")
-  )
-    return "final";
-  if (laterSegments.some((segment) => segment.kind === "narrative"))
-    return "intermediate";
-  return "live";
-}
-
-export function splitProcessingBlocks(
-  blocks: ProcessingBlock[],
-): ProcessingSegment[] {
-  if (blocks.length === 0) return [{ kind: "tool", blocks: [] }];
-
-  const segments: ProcessingSegment[] = [];
-
-  blocks.forEach((block) => {
-    const kind = isCollapsibleToolBlock(block) ? "tool" : "narrative";
-    const previous = segments.at(-1);
-    if (previous?.kind === kind) {
-      previous.blocks.push(block);
-      return;
-    }
-    segments.push({ kind, blocks: [block] });
-  });
-
-  return segments;
-}
-
-export function isCollapsibleToolBlock(block: ProcessingBlock): boolean {
-  if (block.type === "file_changes") return true;
-  if (block.type !== "tool") return false;
-  return (
-    !isGuidanceToolName(block.toolName) &&
-    !isContextCompactionToolName(block.toolName)
   );
 }
 

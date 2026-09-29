@@ -1,4 +1,6 @@
 import { RuntimeDeviceAccessBoundary } from '../conversation/RuntimeDeviceAccess'
+import { useRef } from 'react'
+import type { ConversationViewportActions } from '../conversation/scrollableMessageTypes'
 import type { SharedWorkspaceRuntimeApi } from '../ports/SharedWorkspaceApi'
 import type { CollaborationTranslate } from '../i18n'
 import { TemporaryConversationLayout } from '../conversation/TemporaryConversationLayout'
@@ -28,6 +30,7 @@ function BrowserTaskConversationContentContent({
 }) {
   const { state, session, task, markdown, conversation, metadataError, actionError, reload } =
     useBrowserRuntimeConversation(runtime, address, translate, projectId)
+  const viewportActionsRef = useRef<ConversationViewportActions | null>(null)
   return (
     <MarkdownServicesProvider value={markdown}>
       <ConversationTranslationProvider translate={translate}>
@@ -65,15 +68,16 @@ function BrowserTaskConversationContentContent({
               imageServices={conversation.userMessageServices.images}
               translate={translate}
               onAccepted={reload}
+              onSendIntent={() => viewportActionsRef.current?.follow()}
               collapseWhenIdle={preview}
             />
           }
         >
           <ScrollableMessageArea
+            viewportActionsRef={viewportActionsRef}
             {...conversation}
             className="min-h-0 flex-1"
             scrollTestId="right-workspace-chat-scroll-area"
-            scrollOrigin="bottom"
             initialScrollPosition={preview ? 'latest' : 'restore'}
             messageListClassName={`${DESKTOP_MESSAGE_LIST_WIDTH_CLASS} pb-4 pt-5`}
           />

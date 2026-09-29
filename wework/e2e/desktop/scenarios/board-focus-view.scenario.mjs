@@ -529,8 +529,8 @@ export function createDesktopScenario({ captureScreenshot, uiTimeoutMs, workspac
           `${progressPopup} [data-testid="right-workspace-chat-scroll-area"]`,
           { value: 'data-scroll-origin' }
         ),
-        'bottom',
-        'The progress popup did not use bottom-origin scrolling'
+        'top',
+        'The progress popup did not use top-origin scrolling'
       )
       const popupText = await control.command('getText', progressPopup)
       assert.ok(popupText.includes('正在验证运行中卡片'))

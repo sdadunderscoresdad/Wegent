@@ -8,6 +8,7 @@ packageExtensionsChecksum: sha256-7xSR3ISjHMO1s2SGAymiUIjUjIMF2cWdsXI0XROK3UY=
 
 patchedDependencies:
   '@file-viewer/renderer-drawing@2.1.26': f4d00a3f3f86eacb4f5fbd6447a7e743af72865c6a01fa193ee9337984b1bf68
+  use-stick-to-bottom@1.1.6: c0e297e4f862082b86c752fd636113f168e39ee0d92cd6961055c4db9a49fa27
 
 importers:
 
@@ -498,9 +499,6 @@ importers:
 
   packages/collaboration:
     dependencies:
-      '@chenglou/pretext':
-        specifier: 0.0.8
-        version: 0.0.8
       '@dnd-kit/core':
         specifier: '>=6.3'
         version: 6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -525,9 +523,6 @@ importers:
       '@radix-ui/react-slot':
         specifier: ^1.2.5
         version: 1.2.5(@types/react@19.2.17)(react@19.2.7)
-      '@tanstack/react-virtual':
-        specifier: 3.14.2
-        version: 3.14.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@wegent/chat-core':
         specifier: workspace:*
         version: link:../chat-core
@@ -579,6 +574,9 @@ importers:
       unified:
         specifier: ^11.0.5
         version: 11.0.5
+      use-stick-to-bottom:
+        specifier: 1.1.6
+        version: 1.1.6(patch_hash=c0e297e4f862082b86c752fd636113f168e39ee0d92cd6961055c4db9a49fa27)(react@19.2.7)
     devDependencies:
       '@types/hast':
         specifier: ^3.0.5
@@ -616,9 +614,6 @@ importers:
       '@blocknote/react':
         specifier: 0.52.1
         version: 0.52.1(@floating-ui/dom@1.8.0)(@lezer/common@1.5.2)(@lezer/highlight@1.2.3)(@types/hast@3.0.5)(@types/react-dom@19.2.4(@types/react@19.2.17))(@types/react@19.2.17)(highlight.js@11.12.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(refractor@5.0.0)
-      '@chenglou/pretext':
-        specifier: 0.0.8
-        version: 0.0.8
       '@codemirror/commands':
         specifier: ^6.10.3
         version: 6.10.3
@@ -1180,9 +1175,6 @@ packages:
   '@bramus/specificity@2.4.2':
     resolution: {integrity: sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw==}
     hasBin: true
-
-  '@chenglou/pretext@0.0.8':
-    resolution: {integrity: sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA==}
 
   '@chevrotain/cst-dts-gen@11.0.3':
     resolution: {integrity: sha512-BvIKpRLeS/8UbfxXxgC33xOumsacaeCKAjAeLyOn7Pcp95HiRbrpl14S+9vaZLolnbssPIUuiUd8IvgkRyt6NQ==}
@@ -8687,6 +8679,11 @@ packages:
       '@types/react':
         optional: true
 
+  use-stick-to-bottom@1.1.6:
+    resolution: {integrity: sha512-z3Up8jYQGTkUCsGBnwg6/wj70KgXoW5Kz1AAc1j8MtQuYMBo6ZsdhrIXoegxa7gaMMilgQYyTohTrt3p94jHog==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
   use-sync-external-store@1.2.0:
     resolution: {integrity: sha512-eEgnFxGQ1Ife9bzYs6VLi8/4X6CObHMw9Qr9tPY43iKwsPw8xE8+EFsf/2cFZ5S3esXgpWgtSCtLNS41F+sKPA==}
     peerDependencies:
@@ -9441,8 +9438,6 @@ snapshots:
   '@bramus/specificity@2.4.2':
     dependencies:
       css-tree: 3.2.1
-
-  '@chenglou/pretext@0.0.8': {}
 
   '@chevrotain/cst-dts-gen@11.0.3':
     dependencies:
@@ -18656,6 +18651,10 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.17
+
+  use-stick-to-bottom@1.1.6(patch_hash=c0e297e4f862082b86c752fd636113f168e39ee0d92cd6961055c4db9a49fa27)(react@19.2.7):
+    dependencies:
+      react: 19.2.7
 
   use-sync-external-store@1.2.0(react@19.2.7):
     dependencies:
