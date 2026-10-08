@@ -67,8 +67,6 @@ WEB_RUNTIME_GUIDANCE_CLOSE = "</wegent_runtime_guidance>"
 SYSTEM_RESOURCE_USER_ID = 0
 BOARD_WEGENT_TASK_SOURCES = {
     "project_automation",
-    "board_team_assignment",
-    "board_team_continuation",
 }
 BOARD_MCP_GUIDANCE = """
 <wegent_board_runtime>
@@ -2646,14 +2644,15 @@ Response template:
         Each skill may declare mcpServers in dict format. This converts them
         to list format. When the skill name already matches the server name,
         keep the bare server name so tool calls can reference the natural MCP
-        server identifier without an extra prefix.
+        server identifier without an extra prefix. Otherwise use a stable
+        seven-character Skill code and a server name capped at 24 characters.
 
         Args:
             skill_configs: List of resolved skill config dicts
 
         Returns:
             List of MCP server dicts in list format:
-            [{"name": "skillName_serverName", "type": "...", "url": "...", ...}]
+            [{"name": "skillCode_serverName", "type": "...", "url": "...", ...}]
         """
         result = extract_skill_mcp_servers(skill_configs)
         for entry in result:
@@ -3113,11 +3112,18 @@ Response template:
         """
         from app.services.auth import create_task_token
 
+        task_json = task.json if isinstance(task.json, dict) else {}
+        metadata = task_json.get("metadata")
+        labels = metadata.get("labels") if isinstance(metadata, dict) else {}
+        labels = labels if isinstance(labels, dict) else {}
         return create_task_token(
             task_id=task.id,
             subtask_id=subtask.id,
             user_id=user.id,
             user_name=user.user_name,
+            dispatch_id=str(labels.get("dispatchId") or "") or None,
+            dispatch_role=str(labels.get("dispatchRole") or "") or None,
+            manager_agent_id=str(labels.get("managerAgentId") or "") or None,
         )
 
     def _generate_skill_identity_token(

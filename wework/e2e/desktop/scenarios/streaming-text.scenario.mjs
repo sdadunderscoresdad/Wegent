@@ -6,6 +6,7 @@ import { DEFAULT_MODEL_ID, DEFAULT_MODEL_LABEL, selectE2EModel } from '../module
 import { createFinalAnswerReadingRegression } from '../modules/final-answer-reading.mjs'
 import { verifyToolDetailDisclosure } from '../modules/conversation-disclosure.mjs'
 import { verifyConversationInitialPosition } from '../modules/conversation-initial-position.mjs'
+import { isCollaborationSubagentRequest } from '../modules/subagent-request.mjs'
 
 const ACTIVE_WORKBENCH_SELECTOR =
   '[data-testid="desktop-workbench-main"][data-active-workbench-pane="true"]'
@@ -20,6 +21,10 @@ const TOOL_COMPLETION_BODY = Array.from(
     `第 ${index + 1} 段复核：本地分支落后于 main，先同步远端再重跑 CI，确认修复提交已在流水线里生效。`
 ).join('\n\n')
 const TOOL_OUTPUT_COMMAND = 'node -e "for(let i=1;i<=200;i++) console.log(i)"'
+const TOOL_DETAIL_PERSISTENCE_PROMPT = 'WEWORK_DESKTOP_E2E_TOOL_DETAIL_PERSISTS'
+const TOOL_DETAIL_PERSISTENCE_CALL_ID = 'wework-tool-detail-persistence'
+const TOOL_DETAIL_PERSISTENCE_OUTPUT = 'WEWORK_DESKTOP_E2E_TOOL_DETAIL_OUTPUT'
+const TOOL_DETAIL_PERSISTENCE_COMPLETION = 'WEWORK_DESKTOP_E2E_TOOL_DETAIL_PERSISTS_FINAL_ANSWER'
 const LEGACY_CONVERSATION_PROMPT = 'WEWORK_DESKTOP_E2E_LEGACY_CONVERSATION_INITIAL'
 const LEGACY_CONVERSATION_COMPLETION = 'WEWORK_DESKTOP_E2E_LEGACY_CONVERSATION_COMPLETE'
 const LEGACY_TRANSCRIPT_ITEM_ID = 'wework-desktop-e2e-legacy-assistant-text'
@@ -63,19 +68,24 @@ const WINDOWS_LINK_LABEL = 'wegent'
 const WINDOWS_LINK_COMPLETION = '[wegent](C:/projects/example-app/wegent)'
 const PHASE_FLIP_PROMPT = 'WEWORK_DESKTOP_E2E_PROCESS_TO_FALLBACK_FINAL'
 const PHASE_FLIP_TEXT = 'WEWORK_DESKTOP_E2E_FALLBACK_FINAL_FROM_PROCESS'
+const RECLASSIFIED_COMMENTARY_PROMPT = 'WEWORK_DESKTOP_E2E_RECLASSIFIED_COMMENTARY'
+const RECLASSIFIED_COMMENTARY_TEXT = 'WEWORK_DESKTOP_E2E_RECLASSIFIED_PROCESS_TEXT'
+const RECLASSIFIED_COMMENTARY_FINAL = 'WEWORK_DESKTOP_E2E_RECLASSIFIED_REAL_FINAL'
+const RECLASSIFIED_COMMENTARY_CALL_ID = 'wework-reclassified-commentary-tool'
 const TIMER_PROMPT = 'WEWORK_DESKTOP_E2E_RUNNING_TIMER_PERSISTS'
 const TIMER_COMPLETION = 'WEWORK_DESKTOP_E2E_RUNNING_TIMER_COMPLETE'
 const SUBAGENT_PROMPT = 'WEWORK_DESKTOP_E2E_SUBAGENT_STREAMING_PANEL'
-const SUBAGENT_SEARCH_CALL_ID = 'wework-subagent-tool-search'
 const SUBAGENT_CALL_ID = 'wework-subagent-streaming-panel'
 const SUBAGENT_WAIT_CALL_ID = 'wework-subagent-wait'
 const SUBAGENT_CHILD_TOOL_CALL_ID = 'wework-subagent-child-tool'
 const SUBAGENT_CHILD_PROMPT = 'Inspect the child event stream and report the routing result.'
 const SUBAGENT_CHILD_TOOL_MARKER = 'WEWORK_DESKTOP_E2E_SUBAGENT_TOOL'
+const SUBAGENT_CHILD_TOOL_TIMEOUT_MS = 10_000
 const SUBAGENT_CHILD_TOOL_START = `${SUBAGENT_CHILD_TOOL_MARKER}_START`
 const SUBAGENT_CHILD_TOOL_COMPLETE = `${SUBAGENT_CHILD_TOOL_MARKER}_COMPLETE`
 const SUBAGENT_CHILD_PARTIAL = 'WEWORK_DESKTOP_E2E_SUBAGENT_PARTIAL'
-const SUBAGENT_CHILD_COMPLETION = `${SUBAGENT_CHILD_PARTIAL}\n\nWEWORK_DESKTOP_E2E_SUBAGENT_COMPLETE`
+const SUBAGENT_CHILD_FINAL = 'WEWORK_DESKTOP_E2E_SUBAGENT_COMPLETE'
+const SUBAGENT_CHILD_COMPLETION = `${SUBAGENT_CHILD_PARTIAL}\n\n${SUBAGENT_CHILD_FINAL}`
 const SUBAGENT_PARENT_COMPLETION = 'WEWORK_DESKTOP_E2E_SUBAGENT_PARENT_COMPLETE'
 const ORDER_STOP_PROMPT = 'WEWORK_DESKTOP_E2E_ORDER_STOPPED_TURN'
 const ORDER_STOP_PARTIAL = 'WEWORK_DESKTOP_E2E_ORDER_STOP_PARTIAL'
@@ -228,18 +238,6 @@ function namespacedFunctionCall(callId, namespace, name, argumentsValue) {
   }))
 }
 
-function toolSearchCall(callId, argumentsValue) {
-  return {
-    type: 'response.output_item.done',
-    item: {
-      type: 'tool_search_call',
-      call_id: callId,
-      execution: 'client',
-      arguments: argumentsValue,
-    },
-  }
-}
-
 function reasoningEvents(itemId, text, deltaChunkSize = text.length) {
   const deltas = text.match(new RegExp(`[\\s\\S]{1,${deltaChunkSize}}`, 'g')) ?? []
   return [
@@ -386,6 +384,60 @@ function phaseFlipEvents(id) {
   ]
 }
 
+function reclassifiedCommentaryToolEvents(id, tool) {
+  const itemId = `${id}-reclassified-commentary`
+  return [
+    responseCreated(id),
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        id: itemId,
+        type: 'message',
+        status: 'in_progress',
+        role: 'assistant',
+        content: [],
+        phase: 'final_answer',
+      },
+    },
+    {
+      type: 'response.content_part.added',
+      item_id: itemId,
+      output_index: 0,
+      content_index: 0,
+      part: { type: 'output_text', text: '', annotations: [] },
+    },
+    ...textDeltaEvents(itemId, RECLASSIFIED_COMMENTARY_TEXT),
+    {
+      type: 'response.output_text.done',
+      item_id: itemId,
+      output_index: 0,
+      content_index: 0,
+      text: RECLASSIFIED_COMMENTARY_TEXT,
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: {
+        id: itemId,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        content: [
+          {
+            type: 'output_text',
+            text: RECLASSIFIED_COMMENTARY_TEXT,
+            annotations: [],
+          },
+        ],
+        phase: 'commentary',
+      },
+    },
+    ...functionCall(RECLASSIFIED_COMMENTARY_CALL_ID, tool.name, tool.arguments),
+    responseCompleted(id),
+  ]
+}
+
 function textDeltaEvents(itemId, text, initialOffset = 0) {
   return [
     {
@@ -430,8 +482,16 @@ function requestContainsToolRegressionPrompt(body) {
   return JSON.stringify(body.input ?? []).includes(TOOL_REGRESSION_PROMPT)
 }
 
+function requestContainsToolDetailPersistencePrompt(body) {
+  return JSON.stringify(body.input ?? []).includes(TOOL_DETAIL_PERSISTENCE_PROMPT)
+}
+
 function requestContainsPhaseFlipPrompt(body) {
   return JSON.stringify(body.input ?? []).includes(PHASE_FLIP_PROMPT)
+}
+
+function requestContainsReclassifiedCommentaryPrompt(body) {
+  return JSON.stringify(body.input ?? []).includes(RECLASSIFIED_COMMENTARY_PROMPT)
 }
 
 function requestContainsLegacyConversationPrompt(body) {
@@ -477,26 +537,6 @@ function requestContainsToolOutputForCall(body, callId) {
   return (Array.isArray(body.input) ? body.input : []).some(
     item => item?.type === 'function_call_output' && item.call_id === callId
   )
-}
-
-function requestContainsToolSearchOutputForCall(body, callId) {
-  return (Array.isArray(body.input) ? body.input : []).some(
-    item => item?.type === 'tool_search_output' && item.call_id === callId
-  )
-}
-
-function functionCallOutput(body, callId) {
-  return (Array.isArray(body.input) ? body.input : []).find(
-    item => item?.type === 'function_call_output' && item.call_id === callId
-  )?.output
-}
-
-function spawnedAgentId(body) {
-  const output = functionCallOutput(body, SUBAGENT_CALL_ID)
-  const parsed = typeof output === 'string' ? JSON.parse(output) : output
-  const agentId = parsed?.agent_id ?? parsed?.id
-  assert.ok(agentId, `spawn_agent output did not include an agent id: ${JSON.stringify(output)}`)
-  return agentId
 }
 
 async function waitForRuntimePaneReadyToSend(control, timeoutMs) {
@@ -900,28 +940,37 @@ export function createDesktopScenario({
   })
   const capture = (control, name) => captureScreenshot(control, name, ACTIVE_WORKBENCH_SELECTOR)
   const captureSubagent = (control, name) => captureScreenshot(control, name, 'body')
+  const subagentToolRenderTimeoutMs = SUBAGENT_CHILD_TOOL_TIMEOUT_MS + uiTimeoutMs
   let active = false
   let generatedImageStage = 'initial'
   let subagentStage = 'initial'
   let subagentChildStage = 'initial'
+  let toolDetailPersistenceStage = 'initial'
   let toolRegressionStage = 'initial'
+  let reclassifiedCommentaryStage = 'initial'
   let timerStage = 'initial'
   let releaseAppend
   let releaseLongCodeStream
   let releasePhaseFlipCompletion
+  let releaseReclassifiedCommentaryFinal
   let releaseResponse
   let releaseScrollButtonAppend
   let releaseStart
   let releaseSubagentCompletion
+  let releaseToolDetailPersistenceCompletion
+  let releaseToolDetailPersistenceFinalText
   let releaseToolCompletion
   let releaseToolFinalCompletion
   let releaseTimerFinalCompletion
   let resolveAppendWritten
   let resolvePartialWritten
+  let resolveReclassifiedCommentaryFollowUp
   let resolveRequest
   let resolveScrollButtonAppendWritten
   let resolveSubagentChildRequestStarted
   let resolveSubagentPartialWritten
+  let resolveToolDetailPersistenceFinalTextStarted
+  let resolveToolDetailPersistenceFollowUp
   let resolveToolFinalTextStarted
   let resolveToolFollowUp
   let targetRequest
@@ -933,6 +982,9 @@ export function createDesktopScenario({
   })
   const phaseFlipCompletionRelease = new Promise(resolve => {
     releasePhaseFlipCompletion = resolve
+  })
+  const reclassifiedCommentaryFinalRelease = new Promise(resolve => {
+    releaseReclassifiedCommentaryFinal = resolve
   })
   const responseRelease = new Promise(resolve => {
     releaseResponse = resolve
@@ -955,6 +1007,9 @@ export function createDesktopScenario({
   const requestReceived = new Promise(resolve => {
     resolveRequest = resolve
   })
+  const reclassifiedCommentaryFollowUpReceived = new Promise(resolve => {
+    resolveReclassifiedCommentaryFollowUp = resolve
+  })
   const subagentCompletionRelease = new Promise(resolve => {
     releaseSubagentCompletion = resolve
   })
@@ -963,6 +1018,18 @@ export function createDesktopScenario({
   })
   const subagentPartialWritten = new Promise(resolve => {
     resolveSubagentPartialWritten = resolve
+  })
+  const toolDetailPersistenceCompletionRelease = new Promise(resolve => {
+    releaseToolDetailPersistenceCompletion = resolve
+  })
+  const toolDetailPersistenceFinalTextRelease = new Promise(resolve => {
+    releaseToolDetailPersistenceFinalText = resolve
+  })
+  const toolDetailPersistenceFollowUpReceived = new Promise(resolve => {
+    resolveToolDetailPersistenceFollowUp = resolve
+  })
+  const toolDetailPersistenceFinalTextStarted = new Promise(resolve => {
+    resolveToolDetailPersistenceFinalTextStarted = resolve
   })
   const toolCompletionRelease = new Promise(resolve => {
     releaseToolCompletion = resolve
@@ -1265,13 +1332,13 @@ export function createDesktopScenario({
     )
     await control.command('waitFor', '[data-testid="subagent-conversation-scroll"]', {
       text: SUBAGENT_CHILD_TOOL_MARKER,
-      timeoutMs: uiTimeoutMs,
+      timeoutMs: subagentToolRenderTimeoutMs,
     })
     await control.command(
       'waitFor',
       '[data-testid="subagent-conversation-scroll"] [data-testid="tool-block-duration"]',
       {
-        timeoutMs: uiTimeoutMs,
+        timeoutMs: subagentToolRenderTimeoutMs,
       }
     )
     assert.equal(
@@ -1307,9 +1374,20 @@ export function createDesktopScenario({
     await captureSubagent(control, 'streaming-text-subagent-02-streaming-conversation.png')
     releaseSubagentCompletion()
     await control.command('waitFor', '[data-testid="subagent-conversation-scroll"]', {
-      text: 'WEWORK_DESKTOP_E2E_SUBAGENT_COMPLETE',
+      text: SUBAGENT_CHILD_FINAL,
       timeoutMs: uiTimeoutMs,
     })
+    await control.command('waitFor', ASSISTANT_CONTENT_SELECTOR, {
+      text: SUBAGENT_PARENT_COMPLETION,
+      timeoutMs: uiTimeoutMs,
+    })
+    assert.equal(
+      (await control.command('getText', '[data-testid="subagent-conversation-scroll"]')).includes(
+        SUBAGENT_PARENT_COMPLETION
+      ),
+      false,
+      'The root final answer was loaded into the child conversation'
+    )
     await captureSubagent(control, 'streaming-text-subagent-03-completed-conversation.png')
 
     await control.command('click', '[data-testid="subagent-conversation-back"]')
@@ -1370,13 +1448,28 @@ export function createDesktopScenario({
     )
     await control.command('click', '[data-testid="subagent-overview-item"]')
     await control.command('waitFor', '[data-testid="subagent-conversation-panel"]', {
-      text: 'WEWORK_DESKTOP_E2E_SUBAGENT_COMPLETE',
+      text: SUBAGENT_CHILD_FINAL,
       timeoutMs: uiTimeoutMs,
     })
     await control.command('waitFor', '[data-testid="subagent-conversation-scroll"]', {
       text: SUBAGENT_CHILD_TOOL_MARKER,
       timeoutMs: uiTimeoutMs,
     })
+    await control.command('waitFor', '[data-testid="subagent-conversation-scroll"]', {
+      text: SUBAGENT_CHILD_PARTIAL,
+      timeoutMs: uiTimeoutMs,
+    })
+    await control.command('waitFor', ASSISTANT_CONTENT_SELECTOR, {
+      text: SUBAGENT_PARENT_COMPLETION,
+      timeoutMs: uiTimeoutMs,
+    })
+    assert.equal(
+      (await control.command('getText', '[data-testid="subagent-conversation-scroll"]')).includes(
+        SUBAGENT_PARENT_COMPLETION
+      ),
+      false,
+      'The restored child conversation loaded the root final answer'
+    )
     assert.equal(
       (await control.command('getText', ASSISTANT_CONTENT_SELECTOR)).includes(
         SUBAGENT_CHILD_TOOL_MARKER
@@ -1384,11 +1477,24 @@ export function createDesktopScenario({
       false,
       'The restored child tool leaked into the root conversation'
     )
+    assert.equal(
+      (await control.command('getText', ASSISTANT_CONTENT_SELECTOR)).includes(SUBAGENT_CHILD_FINAL),
+      false,
+      'The restored child final answer leaked into the root conversation'
+    )
+    assert.equal(
+      (await control.command('getText', ASSISTANT_CONTENT_SELECTOR)).includes(
+        SUBAGENT_CHILD_PARTIAL
+      ),
+      false,
+      'The restored child stream leaked into the root conversation'
+    )
     await captureSubagent(control, 'streaming-text-subagent-06-restored-history.png')
     await control.command('click', '[data-testid="right-workspace-subagents-tab-close-button"]')
   }
 
   return {
+    codexConfigToml: '\n[features.multi_agent_v2]\nenabled = true\n',
     modelProviderAuthToml: '',
     modelProviderConfigToml:
       'http_headers = { Authorization = "Bearer wework-e2e-test-key", "x-openai-actor-authorization" = "wework-desktop-e2e" }\n',
@@ -1428,14 +1534,14 @@ export function createDesktopScenario({
       const responseId = `wework-streaming-text-${Date.now()}`
       const latestInput = latestModelInputText(body)
       const followUpNumber = orderFollowUpNumber(body)
-      if (request.headers['x-openai-subagent']) {
+      if (isCollaborationSubagentRequest(request.headers)) {
         resolveSubagentChildRequestStarted()
         if (subagentChildStage === 'initial') {
           const tool = selectShellTool(
             body,
             workspacePath,
             `printf '${SUBAGENT_CHILD_TOOL_START}\\n'; sleep 2; printf '${SUBAGENT_CHILD_TOOL_COMPLETE}\\n'`,
-            10_000
+            SUBAGENT_CHILD_TOOL_TIMEOUT_MS
           )
           subagentChildStage = 'awaiting-tool-output'
           response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
@@ -1502,15 +1608,13 @@ export function createDesktopScenario({
         subagentStage === 'awaiting-spawn-output' &&
         requestContainsToolOutputForCall(body, SUBAGENT_CALL_ID)
       ) {
-        const agentId = spawnedAgentId(body)
         await subagentChildRequestStarted
         subagentStage = 'awaiting-wait-output'
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
         response.end(
           sse([
             responseCreated(responseId),
-            ...namespacedFunctionCall(SUBAGENT_WAIT_CALL_ID, 'multi_agent_v1', 'wait_agent', {
-              targets: [agentId],
+            ...namespacedFunctionCall(SUBAGENT_WAIT_CALL_ID, 'collaboration', 'wait_agent', {
               timeout_ms: 60_000,
             }),
             responseCompleted(responseId),
@@ -1519,38 +1623,65 @@ export function createDesktopScenario({
         return true
       }
       if (
-        subagentStage === 'awaiting-search-output' &&
-        requestContainsToolSearchOutputForCall(body, SUBAGENT_SEARCH_CALL_ID)
+        reclassifiedCommentaryStage === 'awaiting-tool-output' &&
+        requestContainsToolOutputForCall(body, RECLASSIFIED_COMMENTARY_CALL_ID)
       ) {
-        const searchOutput = JSON.stringify(body.input)
+        reclassifiedCommentaryStage = 'awaiting-final-release'
+        resolveReclassifiedCommentaryFollowUp()
+        await reclassifiedCommentaryFinalRelease
+        reclassifiedCommentaryStage = 'complete'
+        const stream = streamingEvents(responseId, RECLASSIFIED_COMMENTARY_FINAL, 'final_answer')
+        response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
+        response.end(
+          sse([
+            ...stream.start,
+            ...textDeltaEvents(stream.itemId, RECLASSIFIED_COMMENTARY_FINAL),
+            ...stream.finish,
+          ])
+        )
+        return true
+      }
+      if (requestContainsReclassifiedCommentaryPrompt(body)) {
+        assert.equal(
+          reclassifiedCommentaryStage,
+          'initial',
+          `Unexpected reclassified-commentary stage: ${reclassifiedCommentaryStage}`
+        )
+        const tool = selectShellTool(
+          body,
+          workspacePath,
+          `printf '${RECLASSIFIED_COMMENTARY_TEXT}\\n'`
+        )
+        reclassifiedCommentaryStage = 'awaiting-tool-output'
+        response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
+        response.end(sse(reclassifiedCommentaryToolEvents(responseId, tool)))
+        return true
+      }
+      if (requestContainsSubagentPrompt(body)) {
+        assert.equal(subagentStage, 'initial', `Unexpected subagent stage: ${subagentStage}`)
+        const collaborationTools = (body.tools ?? []).find(
+          tool => tool?.type === 'namespace' && tool.name === 'collaboration'
+        )?.tools
+        const collaborationToolNames = new Set(
+          (collaborationTools ?? []).map(tool => tool?.name).filter(Boolean)
+        )
         assert.ok(
-          searchOutput.includes('multi_agent_v1') && searchOutput.includes('spawn_agent'),
-          'tool_search did not return multi_agent_v1.spawn_agent'
+          collaborationToolNames.has('spawn_agent'),
+          'The native collaboration.spawn_agent tool was not available'
+        )
+        assert.ok(
+          collaborationToolNames.has('wait_agent'),
+          'The native collaboration.wait_agent tool was not available'
         )
         subagentStage = 'awaiting-spawn-output'
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
         response.end(
           sse([
             responseCreated(responseId),
-            ...namespacedFunctionCall(SUBAGENT_CALL_ID, 'multi_agent_v1', 'spawn_agent', {
+            ...namespacedFunctionCall(SUBAGENT_CALL_ID, 'collaboration', 'spawn_agent', {
+              task_name: 'streaming_panel',
               message: SUBAGENT_CHILD_PROMPT,
               agent_type: 'explorer',
-            }),
-            responseCompleted(responseId),
-          ])
-        )
-        return true
-      }
-      if (requestContainsSubagentPrompt(body)) {
-        assert.equal(subagentStage, 'initial', `Unexpected subagent stage: ${subagentStage}`)
-        subagentStage = 'awaiting-search-output'
-        response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
-        response.end(
-          sse([
-            responseCreated(responseId),
-            toolSearchCall(SUBAGENT_SEARCH_CALL_ID, {
-              query: 'spawn agent delegate child work',
-              limit: 8,
             }),
             responseCompleted(responseId),
           ])
@@ -1632,6 +1763,32 @@ export function createDesktopScenario({
         })
         response.flushHeaders()
         response.write(sse([responseCreated(responseId), assistantMessage(ORDER_STOP_PARTIAL)]))
+        return true
+      }
+      if (
+        toolDetailPersistenceStage === 'awaiting-tool-output' &&
+        requestContainsToolOutputForCall(body, TOOL_DETAIL_PERSISTENCE_CALL_ID)
+      ) {
+        toolDetailPersistenceStage = 'awaiting-final-completion'
+        resolveToolDetailPersistenceFollowUp()
+        await toolDetailPersistenceFinalTextRelease
+        const stream = streamingEvents(responseId, TOOL_DETAIL_PERSISTENCE_COMPLETION)
+        response.writeHead(200, {
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        })
+        response.flushHeaders()
+        response.write(
+          sse([
+            ...stream.start,
+            ...textDeltaEvents(stream.itemId, TOOL_DETAIL_PERSISTENCE_COMPLETION),
+          ])
+        )
+        resolveToolDetailPersistenceFinalTextStarted()
+        await toolDetailPersistenceCompletionRelease
+        toolDetailPersistenceStage = 'complete'
+        response.end(sse(stream.finish))
         return true
       }
       if (timerStage === 'awaiting-tool-output' && requestContainsToolOutput(body)) {
@@ -1747,6 +1904,27 @@ export function createDesktopScenario({
           return true
         }
         throw new Error(`Unexpected tool-text-offset stage: ${toolRegressionStage}`)
+      }
+
+      if (requestContainsToolDetailPersistencePrompt(body)) {
+        if (toolDetailPersistenceStage === 'initial') {
+          const tool = selectShellTool(
+            body,
+            workspacePath,
+            `printf '${TOOL_DETAIL_PERSISTENCE_OUTPUT}\\n'`
+          )
+          toolDetailPersistenceStage = 'awaiting-tool-output'
+          response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
+          response.end(
+            sse([
+              responseCreated(responseId),
+              ...functionCall(TOOL_DETAIL_PERSISTENCE_CALL_ID, tool.name, tool.arguments),
+              responseCompleted(responseId),
+            ])
+          )
+          return true
+        }
+        throw new Error(`Unexpected tool-detail-persistence stage: ${toolDetailPersistenceStage}`)
       }
 
       if (requestContainsPhaseFlipPrompt(body)) {
@@ -1966,6 +2144,74 @@ export function createDesktopScenario({
         active = false
         return
       }
+
+      const assistantCountBeforeReclassifiedCommentary = Number(
+        await control.command('getElementCount', ASSISTANT_CONTENT_SELECTOR)
+      )
+      const processTextCountBeforeReclassifiedCommentary = Number(
+        await control.command('getElementCount', PROCESS_TEXT_SELECTOR)
+      )
+      await control.command('fill', COMPOSER_SELECTOR, {
+        value: RECLASSIFIED_COMMENTARY_PROMPT,
+      })
+      await control.command('press', COMPOSER_SELECTOR, { key: 'Enter' })
+      try {
+        await Promise.race([
+          reclassifiedCommentaryFollowUpReceived,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error('The reclassified-commentary follow-up was not received')),
+              uiTimeoutMs
+            )
+          ),
+        ])
+      } catch (error) {
+        releaseReclassifiedCommentaryFinal()
+        throw error
+      }
+      await control.command('waitFor', PROCESS_TEXT_SELECTOR, {
+        text: RECLASSIFIED_COMMENTARY_TEXT,
+        timeoutMs: uiTimeoutMs,
+      })
+      assert.equal(
+        Number(await control.command('getElementCount', PROCESS_TEXT_SELECTOR)),
+        processTextCountBeforeReclassifiedCommentary + 1,
+        'Reclassified commentary did not add exactly one process block'
+      )
+      assert.equal(
+        Number(await control.command('getElementCount', ASSISTANT_CONTENT_SELECTOR)),
+        assistantCountBeforeReclassifiedCommentary,
+        'Reclassified commentary remained visible as final assistant content'
+      )
+      const reclassifiedRunningSnapshot = JSON.parse(
+        await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR)
+      )
+      assert.ok(
+        reclassifiedRunningSnapshot.testIds.includes('pause-response-button'),
+        'The turn stopped after commentary was reclassified even though the real final was pending'
+      )
+      releaseReclassifiedCommentaryFinal()
+      await control.command('waitFor', ASSISTANT_CONTENT_SELECTOR, {
+        text: RECLASSIFIED_COMMENTARY_FINAL,
+        timeoutMs: uiTimeoutMs,
+      })
+      await control.command(
+        'waitFor',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="send-message-button"]`,
+        { stableMs: 750, timeoutMs: uiTimeoutMs }
+      )
+      const reclassifiedCompletedSnapshot = JSON.parse(
+        await control.command('snapshot', ACTIVE_WORKBENCH_SELECTOR)
+      )
+      assert.equal(
+        Number(await control.command('getElementCount', ASSISTANT_CONTENT_SELECTOR)),
+        assistantCountBeforeReclassifiedCommentary + 1,
+        'The real final answer did not add exactly one assistant response'
+      )
+      assert.ok(
+        !reclassifiedCompletedSnapshot.testIds.includes('pause-response-button'),
+        'The turn remained active after the real final completed'
+      )
 
       await verifyLongCodeTerminalBurst(control)
       await verifyWindowsDriveLinkRendering(control)
@@ -2211,6 +2457,103 @@ export function createDesktopScenario({
         'The composer in the short control conversation'
       )
       await capture(control, 'streaming-text-05-short-control-composer-docked.png')
+
+      await openNewChatWithE2EModel(control, uiTimeoutMs)
+      await control.command('fill', COMPOSER_SELECTOR, {
+        value: TOOL_DETAIL_PERSISTENCE_PROMPT,
+      })
+      await control.command('press', COMPOSER_SELECTOR, { key: 'Enter' })
+      try {
+        await Promise.race([
+          toolDetailPersistenceFollowUpReceived,
+          new Promise((_, reject) =>
+            setTimeout(
+              () =>
+                reject(new Error('The tool-detail-persistence follow-up request was not received')),
+              uiTimeoutMs
+            )
+          ),
+        ])
+      } catch (error) {
+        releaseToolDetailPersistenceFinalText()
+        releaseToolDetailPersistenceCompletion()
+        throw error
+      }
+      const collapsedToolDetailSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-processing-block-id="${TOOL_DETAIL_PERSISTENCE_CALL_ID}"] [data-tool-detail-toggle][aria-label="展开工具详情"]`
+      const expandedToolDetailSelector = `${ACTIVE_WORKBENCH_SELECTOR} [data-processing-block-id="${TOOL_DETAIL_PERSISTENCE_CALL_ID}"] [data-tool-detail-toggle][aria-label="收起工具详情"]`
+      await control.command('waitFor', collapsedToolDetailSelector, {
+        timeoutMs: uiTimeoutMs,
+      })
+      await control.command('click', collapsedToolDetailSelector)
+      await control.command('waitFor', expandedToolDetailSelector, {
+        timeoutMs: uiTimeoutMs,
+      })
+      await control.command(
+        'waitFor',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-processing-block-id="${TOOL_DETAIL_PERSISTENCE_CALL_ID}"]`,
+        {
+          text: TOOL_DETAIL_PERSISTENCE_OUTPUT,
+          timeoutMs: uiTimeoutMs,
+        }
+      )
+
+      releaseToolDetailPersistenceFinalText()
+      await toolDetailPersistenceFinalTextStarted
+      await control.command('waitFor', ASSISTANT_CONTENT_SELECTOR, {
+        text: TOOL_DETAIL_PERSISTENCE_COMPLETION,
+        timeoutMs: uiTimeoutMs,
+      })
+      assert.equal(
+        await control.command(
+          'getAttribute',
+          `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="final-processing-toggle"]`,
+          { value: 'aria-expanded' }
+        ),
+        'true',
+        'The expanded processing timeline collapsed when final text started streaming'
+      )
+      assert.equal(
+        Number(await control.command('getElementCount', expandedToolDetailSelector)),
+        1,
+        'The tool detail did not remain expanded while final text streamed'
+      )
+
+      releaseToolDetailPersistenceCompletion()
+      await control.command(
+        'waitFor',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="send-message-button"]`,
+        { stableMs: 750, timeoutMs: uiTimeoutMs }
+      )
+      assert.equal(
+        await control.command(
+          'getAttribute',
+          `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="final-processing-toggle"]`,
+          { value: 'aria-expanded' }
+        ),
+        'true',
+        'The expanded tool detail collapsed when the turn completed'
+      )
+      assert.equal(
+        Number(await control.command('getElementCount', expandedToolDetailSelector)),
+        1,
+        'The tool detail did not remain expanded after the turn completed'
+      )
+
+      await control.command('click', expandedToolDetailSelector)
+      await control.command(
+        'waitFor',
+        `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="final-processing-toggle"]`,
+        { timeoutMs: uiTimeoutMs }
+      )
+      assert.equal(
+        await control.command(
+          'getAttribute',
+          `${ACTIVE_WORKBENCH_SELECTOR} [data-testid="final-processing-toggle"]`,
+          { value: 'aria-expanded' }
+        ),
+        'false',
+        'The completed processing timeline did not collapse after the user closed tool details'
+      )
 
       await openNewChatWithE2EModel(control, uiTimeoutMs)
       const knownTimerTaskRows = new Set(

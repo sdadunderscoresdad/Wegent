@@ -39,16 +39,8 @@ use crate::state::AppState;
 async fn get_task_skills(
     #[inject(state)] state: &AppState,
     task_id: i64,
-    #[header] authorization: Option<&str>,
-    #[header("x-api-key")] x_api_key: Option<&str>,
+    #[auth] user: auth::AuthenticatedUser,
 ) -> Result<resolver::TaskSkills, HttpError> {
-    // `security.get_current_user_jwt_apikey_tasktoken` (`Depends` runs
-    // before the handler).
-    let headers = crate::headers::OwnedHeaders::from_pairs([
-        ("authorization", authorization),
-        ("x-api-key", x_api_key),
-    ]);
-    let user = auth::get_current_user(&state.auth, &state.mysql, &headers.view()).await?;
     run(state, task_id, user.id).await
 }
 
@@ -59,7 +51,7 @@ async fn run(
     user_id: i64,
 ) -> Result<resolver::TaskSkills, HttpError> {
     // `task_store.get_active_task`.
-    let Some(task) = repo::get_active_task(&state.mysql, task_id)
+    let Some(task) = repo::get_active_task(&*state.task_store, task_id)
         .await
         .map_err(HttpError::dependency)?
     else {
@@ -99,7 +91,7 @@ async fn is_member(
     owner_user_id: i64,
     user_id: i64,
 ) -> Result<bool, HttpError> {
-    if repo::get_active_task(&state.mysql, task_id)
+    if repo::get_accessible_task(&*state.task_store, task_id)
         .await
         .map_err(HttpError::dependency)?
         .is_none()

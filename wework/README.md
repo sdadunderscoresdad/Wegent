@@ -53,6 +53,20 @@ turn has settled. While output is streaming, Wework keeps the processing layout
 stable so the completed state cannot repeatedly appear and disappear or make
 following text flicker.
 
+## Composer Submission State
+
+发送包含附件的消息时，输入文本与本次提交的附件必须作为同一个快照立即从输入框清除，
+不得等待任务创建或模型响应完成。异步发送期间新添加的附件属于下一次提交，不得被上一
+次发送的延迟清理移除；如果任务创建失败，文本、附件和错误提示必须一起恢复到用户当前
+可见的原始会话。
+
+When a message includes attachments, the composer must clear the submitted text
+and attachment snapshot together without waiting for task creation or the model
+response. Attachments added while that send is pending belong to the next
+submission and must not be removed by delayed cleanup from the previous send. If
+task creation fails, restore the text, attachments, and error to the original
+conversation that remains visible to the user.
+
 ## Embedded Browser Navigation
 
 内嵌浏览器首次加载实际页面时会移除初始化用的 `about:blank` 历史项，
@@ -102,6 +116,11 @@ pnpm --filter wework e2e
 
 ## Desktop Build
 
+Wework 构建会将当前源码提交写入 Renderer。GitHub release 优先使用
+`WEWORK_SOURCE_SHA`，其他 CI 使用 `GITHUB_SHA`，本地构建使用 Git `HEAD`。
+“设置 > 关于”显示 12 位短提交 ID，并通过标题属性保留完整提交 ID，方便定位安装包
+对应的源码。
+
 Prepare the bundled resources and build the Electron application for the
 current platform:
 
@@ -110,6 +129,11 @@ pnpm --filter wework build:release
 ```
 
 GitHub releases are built by `.github/workflows/wework-app.yml`.
+Each build embeds its source commit in the Renderer. GitHub releases prefer
+`WEWORK_SOURCE_SHA`, other CI builds use `GITHUB_SHA`, and local builds use Git
+`HEAD`. Settings > About shows the 12-character commit ID and retains the full
+commit ID in its title attribute so an installed package can be traced back to
+its source.
 
 ## Related Documentation
 

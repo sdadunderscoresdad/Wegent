@@ -1,5 +1,6 @@
 import './host/process-output-bootstrap.js'
 import { SchemeQueue } from './host/scheme-queue.js'
+import { RuntimeDiagnosticsLog } from './host/runtime-diagnostics-log.js'
 
 import {
   app,
@@ -63,10 +64,21 @@ import { detectCoreDshStartupPluginFailure } from './host/core-dsh-startup-failu
 import { materializeBundledRuntimes } from './runtime/bundled-runtime-materializer.js'
 import { waitForRendererSelector } from './host/renderer-readiness.js'
 import { desktopWindowFrameOptions } from './host/window-layout.js'
-import { createSingleFlight, presentWindow } from './host/window-presentation.js'
+import {
+  POPOUT_WINDOW_SIZES,
+  popoutWindowBounds,
+  type PopoutWindowMode,
+} from './host/popout-window-layout.js'
+import {
+  createSingleFlight,
+  presentWindow,
+  registerApplicationActivation,
+} from './host/window-presentation.js'
+import { handlePopoutWindowInput } from './host/popout-window-shortcuts.js'
 import { DesktopRuntime } from './runtime/desktop-runtime.js'
 import { FeedbackBundleManager } from './host/feedback-bundle-manager.js'
 import {
+  createStartupReadyHandler,
   resolveStartupSplashTheme,
   StartupSplash,
   startupSplashBlocksMainWindowActivation,
@@ -211,6 +223,7 @@ let systemDragWindowCreationPromise: Promise<BrowserWindow> | null = null
 let popoutWindow: BrowserWindow | null = null
 let popoutWindowCreationPromise: Promise<BrowserWindow> | null = null
 let popoutWindowReadyPromise: Promise<void> | null = null
+let popoutWindowMode: PopoutWindowMode = 'composer'
 let popoutShortcut: GlobalShortcutController | null = null
 let systemDragContext: { conversationTitle: string | null } = { conversationTitle: null }
 let pendingSystemDrops: Array<{
@@ -286,6 +299,33 @@ const pendingEmbeddedBrowserAttachments = new Map<
 const rendererHealth = new RendererHealthService()
 const systemSleep = new SystemSleepController()
 const appUpdateLogger = new AppUpdateLogger(join(app.getPath('logs'), 'app-update.log'))
+const runtimeDiagnosticsLog = new RuntimeDiagnosticsLog(
+  join(app.getPath('logs'), 'runtime-launch.log')
+)
+app.on('web-contents-created', (_event, contents) => {
+  const logLoadEvent = (event: string) => () => {
+    console.info('[renderer-load]', { event, webContentsId: contents.id })
+  }
+  contents.on('did-start-loading', logLoadEvent('did-start-loading'))
+  contents.on('dom-ready', logLoadEvent('dom-ready'))
+  contents.on('did-finish-load', logLoadEvent('did-finish-load'))
+  contents.on('did-stop-loading', logLoadEvent('did-stop-loading'))
+  contents.on('will-prevent-unload', logLoadEvent('will-prevent-unload'))
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+    console.warn('[renderer-load]', {
+      event: 'did-fail-load',
+      webContentsId: contents.id,
+      errorCode,
+      errorDescription,
+      isMainFrame,
+    })
+  })
+  contents.on('console-message', (_event, _level, message) => {
+    void runtimeDiagnosticsLog.record(contents.id, message).catch(error => {
+      console.warn('[Wework] Failed to write runtime diagnostics', error)
+    })
+  })
+})
 const executorHome =
   process.env.WEGENT_EXECUTOR_HOME?.trim() || join(app.getPath('home'), '.wework')
 const configuredExecutorLogFile = process.env.WEGENT_EXECUTOR_LOG_FILE?.trim()
@@ -340,7 +380,8 @@ function focusStartupSplashIfActive(): boolean {
   if (!startupSplashBlocksMainWindowActivation(snapshot ?? null)) return false
 
   const target = startupSplashWindow
-  if (target && !target.isDestroyed() && target.isVisible()) target.focus()
+  if (!target || target.isDestroyed() || !target.isVisible()) return false
+  target.focus()
   return true
 }
 
@@ -693,6 +734,7 @@ function disposeCoreDshViews(): void {
   popoutWindow = null
   popoutWindowCreationPromise = null
   popoutWindowReadyPromise = null
+  popoutWindowMode = 'composer'
   primaryDshLoaded = false
 }
 
@@ -823,8 +865,8 @@ async function createAuxiliaryWindow(
     isSystemDrag ? 'system-drag' : 'popout'
   )
   const auxiliaryWindow = new BrowserWindow({
-    width: isSystemDrag ? 440 : 470,
-    height: isSystemDrag ? 60 : 112,
+    width: isSystemDrag ? 440 : POPOUT_WINDOW_SIZES.composer.width,
+    height: isSystemDrag ? 60 : POPOUT_WINDOW_SIZES.composer.height,
     parent: isSystemDrag
       ? (BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined)
       : undefined,
@@ -848,6 +890,11 @@ async function createAuxiliaryWindow(
   if (isSystemDrag) pendingSystemDragWindow = auxiliaryWindow
   secureDshContents(auxiliaryWindow.webContents, desktopRuntime.coreDshUrl())
   registerDshWindowLabel(auxiliaryWindow.webContents, kind)
+  if (!isSystemDrag) {
+    auxiliaryWindow.webContents.on('before-input-event', (event, input) => {
+      handlePopoutWindowInput(event, input, () => auxiliaryWindow.hide())
+    })
+  }
   auxiliaryWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
     console.error('[auxiliary-window] renderer failed to load', {
       kind,
@@ -864,7 +911,10 @@ async function createAuxiliaryWindow(
       if (systemDragWindow === auxiliaryWindow) systemDragWindow = null
       if (pendingSystemDragWindow === auxiliaryWindow) pendingSystemDragWindow = null
     } else {
-      if (popoutWindow === auxiliaryWindow) popoutWindow = null
+      if (popoutWindow === auxiliaryWindow) {
+        popoutWindow = null
+        popoutWindowMode = 'composer'
+      }
       if (popoutWindowReadyPromise === readinessPromise) {
         popoutWindowReadyPromise = null
       }
@@ -888,6 +938,7 @@ async function createAuxiliaryWindow(
       systemDragWindow = auxiliaryWindow
     } else {
       popoutWindow = auxiliaryWindow
+      resizePopoutWindow('composer', popoutWindowMode)
       readinessPromise = waitForRendererSelector(
         auxiliaryWindow.webContents,
         '[data-testid="popout-workbench-page"]'
@@ -903,6 +954,19 @@ async function createAuxiliaryWindow(
     if (!auxiliaryWindow.isDestroyed()) auxiliaryWindow.destroy()
     throw error
   }
+}
+
+function resizePopoutWindow(previousMode: PopoutWindowMode, mode: PopoutWindowMode): void {
+  const target = popoutWindow
+  if (!target || target.isDestroyed()) return
+
+  const current = target.getBounds()
+  const center = {
+    x: current.x + current.width / 2,
+    y: current.y + current.height / 2,
+  }
+  const workArea = screen.getDisplayNearestPoint(center).workArea
+  target.setBounds(popoutWindowBounds(current, workArea, previousMode, mode))
 }
 
 async function showSystemDragPanel(): Promise<void> {
@@ -928,12 +992,25 @@ async function showSystemDragPanel(): Promise<void> {
 async function showPopoutWindow(): Promise<void> {
   const target = await ensureAuxiliaryWindow('popout-window')
   await popoutWindowReadyPromise
+  if (keepE2EWindowInBackground) {
+    e2eForegroundActivationAllowed = true
+    app.setActivationPolicy('accessory')
+  }
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const bounds = target.getBounds()
   target.setPosition(
-    Math.round(display.workArea.x + (display.workArea.width - 470) / 2),
-    Math.round(display.workArea.y + (display.workArea.height - 112) / 2)
+    Math.round(display.workArea.x + (display.workArea.width - bounds.width) / 2),
+    Math.round(display.workArea.y + (display.workArea.height - bounds.height) / 2)
   )
   presentWindow(target)
+}
+
+async function togglePopoutWindow(): Promise<void> {
+  if (popoutWindow && !popoutWindow.isDestroyed() && popoutWindow.isVisible()) {
+    popoutWindow.hide()
+    return
+  }
+  await showPopoutWindow()
 }
 
 function resolvePopoutShortcut(preferenceRecord: Record<string, unknown>): string | null {
@@ -1134,8 +1211,11 @@ async function reactivateMainWindow(): Promise<void> {
   if (keepE2EWindowInBackground) {
     e2eForegroundActivationAllowed = true
     app.setActivationPolicy('regular')
+    app.show()
+    dockVisible = true
+  } else {
+    await setDockVisible(true)
   }
-  await setDockVisible(true)
   if (target.isMinimized()) target.restore()
   target.show()
   target.focus()
@@ -1303,6 +1383,7 @@ async function shutdown(): Promise<void> {
   popoutWindow = null
   popoutWindowCreationPromise = null
   popoutWindowReadyPromise = null
+  popoutWindowMode = 'composer'
   popoutShortcut?.dispose()
   popoutShortcut = null
   embeddedBrowser?.stop()
@@ -1363,11 +1444,15 @@ function downloadsDirectory(): string {
 async function configureDesktopRuntime(): Promise<void> {
   if (desktopRuntime) return
   logStartupStep('runtime-configure', 'started')
+  logStartupStep('workbench-mode-initialize', 'started')
   await initializeWorkbenchModePreference(requiredPreferences(), {
     environment: process.env,
     homeDirectory: app.getPath('home'),
   })
+  logStartupStep('workbench-mode-initialize', 'completed')
+  logStartupStep('desktop-environment', 'started')
   const environment = await desktopEnvironment()
+  logStartupStep('desktop-environment', 'completed')
   if (!pluginDevelopmentInstance && !pluginDevelopment) {
     pluginDevelopment = new PluginDevelopmentManager({
       ...currentElectronLaunch(),
@@ -1389,7 +1474,9 @@ async function configureDesktopRuntime(): Promise<void> {
   }
   if (!preferences) throw new Error('Desktop preferences are unavailable')
   if (!rendererStorage) throw new Error('Renderer storage is unavailable')
+  logStartupStep('runtime-preferences-read', 'started')
   const codexSubscriptionPreferences = await preferences.read()
+  logStartupStep('runtime-preferences-read', 'completed')
   // The Electron PreferencesStore returns raw JSON without normalization, so an
   // absent field (e.g. a fresh install or a user who never toggled it) must fall
   // back to the default (enabled) rather than being treated as disabled.
@@ -1424,7 +1511,9 @@ async function configureDesktopRuntime(): Promise<void> {
     embeddedBrowser,
     environment.WEGENT_EXECUTOR_HOME?.trim() || join(app.getPath('home'), '.wework')
   )
+  logStartupStep('embedded-browser-bridge', 'started')
   environment.WEWORK_EMBEDDED_BROWSER_BRIDGE_RUNTIME_FILE = await embeddedBrowserBridge.start()
+  logStartupStep('embedded-browser-bridge', 'completed')
   Object.assign(environment, embeddedBrowserBridge.environment())
   desktopControlBridge = new WeworkDesktopControlBridge({
     instanceId: desktopControlInstanceId(),
@@ -1438,7 +1527,9 @@ async function configureDesktopRuntime(): Promise<void> {
     window: () => mainWindow,
     smartApps: () => smartApps,
   })
+  logStartupStep('desktop-control-bridge', 'started')
   await desktopControlBridge.start()
+  logStartupStep('desktop-control-bridge', 'completed')
   computerUse = new ComputerUseService(
     environment.WEGENT_EXECUTOR_HOME?.trim() || join(app.getPath('home'), '.wework')
   )
@@ -1446,6 +1537,7 @@ async function configureDesktopRuntime(): Promise<void> {
   if (runtimeRoot) {
     smartApps = new SmartAppManager({
       dataDirectory: app.getPath('userData'),
+      documentsDirectory: () => app.getPath('documents'),
       downloadsDirectory,
       logDirectory: app.getPath('logs'),
       runtimeRoot,
@@ -1553,12 +1645,16 @@ async function configureDesktopRuntime(): Promise<void> {
           focusMainWindow: reactivateMainWindow,
           focusWindow: windowLabel => {
             const target =
-              windowLabel === 'main' ? mainWindow : (workspaceWindows.get(windowLabel) ?? null)
+              windowLabel === 'main'
+                ? mainWindow
+                : windowLabel === 'popout-window'
+                  ? popoutWindow
+                  : (workspaceWindows.get(windowLabel) ?? null)
             if (target) presentWindow(target)
           },
           hideMainWindow: hideMainWindowToBackground,
           dockVisible: () => dockVisible,
-          rendererStartupReady: async source => {
+          rendererStartupReady: createStartupReadyHandler(async source => {
             if (!mainWindow || mainWindow.isDestroyed()) return
             logStartupStep('renderer-startup-ready', 'completed', { source })
             if (!keepE2EWindowInBackground) mainWindow.show()
@@ -1572,7 +1668,7 @@ async function configureDesktopRuntime(): Promise<void> {
               mainWindow.webContents.focus()
             }
             scheduleComputerUseStartup()
-          },
+          }),
           rendererStartupFailed: () => {
             logStartupStep('renderer-startup', 'failed')
             return startupSplash?.showError()
@@ -1589,7 +1685,12 @@ async function configureDesktopRuntime(): Promise<void> {
             return snapshot ? { ...snapshot, dockBadge: app.dock?.getBadge() ?? null } : null
           },
           openWorkspace: openWorkspaceWindow,
+          openPopoutTaskInMain: taskAddressId => {
+            popoutWindow?.hide()
+            dispatchTrayAction({ type: 'open-task', source: 'popout', taskId: taskAddressId })
+          },
           popoutWindowSnapshot: () => ({
+            bounds: popoutWindow && !popoutWindow.isDestroyed() ? popoutWindow.getBounds() : null,
             exists: Boolean(popoutWindow && !popoutWindow.isDestroyed()),
             focused: Boolean(
               popoutWindow && !popoutWindow.isDestroyed() && popoutWindow.isFocused()
@@ -1623,6 +1724,11 @@ async function configureDesktopRuntime(): Promise<void> {
           scheduleCoreDshRestart,
           setSystemDragContext: context => {
             systemDragContext = context
+          },
+          setPopoutMode: mode => {
+            const previousMode = popoutWindowMode
+            popoutWindowMode = mode
+            resizePopoutWindow(previousMode, mode)
           },
           setSystemSleepEnabled: enabled => systemSleep.setEnabled(enabled),
           setSystemSleepTaskActive: (source, active) => systemSleep.setTaskActive(source, active),
@@ -1778,7 +1884,7 @@ if (hasSingleInstanceLock) {
     rendererStorage = new RendererStorageStore(app.getPath('userData'))
     logStartupStep('desktop-stores-create', 'completed')
     if (!pluginDevelopmentInstance) {
-      popoutShortcut = new GlobalShortcutController(globalShortcut, showPopoutWindow, error =>
+      popoutShortcut = new GlobalShortcutController(globalShortcut, togglePopoutWindow, error =>
         console.error('[popout-window] global shortcut failed', error)
       )
     }
@@ -1867,6 +1973,7 @@ async function desktopEnvironment(): Promise<NodeJS.ProcessEnv> {
     !packagedApplication && configuredComponentResourcesRoot
       ? resolve(configuredComponentResourcesRoot)
       : resourcesRoot
+  logStartupStep('desktop-components-prepare', 'started')
   const preparedComponents = await prepareDesktopComponents({
     isPackaged: packagedApplication,
     managerOptions: {
@@ -1877,6 +1984,7 @@ async function desktopEnvironment(): Promise<NodeJS.ProcessEnv> {
       currentAppVersion: app.getVersion(),
     },
   })
+  logStartupStep('desktop-components-prepare', 'completed')
   componentUpdates = preparedComponents.manager
   const components = preparedComponents.paths
   const developmentRuntimeRoot = resolve(
@@ -1887,6 +1995,7 @@ async function desktopEnvironment(): Promise<NodeJS.ProcessEnv> {
     'harness-runtime-dev'
   )
   const configuredRuntimeRoot = process.env.WEWORK_HARNESS_RUNTIME_ROOT?.trim()
+  logStartupStep('core-runtime-materialize', 'started')
   const runtimeRoot = configuredRuntimeRoot
     ? configuredRuntimeRoot
     : components
@@ -1894,8 +2003,12 @@ async function desktopEnvironment(): Promise<NodeJS.ProcessEnv> {
           'core',
         ])
       : developmentRuntimeRoot
+  logStartupStep('core-runtime-materialize', 'completed')
+  logStartupStep('node-runtime-prepare', 'started')
   const nodeRuntime = await electronNodeRuntime()
+  logStartupStep('node-runtime-prepare', 'completed')
   const cliBin = join(app.getPath('userData'), 'runtime', 'wework-cli-bin')
+  logStartupStep('wework-cli-install', 'started')
   await installWeworkCli(
     cliBin,
     resolve(packageRoot, 'dist', 'cli', 'wework-cli.mjs'),
@@ -1931,6 +2044,7 @@ async function desktopEnvironment(): Promise<NodeJS.ProcessEnv> {
   nodeRuntime.environment.PATH = [cliBin, nodeRuntime.environment.PATH?.trim()]
     .filter(Boolean)
     .join(delimiter)
+  logStartupStep('wework-cli-install', 'completed')
   return applyBrandRuntimeEnvironment(
     {
       ...nodeRuntime.environment,
@@ -2070,22 +2184,12 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('activate', () => {
-  if (keepE2EWindowInBackground && !e2eForegroundActivationAllowed) return
-  void reactivateMainWindow().catch(error => {
+registerApplicationActivation(app, {
+  keepInBackground: () => keepE2EWindowInBackground && !e2eForegroundActivationAllowed,
+  openMainWindow: reactivateMainWindow,
+  reportError: error => {
     console.error('[window] failed to reactivate main window', error)
-  })
-})
-
-app.on('did-become-active', () => {
-  if (keepE2EWindowInBackground && !e2eForegroundActivationAllowed) {
-    app.hide()
-    return
-  }
-  if (mainWindow?.isVisible()) return
-  void reactivateMainWindow().catch(error => {
-    console.error('[window] failed to restore inactive main window', error)
-  })
+  },
 })
 
 app.on('before-quit', event => {

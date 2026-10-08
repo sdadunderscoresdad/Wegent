@@ -95,6 +95,49 @@ afterEach(() => {
 })
 
 describe('normal-DOM conversation viewport', () => {
+  test.each([false, true])(
+    'combines custom message gaps with transcript gap=%s without resuming follow',
+    async missing => {
+      const history = [messages[0], messages[missing ? 3 : 1]]
+      const customGap = (message: WorkbenchMessage) =>
+        message.id === history[0].id ? (
+          <span data-testid="custom-message-gap">Execution boundary</span>
+        ) : null
+      const { rerender } = render(
+        <ScrollableMessageArea messages={history} renderGapAfterMessage={customGap} />
+      )
+      await settle()
+      expect(screen.getByTestId('custom-message-gap')).toHaveTextContent('Execution boundary')
+      expect(screen.queryAllByTestId('runtime-transcript-gap-marker')).toHaveLength(missing ? 1 : 0)
+      if (missing) {
+        expect(screen.getByTestId('load-runtime-transcript-gap-button')).toBeDisabled()
+        expect(
+          screen
+            .getByTestId('runtime-transcript-gap-marker')
+            .compareDocumentPosition(screen.getByTestId('custom-message-gap')) &
+            Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy()
+      }
+      readAt(200)
+      rerender(
+        <ScrollableMessageArea
+          messages={history}
+          renderGapAfterMessage={message =>
+            message.id === history[0].id ? (
+              <span data-testid="custom-message-gap">Updated boundary</span>
+            ) : null
+          }
+        />
+      )
+      await resize(1400)
+      expect(screen.getByTestId('custom-message-gap')).toHaveTextContent('Updated boundary')
+      expect(scroller().scrollTop).toBe(200)
+      rerender(<ScrollableMessageArea messages={history} />)
+      expect(screen.queryByTestId('custom-message-gap')).not.toBeInTheDocument()
+      expect(screen.queryAllByTestId('runtime-transcript-gap-marker')).toHaveLength(missing ? 1 : 0)
+    }
+  )
+
   test('initializes at the bottom only after loaded messages commit', async () => {
     const { rerender } = render(<ScrollableMessageArea messages={[]} loading conversationKey="A" />)
     await settle()

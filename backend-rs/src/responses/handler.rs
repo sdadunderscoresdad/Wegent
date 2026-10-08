@@ -12,11 +12,9 @@
 //! and `convert_to_task_dict`), subtask listing, the model string from the
 //! task's team reference, and `_task_to_response_object`.
 use brz_http_server::StatusCode;
-use brz_http_server::{Binary, HttpResponse};
 #[cfg(test)]
 use serde_json::Value;
 
-use super::auth::get_current_user_flexible;
 use super::http_error::HttpError;
 use super::output_builder::{ResponseObject, task_to_response_object};
 use super::rate_limit::{self, RateLimit};
@@ -107,38 +105,24 @@ impl brz_http_server::IntoHttpError for ResponseError {
 
 /// GET /api/v1/responses/{response_id}: the responses free function, injecting
 /// the process-lifetime application state.
+///
+/// The success body is the source's `JSONResponse` framing: the serialized
+/// `ResponseObject` with `content-type: application/json`. Returning the
+/// business value keeps that media type; a raw byte body would be served as
+/// `application/octet-stream`.
 #[brz_http_server::get("/api/v1/responses/:response_id")]
 async fn get_response(
     #[inject(state)] state: &AppState,
     response_id: &str,
-    #[header] authorization: Option<&str>,
-    #[header("x-api-key")] x_api_key: Option<&str>,
-    #[header("wegent-source")] wegent_source: Option<&str>,
-    #[header("wegent-username")] wegent_username: Option<&str>,
+    #[auth] current_user: super::auth::ResponsesUser,
     #[header("x-forwarded-for")] x_forwarded_for: Option<&str>,
-) -> Result<HttpResponse<Binary>, ResponseError> {
-    // Authentication (`get_current_user_flexible`).
-    let headers = crate::headers::OwnedHeaders::from_pairs([
-        ("authorization", authorization),
-        ("x-api-key", x_api_key),
-        ("wegent-source", wegent_source),
-        ("wegent-username", wegent_username),
-    ]);
-    let current_user = match get_current_user_flexible(
-        &state.auth,
-        state.user_reader.as_ref(),
-        &state.mysql,
-        &headers.view(),
-    )
-    .await
-    {
-        Ok(user) => user,
-        Err(error) => return Err(error.into()),
-    };
-
+) -> Result<ResponseObject, ResponseError> {
     // Rate limit (`@limiter.limit(settings.RATE_LIMIT_GET_RESPONSE)`).
     let client_ip = client_ip(x_forwarded_for);
-    let limit_key = rate_limit::limit_key(&headers.view(), &client_ip);
+    let limit_key = current_user
+        .rate_limit_key
+        .clone()
+        .unwrap_or_else(|| format!("ip:{client_ip}"));
     let path = format!("/api/v1/responses/{response_id}");
     if !rate_limit::hit(
         state.redis.as_ref(),
@@ -160,9 +144,7 @@ async fn get_response(
     };
 
     match load_response(state, task_id, current_user.id).await {
-        Ok(Some(response)) => Ok(HttpResponse::new(Binary::new(
-            serde_json::to_vec(&response).unwrap_or_default(),
-        ))),
+        Ok(Some(response)) => Ok(response),
         Ok(None) => Err(HttpError::response_not_found(response_id).into()),
         Err(error) => Err(error.into()),
     }
@@ -176,19 +158,20 @@ async fn load_response(
     user_id: i32,
 ) -> Result<Option<ResponseObject>, HttpError> {
     let mysql = &state.mysql;
+    let task_store = &*state.task_store;
     let internal = |error: brz_mysql::MysqlError| {
         tracing::error!(%error, "responses database dependency failure");
         HttpError::internal("database query failed")
     };
 
     // `task_kinds_service.get_task_by_id`.
-    let task = repo::get_active_non_deleted_task(mysql, task_id)
+    let task = repo::get_active_non_deleted_task(task_store, task_id)
         .await
         .map_err(internal)?;
     let Some(task) = task else {
         return Ok(None);
     };
-    if !repo::is_member(mysql, task_id, user_id)
+    if !repo::is_member(task_store, mysql, task_id, user_id)
         .await
         .map_err(internal)?
     {
@@ -204,7 +187,7 @@ async fn load_response(
     {
         let name = workspace_ref.name();
         let namespace = workspace_ref.namespace();
-        let _ = repo::get_workspace_by_ref(mysql, state.task_policy, task.user_id, name, namespace)
+        let _ = repo::get_workspace_by_ref(task_store, i64::from(task.user_id), name, namespace)
             .await
             .map_err(internal)?;
     }
@@ -221,13 +204,13 @@ async fn load_response(
         })?;
 
     // `subtask_store.list_by_task_for_user_ordered`.
-    let subtasks = repo::list_subtasks_for_user_ordered(mysql, task_id, user_id)
+    let subtasks = repo::list_subtasks_for_user_ordered(task_store, task_id, user_id)
         .await
         .map_err(internal)?;
 
     // `task_store.get_task_by_states(states=[STATE_ACTIVE],
     // owner_user_id=current_user.id)` + model-string reconstruction.
-    let task_kind = repo::get_task_by_states_active_owned(mysql, task_id, user_id)
+    let task_kind = repo::get_task_by_states_active_owned(task_store, task_id, user_id)
         .await
         .map_err(internal)?;
     let model_string = model_string_for(&task_kind);
@@ -323,5 +306,101 @@ mod tests {
     fn rate_limit_error_body_matches_slowapi() {
         let response = rate_limit_exceeded();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // A dedicated test group, separate from the crate's real `http_apis`
+    // group, so the probe route below can re-declare this API's path shape.
+    mod probe {
+        brz_http_server::registry!(group = responses_probe, dependencies());
+    }
+
+    /// The exact JSON the source `JSONResponse` renders for a response
+    /// object: field order and explicit `null`s of `ResponseObject`.
+    const PROBE_BODY: &str = concat!(
+        r#"{"id":"resp_1","object":"response","created_at":1700000000,"#,
+        r#""status":"in_progress","error":null,"model":"default#example-bot","#,
+        r#""output":[],"pending_user_input":null,"pending_user_input_payload":null,"#,
+        r#""previous_response_id":null}"#
+    );
+
+    /// The success value the handler returns, so the wire contract asserted
+    /// below is the one `get_response` serves.
+    fn probe_response_object() -> ResponseObject {
+        ResponseObject {
+            id: "resp_1".to_string(),
+            object: "response",
+            created_at: 1_700_000_000,
+            status: "in_progress",
+            error: None,
+            model: "default#example-bot".to_string(),
+            output: Vec::new(),
+            pending_user_input: None,
+            pending_user_input_payload: None,
+            previous_response_id: None,
+        }
+    }
+
+    #[brz_http_server::get(
+        "/api/v1/responses/:response_id",
+        group = probe::responses_probe,
+        access = public
+    )]
+    async fn response_probe(response_id: &str) -> ResponseObject {
+        assert_eq!(response_id, "resp_1");
+        probe_response_object()
+    }
+
+    fn body_of(raw: &str) -> &str {
+        raw.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+    }
+
+    fn header_of<'a>(raw: &'a str, name: &str) -> &'a str {
+        raw.lines()
+            .find(|line| line.to_ascii_lowercase().starts_with(name))
+            .map_or("", |line| line[name.len()..].trim())
+    }
+
+    /// Drives the success reply over a real `http-server` socket so status,
+    /// `content-type`, and body are asserted exactly as the runtime renders
+    /// them. The source serves this endpoint through FastAPI's
+    /// `JSONResponse`, so a byte body of any kind must not downgrade the
+    /// media type to `application/octet-stream`.
+    #[tokio::test]
+    async fn success_reply_is_json_with_the_source_field_order() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let handler =
+            brz_http_server::handlers!(; group = probe::responses_probe).expect("probe router");
+        let server = brz_http_server::Server::bind("127.0.0.1:0".parse().unwrap(), handler)
+            .await
+            .expect("bind test server");
+        let address = server.local_addr().expect("local address");
+        let serve = tokio::spawn(async move {
+            let _ = server.serve_until(std::future::pending::<()>()).await;
+        });
+
+        let mut client = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        client
+            .write_all(
+                b"GET /api/v1/responses/resp_1 HTTP/1.1\r\n\
+                  Host: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("send");
+        let mut raw = Vec::new();
+        client.read_to_end(&mut raw).await.expect("read");
+        serve.abort();
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+
+        assert!(raw.starts_with("HTTP/1.1 200"), "{raw}");
+        assert_eq!(
+            header_of(&raw, "content-type:"),
+            "application/json",
+            "{raw}"
+        );
+        assert_eq!(header_of(&raw, "transfer-encoding:"), "", "{raw}");
+        assert_eq!(body_of(&raw), PROBE_BODY, "{raw}");
     }
 }

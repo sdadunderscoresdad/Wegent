@@ -169,7 +169,8 @@ function mergeConsecutiveFileChanges(blocks: FileChangesBlock[]): FileChangesBlo
 
   return {
     ...latest,
-    id: `file-changes-${first.id}`,
+    // Appending another chunk must preserve the row and its detail state.
+    id: first.id,
     createdAt: Math.min(...blocks.map(block => block.createdAt)),
     fileChanges: {
       ...latest.fileChanges,

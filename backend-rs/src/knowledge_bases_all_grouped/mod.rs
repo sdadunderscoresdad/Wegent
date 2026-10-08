@@ -78,6 +78,14 @@ const KIND_COLUMNS: &str = "kinds.id AS kinds_id, kinds.user_id AS kinds_user_id
 const KB_RESOURCE_TYPES: &str = "('KnowledgeBase', 'KNOWLEDGE_BASE')";
 /// `APPROVED_MEMBER_STATUS_VALUES`.
 const APPROVED_STATUSES: &str = "('approved', 'APPROVED')";
+/// The scalar `resource_type` the entity-resolver contract filters with
+/// (`IExternalEntityResolver.get_resource_ids_by_entity` and
+/// `list_resources_by_entity_match`, whose default is
+/// `ResourceType.KNOWLEDGE_BASE`, so SQLAlchemy renders `=` and not `IN`).
+const RESOLVER_KB_RESOURCE_TYPE: &str = "'KnowledgeBase'";
+/// The scalar `status` the entity-resolver contract filters with
+/// (`MemberStatus.APPROVED.value`).
+const RESOLVER_APPROVED_STATUS: &str = "'approved'";
 
 // ---------------------------------------------------------------------------
 // Response schemas (field order matches the pydantic models)
@@ -419,9 +427,10 @@ fn build_shared_with_me(
 
 #[cfg(test)]
 mod tests {
-    use super::membership::effective_roles;
-    use super::py_order::{PySetOrder, PyStrSetOrder, cpython_hash_key, siphash13};
+    use super::membership::{effective_roles, user_groups};
+    use super::py_order::{PyStrSetOrder, cpython_hash_key, siphash13};
     use super::*;
+    use crate::py_set_order::SetOrder;
 
     #[test]
     fn merge_roles_prefers_higher_privilege() {
@@ -448,11 +457,47 @@ mod tests {
         assert!(!effective.contains_key("ccc"));
     }
 
+    /// `get_user_groups` is `sorted(get_user_group_roles(db, user_id))`: the
+    /// effective-role keys over every active namespace name, so a direct
+    /// membership of a parent group contributes its descendant namespaces.
+    /// The recorded `351c40c6` case depends on this: the source's
+    /// `collect_entity_authorized_kbs`/`_get_accessible_namespace_ids` name
+    /// list carries the eleven inherited groups while the direct membership
+    /// batch reports three.
+    #[test]
+    fn user_groups_expand_parent_inheritance_over_active_names() {
+        let roles: Vec<(String, Vec<String>)> = vec![
+            (
+                "BrandMarketingDepartment".to_string(),
+                vec!["Reporter".to_string()],
+            ),
+            ("chaohua-all".to_string(), vec!["Owner".to_string()]),
+        ];
+        let active = [
+            "BrandMarketingDepartment".to_string(),
+            "BrandMarketingDepartment/supergroup".to_string(),
+            "BrandMarketingDepartment/PR".to_string(),
+            "chaohua-all".to_string(),
+            "unrelated".to_string(),
+        ];
+        assert_eq!(
+            user_groups(&roles, &active),
+            [
+                "BrandMarketingDepartment".to_string(),
+                "BrandMarketingDepartment/PR".to_string(),
+                "BrandMarketingDepartment/supergroup".to_string(),
+                "chaohua-all".to_string(),
+            ]
+        );
+        // No role anywhere leaves the context's group list empty.
+        assert!(user_groups(&roles, &["unrelated".to_string()]).is_empty());
+    }
+
     #[test]
     fn py_set_order_matches_recorded_iterations() {
         // Case 2 (`xuran3`): owner ids inserted personal-then-group-then-org
         // render as (642, 101, 2800, 52, 1750, 1723, 2811).
-        let mut set = PySetOrder::new();
+        let mut set = SetOrder::new();
         for id in [1750, 1723, 642, 2811, 52, 101, 2800] {
             set.add(id);
         }
@@ -460,7 +505,7 @@ mod tests {
 
         // Case 1 (`wenxuan10`): org-only owner ids render as
         // (2800, 2811, 52, 101).
-        let mut set = PySetOrder::new();
+        let mut set = SetOrder::new();
         for id in [2811, 52, 101, 2800] {
             set.add(id);
         }

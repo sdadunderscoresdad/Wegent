@@ -10,11 +10,12 @@
 //! the deployment's cached reader contract: `kind:v2:idx:*` index keys
 //! resolve to resource ids, `kind:v2:data:{kind}:{id}` holds the JSON
 //! document, and `__NULL__` is a cached negative index.
-use brz_mysql::{FromMysqlRow, Mysql};
+use brz_mysql::{FromMysqlRow, Mysql, MysqlArgs, MysqlResult};
 use brz_redis::{Redis, RedisBytes};
 use serde_json::Value;
 
 use super::error::ApiError;
+use crate::json_compat::{python_json_string, python_json_value};
 
 /// One `kinds` row. The projection mirrors the source SQLAlchemy `kinds`
 /// column list (labeled `kinds_<column>`) so the prepared statement matches
@@ -136,81 +137,6 @@ fn python_model_json(record: &KindRecord) -> String {
     out
 }
 
-/// Render one JSON string scalar like Python's `json.dumps` default
-/// (`ensure_ascii=True`): ASCII stays as-is (with the standard JSON
-/// escapes), non-ASCII becomes `\uXXXX` (surrogate pairs for astral
-/// characters).
-pub(crate) fn python_json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            other if (other as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", other as u32));
-            }
-            other if (other as u32) < 0x7f => out.push(other),
-            other => {
-                let code = other as u32;
-                if code <= 0xffff {
-                    out.push_str(&format!("\\u{code:04x}"));
-                } else {
-                    // Surrogate pair for astral code points.
-                    let code = code - 0x1_0000;
-                    let high = 0xd800 + (code >> 10);
-                    let low = 0xdc00 + (code & 0x3ff);
-                    out.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
-                }
-            }
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Render a JSON value like Python's `json.dumps` default
-/// (`ensure_ascii=True`, separators `", "` / `": "`). Numbers keep their
-/// `serde_json` representation, which matches Python for the integer and
-/// float literals the kind CRDs carry.
-fn python_json_value(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_owned(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => number.to_string(),
-        Value::String(text) => python_json_string(text),
-        Value::Array(items) => {
-            let mut out = String::from("[");
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&python_json_value(item));
-            }
-            out.push(']');
-            out
-        }
-        Value::Object(map) => {
-            let mut out = String::from("{");
-            for (index, (key, item)) in map.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&python_json_string(key));
-                out.push_str(": ");
-                out.push_str(&python_json_value(item));
-            }
-            out.push('}');
-            out
-        }
-    }
-}
-
 /// `_set_data`: `SETEX kind:v2:data:{kind}:{id} 300 <model json>`.
 ///
 /// A caller implementing the same cached-reader tail for a kind with its
@@ -240,13 +166,12 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         name: &str,
     ) -> Result<Option<KindRecord>, ApiError> {
         let idx_key = format!("kind:v2:idx:public:{kind}:{namespace}:{name}");
-        let index = self.cached_by_index(&idx_key, kind).await?;
+        let index = self.cached_by_index(&idx_key, kind).await;
         self.resolve_by_index(&idx_key, kind, namespace, name, index, IndexScope::Public)
             .await
     }
 
     /// `kindReader.get_personal`: owned by `user_id` in namespace `default`.
-    #[allow(dead_code)]
     pub(crate) async fn get_personal(
         &self,
         user_id: i64,
@@ -255,7 +180,7 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         name: &str,
     ) -> Result<Option<KindRecord>, ApiError> {
         let idx_key = format!("kind:v2:idx:personal:{kind}:{user_id}:{namespace}:{name}");
-        let index = self.cached_by_index(&idx_key, kind).await?;
+        let index = self.cached_by_index(&idx_key, kind).await;
         self.resolve_by_index(
             &idx_key,
             kind,
@@ -302,9 +227,94 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         name: &str,
     ) -> Result<Option<KindRecord>, ApiError> {
         let idx_key = format!("kind:v2:idx:group:{kind}:{namespace}:{name}");
-        let index = self.cached_by_index(&idx_key, kind).await?;
+        let index = self.cached_by_index(&idx_key, kind).await;
         self.resolve_by_index(&idx_key, kind, namespace, name, index, IndexScope::Group)
             .await
+    }
+
+    /// `kindReader.get_by_name_and_namespace`'s Team branch
+    /// (`KindReader._get_team`) for a viewer's own Team: the deployment's
+    /// `CachedKindReader.get_personal` steps — the `kind:v2:idx:personal`
+    /// document resolves the id (or the `__NULL__` negative), the
+    /// `kind:v2:data` document resolves the row — and only a cache miss
+    /// queries the `kinds` table and writes both documents back.
+    ///
+    /// The failed fallback query keeps the driver error so callers that
+    /// already map MySQL failures (`KindCacheStore`) can reuse it.
+    pub(crate) async fn get_personal_team(
+        &self,
+        user_id: i64,
+        namespace: &str,
+        name: &str,
+    ) -> MysqlResult<Option<KindRecord>> {
+        let idx_key = format!("kind:v2:idx:personal:Team:{user_id}:{namespace}:{name}");
+        self.cached_team_by_index(
+            &idx_key,
+            "kinds.user_id = ? AND kinds.kind = ? AND kinds.namespace = ? \
+             AND kinds.name = ? AND kinds.is_active = true",
+            (user_id, "Team", namespace, name),
+        )
+        .await
+    }
+
+    /// `KindReader._get_team`'s public step for `user_id = 0` Teams
+    /// (`CachedKindReader.get_public`).
+    pub(crate) async fn get_public_team(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> MysqlResult<Option<KindRecord>> {
+        let idx_key = format!("kind:v2:idx:public:Team:{namespace}:{name}");
+        self.cached_team_by_index(
+            &idx_key,
+            "kinds.user_id = 0 AND kinds.kind = ? AND kinds.namespace = ? \
+             AND kinds.name = ? AND kinds.is_active = true",
+            ("Team", namespace, name),
+        )
+        .await
+    }
+
+    /// `KindReader._get_team`'s group step for a non-`default` namespace
+    /// (`CachedKindReader.get_group`); the predicate is the source
+    /// `get_group` filter, which has no owner id.
+    pub(crate) async fn get_group_team(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> MysqlResult<Option<KindRecord>> {
+        let idx_key = format!("kind:v2:idx:group:Team:{namespace}:{name}");
+        self.cached_team_by_index(
+            &idx_key,
+            "kinds.kind = ? AND kinds.namespace = ? \
+             AND kinds.name = ? AND kinds.is_active = true",
+            ("Team", namespace, name),
+        )
+        .await
+    }
+
+    /// One cached-reader Team step: the index and data documents decide the
+    /// cached hit or `__NULL__` negative; a miss runs the direct Team query
+    /// and writes the id (or the negative marker) and the row back.
+    async fn cached_team_by_index(
+        &self,
+        idx_key: &str,
+        predicate: &str,
+        arguments: impl MysqlArgs,
+    ) -> MysqlResult<Option<KindRecord>> {
+        match self.cached_by_index(idx_key, "Team").await {
+            IndexLookup::Hit(record) => return Ok(Some(record)),
+            IndexLookup::Negative => return Ok(None),
+            IndexLookup::Miss => {}
+        }
+        let record = self.query_kinds(predicate, arguments).await?;
+        match &record {
+            Some(found) => {
+                self.set_data("Team", found).await;
+                self.set_idx(idx_key, Some(found.id)).await;
+            }
+            None => self.set_idx(idx_key, None).await,
+        }
+        Ok(record)
     }
 
     /// Source `get_personal`/`get_public`/`get_group` tail: on an index miss,
@@ -413,7 +423,7 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         let mut records = Vec::new();
         let mut missing_ids = Vec::new();
         for id in resource_ids {
-            match self.cached_data(kind, *id).await? {
+            match self.cached_data(kind, *id).await {
                 Some(record) => records.push(record),
                 None => missing_ids.push(*id),
             }
@@ -463,11 +473,14 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         kind: &str,
         resource_id: i64,
     ) -> Result<Option<KindRecord>, ApiError> {
-        if let Some(cached) = self.cached_data(kind, resource_id).await? {
+        if let Some(cached) = self.cached_data(kind, resource_id).await {
             return Ok(Some(cached));
         }
         let record = self
-            .fetch_where("kinds.id = ? AND kinds.kind = ?", (resource_id, kind))
+            .fetch_where(
+                "kinds.id = ? AND kinds.kind = ? AND kinds.is_active = true",
+                (resource_id, kind),
+            )
             .await?;
         if let Some(found) = &record {
             self.set_data(kind, found).await;
@@ -478,8 +491,21 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
     async fn fetch_where(
         &self,
         predicate: &str,
-        arguments: impl brz_mysql::MysqlArgs,
+        arguments: impl MysqlArgs,
     ) -> Result<Option<KindRecord>, ApiError> {
+        self.query_kinds(predicate, arguments)
+            .await
+            .map_err(kind_query_failed)
+    }
+
+    /// The single-row `kinds` load behind a cached-reader fallback. The
+    /// driver error is preserved so callers with their own MySQL mapping
+    /// (`KindCacheStore`) reuse the same projection and predicate form.
+    async fn query_kinds(
+        &self,
+        predicate: &str,
+        arguments: impl MysqlArgs,
+    ) -> MysqlResult<Option<KindRecord>> {
         self.mysql
             .fetch_optional(
                 &format!(
@@ -495,10 +521,6 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
                 arguments,
             )
             .await
-            .map_err(|error| {
-                tracing::warn!(%error, "[kind_store] kinds query failed");
-                ApiError::internal("kind query failed")
-            })
     }
 
     /// Index read returning the decoded id, a cached negative (`__NULL__`),
@@ -528,27 +550,27 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
         text.trim().parse::<i64>().ok()
     }
 
-    async fn cached_by_index(&self, idx_key: &str, kind: &str) -> Result<IndexLookup, ApiError> {
+    /// Cache-independent probe used by every cached-reader step: the index
+    /// and data documents decide the hit, the `__NULL__` negative or a miss
+    /// (an absent or unusable entry falls through to MySQL).
+    async fn cached_by_index(&self, idx_key: &str, kind: &str) -> IndexLookup {
         let Some(cached_id) = self.cached_index(idx_key).await else {
-            return Ok(IndexLookup::Miss);
+            return IndexLookup::Miss;
         };
         if cached_id == -1 {
-            return Ok(IndexLookup::Negative);
+            return IndexLookup::Negative;
         }
-        match self.cached_data(kind, cached_id).await? {
-            Some(record) => Ok(IndexLookup::Hit(record)),
+        match self.cached_data(kind, cached_id).await {
+            Some(record) => IndexLookup::Hit(record),
             // The data document missing while the index resolves is a
             // miss for the caller (the source re-queries MySQL then).
-            None => Ok(IndexLookup::Miss),
+            None => IndexLookup::Miss,
         }
     }
 
-    /// Read and decode the `kind:v2:data:{kind}:{id}` cache document.
-    async fn cached_data(
-        &self,
-        kind: &str,
-        resource_id: i64,
-    ) -> Result<Option<KindRecord>, ApiError> {
+    /// Read and decode the `kind:v2:data:{kind}:{id}` cache document; a
+    /// failed read is a miss, like the source `_get_data` `except` clause.
+    async fn cached_data(&self, kind: &str, resource_id: i64) -> Option<KindRecord> {
         let data_key = format!("kind:v2:data:{kind}:{resource_id}");
         let value: Option<RedisBytes> = match self.redis {
             Some(redis) => redis
@@ -562,11 +584,14 @@ impl<'a, M: Mysql, R: Redis> KindStore<'a, M, R> {
                 .flatten(),
             None => None,
         };
-        let Some(value) = value else {
-            return Ok(None);
-        };
-        Ok(decode_cached_kind(&value))
+        decode_cached_kind(&value?)
     }
+}
+
+/// The module's mapping for a failed `kinds` query.
+fn kind_query_failed(error: brz_mysql::MysqlError) -> ApiError {
+    tracing::warn!(%error, "[kind_store] kinds query failed");
+    ApiError::internal("kind query failed")
 }
 
 /// Decode a cached kind payload into a record; non-JSON payloads are misses.
@@ -684,31 +709,6 @@ mod tests {
         let record = decode_cached_kind(payload).expect("record");
         assert_eq!(record.id, 50369);
         assert_eq!(record.is_active, 1);
-    }
-
-    #[test]
-    fn python_json_string_escapes_non_ascii() {
-        assert_eq!(python_json_string("严笑"), "\"\\u4e25\\u7b11\"");
-        assert_eq!(python_json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
-        assert_eq!(python_json_string("\u{1f600}"), "\"\\ud83d\\ude00\"");
-        assert_eq!(python_json_string("Chat"), "\"Chat\"");
-    }
-
-    #[test]
-    fn python_json_value_renders_ensure_ascii_with_python_separators() {
-        let value = serde_json::json!({
-            "modelRef": {"name": "example-model(公网)", "namespace": "default"},
-            "count": 2,
-            "ratio": 1.5,
-            "flag": true,
-            "missing": null
-        });
-        assert_eq!(
-            python_json_value(&value),
-            "{\"modelRef\": {\"name\": \"example-model(\\u516c\\u7f51)\", \
-             \"namespace\": \"default\"}, \"count\": 2, \"ratio\": 1.5, \"flag\": true, \
-             \"missing\": null}"
-        );
     }
 
     #[test]

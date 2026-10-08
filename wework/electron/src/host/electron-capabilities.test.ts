@@ -94,6 +94,23 @@ describe('Smart App verification capabilities', () => {
     expect(HOST_CAPABILITIES).toContain('smartApps.inspectVerification')
     expect(HOST_CAPABILITIES).toContain('smartApps.verify')
   })
+
+  test('allows an empty parent and purpose when creating a workbench', async () => {
+    const createDirectory = vi.fn(async () => ({ id: 'created-app' }))
+    const { router } = createIsolatedClipboardRouter(true, undefined, { createDirectory })
+    const input = {
+      parentPath: '',
+      name: 'created-app',
+      displayName: 'Created App',
+      description: '',
+      template: 'web',
+    }
+
+    await expect(
+      router.invoke(WEWORK_APP_PRINCIPAL, 'smartApps.createDirectory', input)
+    ).resolves.toEqual({ id: 'created-app' })
+    expect(createDirectory).toHaveBeenCalledWith(input)
+  })
 })
 
 describe('e2eOpenDialogOverride', () => {
@@ -221,7 +238,14 @@ function createWebContents(input: {
   return { capturePage, contents, debuggerSession }
 }
 
-function createIsolatedClipboardRouter(focused = true) {
+function createIsolatedClipboardRouter(
+  focused = true,
+  popoutHost?: {
+    openPopoutTaskInMain: (taskAddressId: string) => void
+    setPopoutMode: (mode: 'composer' | 'menu' | 'conversation') => void
+  },
+  smartApps?: { createDirectory: (input: Record<string, string>) => Promise<unknown> }
+) {
   const targetWindow = {
     isDestroyed: vi.fn(() => false),
     isFocused: vi.fn(() => focused),
@@ -235,7 +259,7 @@ function createIsolatedClipboardRouter(focused = true) {
       state: 'ready',
       updatedAt: '2026-09-12T00:00:00.000Z',
     }),
-    () => null,
+    () => (smartApps ?? null) as never,
     {} as never,
     {} as never,
     {} as never,
@@ -257,10 +281,32 @@ function createIsolatedClipboardRouter(focused = true) {
         get: vi.fn(),
         set: vi.fn(),
       },
-    } as never
+    } as never,
+    popoutHost as never
   )
   return { router, targetWindow }
 }
+
+describe('Popout Window sizing capabilities', () => {
+  test('forwards validated conversation and menu states to the native window', async () => {
+    const popoutHost = {
+      openPopoutTaskInMain: vi.fn(),
+      setPopoutMode: vi.fn(),
+    }
+    const { router } = createIsolatedClipboardRouter(true, popoutHost)
+
+    await router.invoke(WEWORK_APP_PRINCIPAL, 'window.setPopoutMode', { mode: 'menu' })
+    await router.invoke(WEWORK_APP_PRINCIPAL, 'window.openPopoutTaskInMain', {
+      taskAddressId: 'local-device:task-1',
+    })
+
+    expect(popoutHost.openPopoutTaskInMain).toHaveBeenCalledWith('local-device:task-1')
+    expect(popoutHost.setPopoutMode).toHaveBeenCalledWith('menu')
+    await expect(
+      router.invoke(WEWORK_APP_PRINCIPAL, 'window.setPopoutMode', { mode: 'invalid' })
+    ).rejects.toMatchObject({ code: 'invalid_params' })
+  })
+})
 
 describe('captureWebContentsDataUrl', () => {
   test('uses Electron native capturePage for the visible composed surface', async () => {

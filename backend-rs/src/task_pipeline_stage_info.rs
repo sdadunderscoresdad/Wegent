@@ -35,9 +35,9 @@ use crate::task_skills::kinds::KindCacheStore;
 async fn get_pipeline_stage_info(
     #[inject(state)] state: &AppState,
     task_id: i64,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: crate::auth::SessionUser,
 ) -> Result<PipelineStageInfo, ApiError> {
-    run(state, task_id, authorization).await
+    run(state, task_id, &current_user).await
 }
 
 /// The `PipelineStageInfo` response model (`app.schemas.task.PipelineStageInfo`).
@@ -75,14 +75,6 @@ impl ApiError {
         }
     }
 
-    fn unauthorized(detail: &str) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            detail: detail.to_string(),
-            www_authenticate: true,
-        }
-    }
-
     fn dependency(error: brz_mysql::MysqlError) -> Self {
         tracing::error!(%error, "[pipeline_stage_info] database dependency failure");
         Self {
@@ -112,23 +104,12 @@ impl IntoHttpError for ApiError {
 async fn run(
     state: &AppState,
     task_id: i64,
-    authorization: Option<&str>,
+    user: &crate::auth::SessionUser,
 ) -> Result<PipelineStageInfo, ApiError> {
-    // `security.get_current_user` (`Depends` runs before the handler).
-    let user = crate::auth::get_current_user(&state.auth, &state.mysql, authorization)
-        .await
-        .map_err(|failure| match failure {
-            crate::auth::AuthFailure::InvalidCredentials => {
-                ApiError::unauthorized("Could not validate credentials")
-            }
-            crate::auth::AuthFailure::UserNotActivated => {
-                ApiError::unauthorized("User not activated")
-            }
-        })?;
     let user_id = i64::from(user.id);
 
     // `task_store.get_active_task`.
-    let Some(task) = repo::get_active_task(&state.mysql, task_id)
+    let Some(task) = repo::get_active_task(&*state.task_store, task_id)
         .await
         .map_err(ApiError::dependency)?
     else {
@@ -184,7 +165,7 @@ async fn is_member(
     owner_user_id: i64,
     user_id: i64,
 ) -> Result<bool, ApiError> {
-    if repo::get_active_task(&state.mysql, task_id)
+    if repo::get_active_task(&*state.task_store, task_id)
         .await
         .map_err(ApiError::dependency)?
         .is_none()
@@ -238,13 +219,13 @@ async fn stage_info(
     // `get_current_stage_index`: re-reads the task through
     // `task_member_service.get_task`; a missing task logs a warning and
     // yields stage 0 (the previously loaded row backs the same session).
-    let current_stage = match repo::get_active_task(&state.mysql, task_id).await {
+    let current_stage = match repo::get_active_task(&*state.task_store, task_id).await {
         Ok(refreshed) => current_stage_index(refreshed.as_ref(), task, total_stages),
         Err(error) => return Err(ApiError::dependency(error)),
     };
 
     // `get_stage_info` re-reads the task a second time for the status.
-    let status_task = match repo::get_active_task(&state.mysql, task_id).await {
+    let status_task = match repo::get_active_task(&*state.task_store, task_id).await {
         Ok(refreshed) => refreshed,
         Err(error) => return Err(ApiError::dependency(error)),
     };

@@ -12,10 +12,7 @@ export interface ConversationViewportActions {
   follow: () => void
 }
 
-export interface ScrollableMessageAreaProps extends Omit<
-  MessageListProps,
-  'renderGapAfterMessage'
-> {
+export interface ScrollableMessageAreaProps extends MessageListProps {
   loading?: boolean
   hasMoreBefore?: boolean
   loadingMoreBefore?: boolean

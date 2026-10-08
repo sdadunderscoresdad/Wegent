@@ -23,14 +23,14 @@ pub(crate) struct ExportQuery {
 
 /// GET /api/tasks/{task_id}/export/docx: the export free function, injecting
 /// the process-lifetime application state.
-#[brz_http_server::get("/api/tasks/:task_id/export/docx")]
+#[brz_http_server::get("/api/tasks/:task_id/export/docx", access = optional)]
 pub(crate) async fn export_task_docx(
     #[inject(state)] state: &AppState,
     task_id: i64,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: Option<crate::auth::OptionalSessionUser>,
     query: brz_http_server::Query<ExportQuery>,
 ) -> Result<HttpResponse<Binary>, FastApiError> {
-    export(state, task_id, authorization, &query.0)
+    export(state, task_id, current_user.as_ref(), &query.0)
         .await
         .map(|(filename, body)| {
             let mut response = HttpResponse::new(Binary::new(body));
@@ -96,7 +96,7 @@ fn internal_error() -> FastApiError {
 async fn export(
     state: &AppState,
     task_id: i64,
-    authorization: Option<&str>,
+    current_user: Option<&crate::auth::OptionalSessionUser>,
     params: &ExportQuery,
 ) -> Result<(String, Vec<u8>), ExportError> {
     // Authentication: download token first, then optional bearer session.
@@ -123,19 +123,19 @@ async fn export(
     } else {
         // `get_current_user_optional`: a missing or invalid token yields
         // `None`, and the member check below turns that into 404.
-        let current = current_user_optional(state, authorization)
-            .await
-            .map_err(|_| ExportError::Internal)?;
-        let Some(user) = current else {
+        let Some(user) = current_user else {
             return Err(not_found().into());
         };
-        user.id
+        i64::from(user.id)
     };
 
     // `task_member_service.is_member` (accessible task + owner/member check).
-    let owner_id = repository::get_accessible_task_owner(&state.mysql, task_id)
+    let owner_id = state
+        .task_store
+        .get_task_owner_id(task_id)
         .await
-        .map_err(|_| ExportError::Internal)?;
+        .map_err(|_| ExportError::Internal)?
+        .and_then(|row| row.get_required::<i64>("user_id").ok());
     let is_member = match owner_id {
         Some(owner) if owner == user_id => true,
         Some(_) => repository::is_approved_member(&state.mysql, task_id, user_id)
@@ -148,8 +148,14 @@ async fn export(
     }
 
     // `task_store.get_task_by_states`.
-    let task = repository::get_task_by_states(&state.mysql, state.task_policy, task_id)
+    let task = state
+        .task_store
+        .get_active_task(task_id)
         .await
+        .map_err(|_| ExportError::Internal)?
+        .as_ref()
+        .map(repository::decode_task_row)
+        .transpose()
         .map_err(|_| ExportError::Internal)?;
     let Some(task) = task else {
         return Err(not_found().into());
@@ -178,14 +184,15 @@ async fn export(
     };
 
     // `subtask_store.list_by_task_ordered` + `_attach_contexts`.
-    let subtasks = repository::list_subtasks_ordered(
-        &state.mysql,
-        state.task_policy,
-        task_id,
-        filter_message_ids.as_deref(),
-    )
-    .await
-    .map_err(|_| ExportError::Internal)?;
+    let subtasks = state
+        .task_store
+        .list_subtasks_ordered(task_id, filter_message_ids.as_deref())
+        .await
+        .map_err(|_| ExportError::Internal)?
+        .iter()
+        .map(repository::decode_subtask_row)
+        .collect::<brz_mysql::MysqlResult<Vec<_>>>()
+        .map_err(|_| ExportError::Internal)?;
     let subtask_ids = subtasks.iter().map(|s| s.id).collect::<Vec<_>>();
     let contexts = repository::list_contexts(&state.mysql, &subtask_ids)
         .await
@@ -231,27 +238,6 @@ async fn export(
     let filename = generator::export_filename(&input, now);
     let body = generator::generate_docx(&input, now);
     Ok((filename, body))
-}
-
-/// `security.get_current_user_optional`: verify the bearer session token and
-/// load the active user; any failure yields `None`.
-async fn current_user_optional(
-    state: &AppState,
-    authorization: Option<&str>,
-) -> Result<Option<repository::UserRow>, ()> {
-    let token = crate::auth::extract_authorization_token(authorization);
-    if token.is_empty() {
-        return Ok(None);
-    }
-    // Reuse the session verification; optional auth treats every failure as
-    // an anonymous request.
-    match crate::auth::get_current_user(&state.auth, &state.mysql, authorization).await {
-        Ok(user) => Ok(Some(repository::UserRow {
-            id: user.id as i64,
-            user_name: user.user_name,
-        })),
-        Err(_) => Ok(None),
-    }
 }
 
 /// `_add_file_attachment` card inputs from a context row's `type_data`.

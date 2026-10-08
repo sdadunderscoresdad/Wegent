@@ -3,6 +3,9 @@ export const conversationMessages: Record<
   Record<string, string>
 > = {
   "zh-CN": {
+    "conversation.workbench.context_compaction_incomplete": "上下文压缩未完成",
+    "conversation.workbench.context_compaction_completed": "上下文已自动压缩",
+    "conversation.workbench.context_compaction_running": "正在自动压缩上下文",
     "conversation.workbench.scroll_to_bottom": "下拉到底",
     "conversation.workbench.loading_conversation": "正在加载会话...",
     "conversation.workbench.empty_conversation_title": "开始新的对话",
@@ -302,6 +305,8 @@ export const conversationMessages: Record<
     "conversation.tool_activity.image_generation_error": "图片生成失败",
     "conversation.tool_activity.image_generation_running": "正在生成图片",
     "conversation.tool_activity.image_preview_alt": "工具查看的图片",
+    "conversation.tool_activity.image_loading": "正在加载图片…",
+    "conversation.tool_activity.image_load_failed": "图片加载失败",
     "conversation.tool_activity.image_view": "查看 {{filename}}",
     "conversation.tool_activity.image_view_fallback": "查看图片",
     "conversation.tool_activity.javascript_done": "运行 JavaScript",
@@ -364,6 +369,10 @@ export const conversationMessages: Record<
     "conversation.file_changes.review_failed": "加载文件变更失败",
   },
   en: {
+    "conversation.workbench.context_compaction_incomplete":
+      "Context compaction did not complete",
+    "conversation.workbench.context_compaction_completed": "Context compacted",
+    "conversation.workbench.context_compaction_running": "Compacting context",
     "conversation.workbench.scroll_to_bottom": "Scroll to bottom",
     "conversation.workbench.loading_conversation": "Loading conversation...",
     "conversation.workbench.empty_conversation_title":
@@ -684,6 +693,8 @@ export const conversationMessages: Record<
       "Image generation failed",
     "conversation.tool_activity.image_generation_running": "Generating image",
     "conversation.tool_activity.image_preview_alt": "Image viewed by the tool",
+    "conversation.tool_activity.image_loading": "Loading image…",
+    "conversation.tool_activity.image_load_failed": "Could not load image",
     "conversation.tool_activity.image_view": "View {{filename}}",
     "conversation.tool_activity.image_view_fallback": "View image",
     "conversation.tool_activity.javascript_done": "Ran JavaScript",

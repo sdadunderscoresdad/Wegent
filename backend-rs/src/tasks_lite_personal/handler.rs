@@ -38,7 +38,6 @@ use super::lite_repository::{
     TaskCandidateRow, batch_query_teams, batch_query_workspaces, filter_personal_tasks,
     list_personal_task_candidates_after,
 };
-use crate::auth::{AuthFailure, get_current_user};
 use crate::state::AppState;
 
 /// Source `PERSONAL_TASK_CANDIDATE_EXTRA_LIMIT`-driven cursor batch size:
@@ -208,7 +207,9 @@ fn decode_cursor(
             "Invalid task cursor",
         )
     };
-    let padding = "=".repeat(cursor.len() % 4);
+    // Source `padding = "=" * (-len(cursor) % 4)` pads the unpadded cursor up
+    // to the next multiple of four; `URL_SAFE` rejects any other count.
+    let padding = "=".repeat((4 - cursor.len() % 4) % 4);
     let decoded = base64::engine::general_purpose::URL_SAFE
         .decode(format!("{cursor}{padding}"))
         .map_err(|_| invalid())?;
@@ -229,16 +230,16 @@ fn format_python_datetime(value: &NaiveDateTime) -> String {
 #[brz_http_server::get("/api/tasks/lite/personal")]
 async fn get_personal_tasks_lite(
     #[inject(state)] state: &Arc<AppState>,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: crate::auth::SessionUser,
     query: brz_http_server::Query<PersonalTasksParams>,
 ) -> Result<PersonalTasksResponse, crate::http_compat::FastApiError> {
-    personal_tasks_lite(state, authorization, &query).await
+    personal_tasks_lite(state, &current_user, &query).await
 }
 
 /// Handler body for `GET /api/tasks/lite/personal`.
 async fn personal_tasks_lite(
     state: &Arc<AppState>,
-    authorization: Option<&str>,
+    current_user: &crate::auth::SessionUser,
     params: &PersonalTasksParams,
 ) -> Result<PersonalTasksResponse, crate::http_compat::FastApiError> {
     let params = PersonalTasksParams {
@@ -249,11 +250,6 @@ async fn personal_tasks_lite(
         cursor: params.cursor.clone(),
     }
     .validated()?;
-
-    let current_user = match get_current_user(&state.auth, &state.mysql, authorization).await {
-        Ok(user) => user,
-        Err(error) => return Err(auth_error(error)),
-    };
 
     let cursor_value = match params.cursor.as_deref().map(decode_cursor) {
         None => None,
@@ -308,7 +304,7 @@ async fn personal_tasks_cursor(
 
     loop {
         let candidates = list_personal_task_candidates_after(
-            &state.mysql,
+            &*state.task_store,
             i64::from(user_id),
             size,
             cursor_created_at.zip(cursor_id),
@@ -367,7 +363,7 @@ async fn personal_tasks_paged(
     // Offset pagination reads `skip + query_limit` candidates and slices in
     // the application, mirroring `list_personal_task_ids`.
     let candidates = list_personal_task_candidates_after(
-        &state.mysql,
+        &*state.task_store,
         i64::from(user_id),
         skip + query_limit,
         None,
@@ -429,7 +425,7 @@ async fn build_lite_task_list(
     let team_refs = super::lite_repository::TeamRefs::from_page(tasks);
 
     let workspace_data =
-        batch_query_workspaces(&state.mysql, i64::from(user_id), &workspace_refs).await?;
+        batch_query_workspaces(&*state.task_store, i64::from(user_id), &workspace_refs).await?;
     let team_data = batch_query_teams(&state.mysql, &team_refs, i64::from(user_id)).await?;
     // `userReader.get_by_id` result only feeds `user_name`, which the lite
     // projection does not return; the registered reader (public direct SQL,
@@ -616,12 +612,12 @@ async fn device_display_names(
     );
     // Bind with recorded literal kinds: `user_id` int, device names strings
     // (`serde_json::Value` would serialize every parameter as a string).
-    let mut args: Vec<super::lite_repository::UnionArg> =
-        vec![super::lite_repository::UnionArg::Int(i64::from(user_id))];
+    let mut args: Vec<crate::task_store::StatementArg> =
+        vec![crate::task_store::StatementArg::Int(i64::from(user_id))];
     args.extend(
         device_ids
             .iter()
-            .map(|id| super::lite_repository::UnionArg::Str(id.clone())),
+            .map(|id| crate::task_store::StatementArg::Str(id.clone())),
     );
     let rows: Result<Vec<super::lite_repository::TeamKindRow>, _> =
         state.mysql.fetch_all(sql.as_str(), args).await;
@@ -646,18 +642,6 @@ async fn device_display_names(
         }
     }
     result
-}
-
-fn auth_error(error: AuthFailure) -> crate::http_compat::FastApiError {
-    match error {
-        AuthFailure::InvalidCredentials => crate::http_compat::FastApiError::detail(
-            StatusCode::UNAUTHORIZED,
-            "Could not validate credentials",
-        ),
-        AuthFailure::UserNotActivated => {
-            crate::http_compat::FastApiError::detail(StatusCode::UNAUTHORIZED, "User not activated")
-        }
-    }
 }
 
 fn internal_error(error: brz_mysql::MysqlError) -> crate::http_compat::FastApiError {
@@ -689,6 +673,28 @@ mod tests {
     fn invalid_cursor_is_rejected() {
         let response = decode_cursor("not-a-cursor").unwrap_err();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn unpadded_cursor_gains_its_source_padding() {
+        // Source `"=" * (-len(cursor) % 4)`: a cursor whose length is 3 mod 4
+        // must gain exactly one `=`, and one without fractional seconds must
+        // parse. Both payloads below are unpadded base64url.
+        let no_fraction = "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMS0wMlQwMzowNDowNSIsImlkIjo0Mn0";
+        assert_eq!(no_fraction.len() % 4, 3);
+        let decoded = decode_cursor(no_fraction).unwrap().unwrap();
+        assert_eq!(decoded.1, 42);
+        assert_eq!(
+            decoded.0,
+            NaiveDateTime::parse_from_str("2026-01-02T03:04:05", "%Y-%m-%dT%H:%M:%S").unwrap()
+        );
+
+        let wide_id = "eyJjcmVhdGVkX2F0IjoiMjAyNi0wMS0wMlQwMzowNDowNSIsImlkIjo0MjAwMDAwMDAwMDAwMX0";
+        assert_eq!(wide_id.len() % 4, 3);
+        assert_eq!(
+            decode_cursor(wide_id).unwrap().unwrap().1,
+            42_000_000_000_001
+        );
     }
 
     #[test]

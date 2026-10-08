@@ -19,16 +19,19 @@ use serde_json::{Value, value::RawValue};
 use super::models::{
     SubtaskAgentConfig, SubtaskBotResponse, SubtaskResponse, TaskDetailResponse, TeamResponse,
 };
-use super::repository::SubtaskRow;
+use super::repository::{ContextRow, SubtaskRow};
 use super::repository::{
     TaskRow, count_approved_members, get_accessible_task_owner, get_active_non_deleted_task,
     get_task_by_id_with_owner, get_workspace_by_ref, is_approved_member, list_contexts,
-    list_subtasks_by_task, owner_matches_task_id,
+    list_subtasks_by_task,
 };
+use super::team_access_policy::team_usage_summary;
 use super::views::{CachedUserResponse, build_team_response, cached_user, subtask_responses};
 use crate::remote_workspace_tree::kinds::KindStore;
 use crate::resource_refs::{EmptyNamespace, RequestedSkillRef, parse_requested_skill_refs};
 use crate::state::AppState;
+use crate::task_skills::kinds::KindCacheStore;
+use crate::teams::group_membership::{ErpContext, should_redact_team_for_user};
 
 /// Sentinel for the source 404 `Task not found` mapping.
 #[derive(Debug)]
@@ -87,6 +90,18 @@ pub(crate) fn extract_display_prompt(prompt: Option<&str>) -> Option<String> {
         return Some(extract_user_question(prompt).to_owned());
     }
     Some(prompt.to_owned())
+}
+
+/// `get_bots_for_subtasks` (task_detail_helpers.py) renders `bind_model_type`
+/// from the resolved model row: `public` only for a row whose `user_id` is 0,
+/// and `user` otherwise — including a model ref that resolved to no row, which
+/// the source's `model and model.user_id == 0` test also maps to `user`.
+fn bind_model_type(model_owner: Option<i64>) -> &'static str {
+    if model_owner == Some(0) {
+        "public"
+    } else {
+        "user"
+    }
 }
 
 fn parse_block_list(blocks: &[Option<PromptBlock>], raw_prompt: &str) -> String {
@@ -198,15 +213,26 @@ pub(crate) async fn build_task_detail(
         mysql,
         redis: state.redis.as_ref(),
     };
+    // `resolve_task_ref_team`'s `kindReader.get_by_name_and_namespace` branch
+    // resolves the Team through the same clients the cached reader uses.
+    let team_access = KindCacheStore {
+        mysql,
+        redis: state.redis.as_ref(),
+        erp: Some(state.erp.as_ref()),
+        resolvers: Some(&state.entity_resolvers),
+    };
 
     // `get_task_by_id`: active non-deleted task, `is_member`'s accessible
     // check, then the member-row check for non-owners.
     let Some(task) =
-        get_active_non_deleted_task(mysql, state.task_policy, task_id, client_origin).await?
+        get_active_non_deleted_task(&*state.task_store, task_id, client_origin).await?
     else {
         anyhow::bail!(TaskNotFound);
     };
-    if get_accessible_task_owner(mysql, task_id).await?.is_none() {
+    if get_accessible_task_owner(&*state.task_store, task_id)
+        .await?
+        .is_none()
+    {
         anyhow::bail!(TaskNotFound);
     }
     if task.user_id != user_id && !is_approved_member(mysql, task_id, user_id).await? {
@@ -226,7 +252,8 @@ pub(crate) async fn build_task_detail(
     if let Some((name, namespace)) =
         typed_spec.and_then(|spec| reference_parts(&spec.workspace_ref))
     {
-        let workspace = get_workspace_by_ref(mysql, task.user_id, &name, &namespace).await?;
+        let workspace =
+            get_workspace_by_ref(&*state.task_store, task.user_id, &name, &namespace).await?;
         if let Some(repository) = workspace
             .as_ref()
             .and_then(|row| JsonProjection::<WorkspaceDocumentInput>::from_json(&row.json).value)
@@ -241,17 +268,19 @@ pub(crate) async fn build_task_detail(
         }
     }
 
-    // `resolve_task_ref_team`: the CRD's teamRef with `user_id` set queries
-    // the kinds table directly; otherwise the public reader resolves it.
-    let mut resolved_team = None;
+    // `resolve_task_ref_team`: an explicit `teamRef.user_id` (including 0)
+    // queries the kinds table directly; a null one runs `_get_team` through
+    // the cached reader. Only the id is consumed here — `get_task_detail`
+    // re-reads the document by id below.
+    let mut resolved_team_id: Option<i64> = None;
     if let Some(reference) = typed_spec.and_then(|spec| spec.team_ref.as_ref())
         && let Some((name, namespace)) = reference.nonempty_parts()
     {
         let owner = &reference.user_id;
-        resolved_team =
+        resolved_team_id =
             if owner.is_none() || owner.as_ref().is_some_and(crate::crd::NumericId::is_null) {
-                kinds
-                    .get_by_name_and_namespace(user_id, "Team", &namespace, &name)
+                team_access
+                    .get_team_id_by_name_and_namespace(user_id, &namespace, &name)
                     .await
                     .map_err(|error| anyhow::anyhow!("{error:?}"))?
             } else {
@@ -266,6 +295,7 @@ pub(crate) async fn build_task_detail(
                     )
                     .await
                     .map_err(|error| anyhow::anyhow!("{error:?}"))?
+                    .map(|team| team.id)
             };
     }
 
@@ -277,29 +307,58 @@ pub(crate) async fn build_task_detail(
 
     // Requested skills: raw task load with the owner filter, then label
     // parsing (`requestedSkillRefs`).
-    let skills_task =
-        get_task_by_id_with_owner(mysql, state.task_policy, task_id, task.user_id).await?;
+    let skills_task = get_task_by_id_with_owner(&*state.task_store, task_id, task.user_id).await?;
     let requested_skills = requested_skills_from_labels(skills_task.as_ref());
 
-    // Team detail: `kindReader.get_by_id`, `get_task_owner_id`, then
-    // `_convert_to_team_dict`.
-    let task_owner_id = get_accessible_task_owner(mysql, task_id).await?;
-    let team_value = match (&resolved_team, task_owner_id) {
-        (Some(team_record), Some(owner_id)) => {
+    // Team detail, in the source's order: `kindReader.get_by_id` first, then —
+    // only when it returned a team — `get_task_owner_id`, then
+    // `_convert_to_team_dict`. `should_redact_team_for_user` runs BETWEEN the
+    // owner lookup and the conversion, and its outcome decides whether the
+    // converted team is replaced by `team_usage_summary`.
+    //
+    // The source reaches this block only through `task_dict["team_id"]`, which
+    // `resolve_task_ref_team` sets to `team.id if team else None`; an
+    // unresolved team leaves `team_id` empty, so `get_task_owner_id` and the
+    // team load never run. Reading the owner id unconditionally would issue a
+    // task statement the source never issues whenever a task's `teamRef`
+    // resolves to no row.
+    let team_value = match resolved_team_id {
+        Some(team_id) => {
             let team_detail = kinds
-                .get_by_id("Team", team_record.id)
+                .get_by_id("Team", team_id)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             match team_detail {
-                Some(team) => Some(
-                    build_team_response(state, &kinds, &team, owner_id)
+                Some(team) => match get_accessible_task_owner(&*state.task_store, task_id).await? {
+                    Some(owner_id) => {
+                        let redact = should_redact_team_for_user(
+                            mysql,
+                            &ErpContext {
+                                erp: state.erp.as_ref(),
+                                redis: state.redis.as_ref(),
+                            },
+                            user_id,
+                            team.id,
+                            team.user_id,
+                            &team.namespace,
+                        )
                         .await
-                        .map_err(|error| anyhow::anyhow!("{error:?}"))?,
-                ),
+                        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                        let mut response = build_team_response(state, &kinds, &team, owner_id)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                        if redact {
+                            team_usage_summary(&mut response);
+                        }
+                        Some(response)
+                    }
+                    // The source logs the missing owner id and drops the team.
+                    None => None,
+                },
                 None => None,
             }
         }
-        _ => None,
+        None => None,
     };
 
     // Fork lineage: depth-0 `_lineage_task` (owner-filtered get_by_id),
@@ -311,8 +370,7 @@ pub(crate) async fn build_task_detail(
         // `_lineage_task` for the current chain node: depth 0 resolves the
         // task itself, deeper nodes resolve the fork source task.
         let lineage_task = get_task_by_id_with_owner(
-            mysql,
-            state.task_policy,
+            &*state.task_store,
             *lineage_task_ids.last().expect("nonempty"),
             task.user_id,
         )
@@ -333,32 +391,30 @@ pub(crate) async fn build_task_detail(
 
     let mut subtasks: Vec<SubtaskRow> = Vec::new();
     let mut inherited_task_ids: Vec<i64> = Vec::new();
+    let mut contexts: Vec<ContextRow> = Vec::new();
+    let mut contexts_pending: Vec<i64> = Vec::new();
     for (index, lineage_task_id) in lineage_task_ids.iter().enumerate() {
-        // `list_by_task_ordered`'s `_owner_matches_task_id` guard applies
-        // only to new-format ids; legacy ids fall straight through to the
-        // model lookup inside `list_subtasks_by_task`.
-        let guarded = (state.task_policy.is_scoped_id)(lineage_task_id.unsigned_abs())
-            && owner_matches_task_id(mysql, *lineage_task_id, task.user_id).await?;
-        if guarded || !(state.task_policy.is_scoped_id)(lineage_task_id.unsigned_abs()) {
-            let rows =
-                list_subtasks_by_task(mysql, state.task_policy, *lineage_task_id, task.user_id)
-                    .await?;
-            if index > 0 {
-                inherited_task_ids.push(*lineage_task_id);
-            }
-            subtasks.extend(rows);
+        // `list_by_task_ordered` runs the new-format owner guard itself, so
+        // an unowned task contributes no subtasks.
+        let listing =
+            list_subtasks_by_task(&*state.task_store, *lineage_task_id, task.user_id).await?;
+        if index > 0 {
+            inherited_task_ids.push(*lineage_task_id);
         }
+        match listing.contexts {
+            Some(rows) => contexts.extend(rows),
+            None => contexts_pending.extend(listing.subtasks.iter().map(|row| row.id)),
+        }
+        subtasks.extend(listing.subtasks);
     }
 
-    // `_attach_contexts` runs inside each `list_by_task_ordered` call, on
-    // every subtask of the lineage task — before `resolve_for_task` sorts
-    // and keeps the last `limit` items. Loading before the slice preserves
-    // that query shape.
-    let contexts = list_contexts(
-        mysql,
-        &subtasks.iter().map(|row| row.id).collect::<Vec<_>>(),
-    )
-    .await?;
+    // `_attach_contexts` runs inside every `list_by_task_ordered` call, on the
+    // subtasks of that lineage task, before `resolve_for_task` sorts and keeps
+    // the last `limit` items; the store performs those loads. A listing whose
+    // store left the contexts out is loaded here, one batch for all of them.
+    if !contexts_pending.is_empty() {
+        contexts.extend(list_contexts(mysql, &contexts_pending).await?);
+    }
 
     // `resolve_for_task` sorts by (message_id, created_at, id) and keeps the
     // last `limit` items.
@@ -374,29 +430,17 @@ pub(crate) async fn build_task_detail(
 
     // `get_bots_for_subtasks`: bot ids through the public reader, then each
     // bot's model/shell refs (resolved with the bot owner's user id).
-    // `all_bot_ids` is a Python `set`; small-int sets iterate in hash order
-    // (`hash(int) == int`, table slot `id % table_size`), so the probe order
-    // is the ascending id order for the small id sets this endpoint sees
-    // (verified against the recorded `kind:v2:data:Bot:{id}` probe order).
-    let mut bot_ids: Vec<i64> = Vec::new();
-    for subtask in &subtasks {
-        if let Some(ids) = subtask.bot_ids.project::<Vec<Option<i64>>>() {
-            for id in ids.into_iter().flatten() {
-                if !bot_ids.contains(&id) {
-                    bot_ids.push(id);
-                }
-            }
-        }
-    }
-    bot_ids.sort_unstable();
+    let bot_ids = bot_probe_order(&subtasks);
     let bots = kinds
         .get_by_ids("Bot", &bot_ids)
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
     let mut bot_summaries = Vec::new();
     // `model_cache` / `shell_type_cache`: per-call memoization keyed by
-    // `(bot.user_id, namespace, name)`; a repeated ref resolves once.
-    let mut model_cache: std::collections::HashMap<(i64, String, String), i64> =
+    // `(bot.user_id, namespace, name)`; a repeated ref resolves once. The
+    // model cache keeps `None` for a ref that resolved to no row, which is
+    // distinct from a public model owned by user 0.
+    let mut model_cache: std::collections::HashMap<(i64, String, String), Option<i64>> =
         std::collections::HashMap::new();
     let mut shell_type_cache: std::collections::HashMap<(i64, String, String), String> =
         std::collections::HashMap::new();
@@ -404,30 +448,31 @@ pub(crate) async fn build_task_detail(
         let bot_crd = CrdDocument::project(&bot.json.0);
         let bot_spec = bot_crd.spec.as_ref();
         // `get_bots_for_subtasks` (task_detail_helpers): the model lookup
-        // only decides `bind_model_type` (public when the model row is
-        // user_id 0); `agent_config` is always the bind_model pair, even
-        // for custom-config models. Both refs resolve with the bot owner's
-        // user id.
+        // only decides `bind_model_type` (`public` only when a row was found
+        // and its owner is user_id 0, otherwise `user`, including a ref that
+        // resolves to no row); `agent_config` is always the bind_model pair,
+        // even for custom-config models. Both refs resolve with the bot
+        // owner's user id.
         let mut agent_config = SubtaskAgentConfig::default();
         if let Some((name, namespace)) = bot_spec
             .and_then(|spec| spec.model_ref.as_ref())
             .and_then(|reference| reference.nonempty_parts())
         {
             let key = (bot.user_id, namespace.clone(), name.clone());
-            let model_user_id = match model_cache.get(&key) {
+            let model_owner = match model_cache.get(&key) {
                 Some(owner) => *owner,
                 None => {
                     let model = kinds
                         .get_by_name_and_namespace(bot.user_id, "Model", &namespace, &name)
                         .await
                         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-                    let owner = model.as_ref().map_or(0, |model| model.user_id);
+                    let owner = model.as_ref().map(|model| model.user_id);
                     model_cache.insert(key, owner);
                     owner
                 }
             };
             agent_config.bind_model = Some(name);
-            agent_config.bind_model_type = Some(if model_user_id == 0 { "public" } else { "user" });
+            agent_config.bind_model_type = Some(bind_model_type(model_owner));
         }
         let mut shell_type = String::new();
         if let Some((name, namespace)) = bot_spec
@@ -504,6 +549,9 @@ pub(crate) async fn build_task_detail(
 /// failures leave the payloads unchanged (the source logs them); an error from
 /// the integration is the source's uncaught refresh failure and fails the
 /// request.
+///
+/// `refresh_task_image_download_urls` then runs over the same payloads in the
+/// same order and re-signs the generated-image download URLs.
 async fn refresh_result_urls(
     state: &AppState,
     body: &mut TaskDetailResponse,
@@ -516,7 +564,12 @@ async fn refresh_result_urls(
     state
         .video_result_urls
         .refresh_result_urls(&state.attachment_http, &mut results)
-        .await
+        .await?;
+    super::image_download_urls::refresh_task_image_download_urls(
+        &state.auth,
+        &mut results,
+        chrono::Utc::now(),
+    )
 }
 
 struct TaskDetailParts {
@@ -586,9 +639,11 @@ fn task_detail_response(task: &TaskRow, user_id: i64, parts: TaskDetailParts) ->
             progress: status
                 .map(|status| status.progress.raw_or(0))
                 .unwrap_or_else(|| serde_json::value::to_raw_value(&0).unwrap()),
+            // `convert_to_task_dict` returns `task_crd.status.result` verbatim:
+            // only subtask results pass through `sanitize_client_payload`
+            // (`convert_subtasks_to_dict`).
             result: status
-                .and_then(|status| status.result.as_ref())
-                .map(|result| raw_json(&sanitize_client_payload(result.to_value())))
+                .map(|status| status.result.raw_or(()))
                 .unwrap_or_else(raw_null),
             error_message: status
                 .map(|status| status.error_message.raw_or(""))
@@ -652,6 +707,28 @@ fn task_detail_response(task: &TaskRow, user_id: i64, parts: TaskDetailParts) ->
     }
 }
 
+/// `get_bots_for_subtasks`: `all_bot_ids = set()` with
+/// `all_bot_ids.update(subtask.bot_ids)` per subtask in message order, then
+/// `list(all_bot_ids)`.
+///
+/// The cached kind reader probes `kind:v2:data:Bot:{id}` (and the MySQL
+/// `IN (...)` fallback) in that order, which is CPython `set[int]` slot order,
+/// not ascending id order: one recorded case inserts
+/// `[100515, 100523, 100521, 100519, 100517, 129344, 100525]` and the source
+/// probes 129344 first. Reuse the shared emulator (`crate::py_set_order`)
+/// already applied to the same source path.
+fn bot_probe_order(subtasks: &[SubtaskRow]) -> Vec<i64> {
+    let mut bot_ids = crate::py_set_order::SetOrder::new();
+    for subtask in subtasks {
+        if let Some(ids) = subtask.bot_ids.project::<Vec<Option<i64>>>() {
+            for id in ids.into_iter().flatten() {
+                bot_ids.add(id);
+            }
+        }
+    }
+    bot_ids.order()
+}
+
 /// `_get_model_selection_labels.model_options`.
 fn parse_model_options(
     raw: &Option<OpaqueJson>,
@@ -684,7 +761,9 @@ fn execution_workspace_field(spec: Option<&crate::crd::CrdSpec>, source: bool) -
 }
 
 /// `get_requested_skills_from_task`: the `requestedSkillRefs` label parsed
-/// and normalized to `{name, namespace, is_public}` objects.
+/// and normalized to `{skill_id, name, namespace, is_public}` objects, with
+/// the id rendered as an explicit null when the label stores none
+/// (`task_detail_helpers.py:189-215`).
 fn requested_skills_from_labels(task: Option<&TaskRow>) -> Option<Vec<RequestedSkillRef>> {
     let task = CrdDocument::project(&task?.json);
     let raw = task
@@ -735,6 +814,64 @@ mod tests {
         let ts = chrono::NaiveDateTime::parse_from_str("2026-09-06 20:58:06", "%Y-%m-%d %H:%M:%S")
             .unwrap();
         assert_eq!(iso_timestamp(ts), "2026-09-06T20:58:06");
+    }
+
+    fn bot_subtask(bot_ids: Value) -> SubtaskRow {
+        SubtaskRow {
+            id: 1,
+            user_id: 2,
+            task_id: 3,
+            team_id: None,
+            title: None,
+            bot_ids: bot_ids.into(),
+            role: "ASSISTANT".to_owned(),
+            executor_namespace: None,
+            executor_name: None,
+            prompt: None,
+            message_id: 1,
+            parent_id: None,
+            status: "COMPLETED".to_owned(),
+            progress: 0,
+            result: None,
+            error_message: None,
+            created_at: None,
+            updated_at: None,
+            completed_at: None,
+            sender_type: None,
+            sender_user_id: None,
+            reply_to_subtask_id: None,
+        }
+    }
+
+    /// The recorded case probes `kind:v2:data:Bot:129344` before
+    /// `kind:v2:data:Bot:100515` although every subtask lists 100515 first:
+    /// the union is a CPython set, whose slot order puts 129344 (slot 0)
+    /// ahead of the ascending-by-id order the sort used to produce.
+    #[test]
+    fn bot_probe_order_follows_cpython_set_slots() {
+        let ids = json!([100515, 100523, 100521, 100519, 100517, 129344, 100525]);
+        let subtasks = vec![bot_subtask(ids.clone()), bot_subtask(ids)];
+        assert_eq!(
+            bot_probe_order(&subtasks),
+            vec![129344, 100515, 100517, 100519, 100521, 100523, 100525]
+        );
+    }
+
+    /// A single distinct id (every other recorded case) keeps one probe.
+    #[test]
+    fn bot_probe_order_collapses_duplicate_ids() {
+        let subtasks = vec![
+            bot_subtask(json!([110466, null, null])),
+            bot_subtask(json!([110466])),
+        ];
+        assert_eq!(bot_probe_order(&subtasks), vec![110466]);
+    }
+
+    #[test]
+    fn bind_model_type_marks_only_owner_zero_as_public() {
+        assert_eq!(bind_model_type(None), "user");
+        assert_eq!(bind_model_type(Some(0)), "public");
+        assert_eq!(bind_model_type(Some(1297)), "user");
     }
 
     #[test]

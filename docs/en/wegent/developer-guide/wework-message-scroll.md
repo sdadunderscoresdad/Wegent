@@ -167,6 +167,15 @@ An explicit first choice is persisted even if it equals the current default.
 Mounted views sharing a key stay synchronized, and eviction makes them read their
 own defaults again.
 
+Tool details and selected file diffs use a message scope and stable block ID,
+preserving their state through streaming, turn completion, and timeline reordering.
+Merged file-change chunks retain the first chunk's ID so appending a chunk does
+not reset its details. Explicitly opened details keep the process region visible;
+closing the region or summary clears its detail state. Closing one detail does
+not hide a still-running tool list, and completion defaults continue to respect
+explicit user choices. Batch collapse notifies only affected subscribers, at most
+once per subscriber for each batch.
+
 This reduces component execution and subscription notifications. List filtering
 and traversal remain O(n). Component counts are not measurements of startup time,
 CPU, memory, or physical touchpad behavior.

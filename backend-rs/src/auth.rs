@@ -11,8 +11,145 @@
 use brz_mysql::{FromMysqlRow, Json};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::Deserialize;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use crate::config::AuthConfig;
+use crate::state::AppState;
+
+/// Process-wide authentication backend used by every exported route group.
+///
+/// The backend owns the shared application state so individual principal
+/// implementations can select the exact credential and lookup behavior they
+/// need without threading `Authorization` through business handlers.
+#[derive(Clone)]
+pub struct AppAuthenticator {
+    state: Arc<AppState>,
+}
+
+impl AppAuthenticator {
+    #[must_use]
+    pub fn new(state: Arc<AppState>) -> Self {
+        Self { state }
+    }
+
+    /// Shared public state for application-specific principal implementations.
+    #[must_use]
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+}
+
+/// The standard active user-session principal.
+#[derive(Debug)]
+pub struct SessionUser(pub UserRow);
+
+/// Session principal for endpoints whose source optional dependency treats
+/// every absent or invalid credential as anonymous.
+pub struct OptionalSessionUser(pub UserRow);
+
+impl Deref for OptionalSessionUser {
+    type Target = UserRow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl brz_http_server::Authenticator<OptionalSessionUser> for AppAuthenticator {
+    async fn authenticate<'a>(
+        &'a self,
+        request: brz_http_server::AuthRequest<'a>,
+    ) -> Result<OptionalSessionUser, brz_http_server::AuthFailure> {
+        let authorization = request
+            .header("authorization")
+            .and_then(|value| std::str::from_utf8(value).ok());
+        get_current_user(&self.state.auth, &self.state.mysql, authorization)
+            .await
+            .map(OptionalSessionUser)
+            .map_err(|_| brz_http_server::AuthFailure::missing_credentials("Bearer"))
+    }
+
+    fn api_log_id<'a>(
+        &'a self,
+        principal: &'a OptionalSessionUser,
+    ) -> Option<&'a dyn std::fmt::Display> {
+        Some(&principal.0.user_name)
+    }
+}
+
+impl Deref for SessionUser {
+    type Target = UserRow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+const USER_NOT_ACTIVATED: &str = "Wegent-User-Not-Activated";
+const NOT_AUTHENTICATED: &str = "Wegent-Not-Authenticated";
+
+impl brz_http_server::Authenticator<SessionUser> for AppAuthenticator {
+    async fn authenticate<'a>(
+        &'a self,
+        request: brz_http_server::AuthRequest<'a>,
+    ) -> Result<SessionUser, brz_http_server::AuthFailure> {
+        let authorization = request
+            .header("authorization")
+            .and_then(|value| std::str::from_utf8(value).ok());
+        get_current_user(&self.state.auth, &self.state.mysql, authorization)
+            .await
+            .map(SessionUser)
+            .map_err(session_auth_failure)
+    }
+
+    fn api_log_id<'a>(&'a self, principal: &'a SessionUser) -> Option<&'a dyn std::fmt::Display> {
+        Some(&principal.0.user_name)
+    }
+
+    fn reject(
+        &self,
+        _request: brz_http_server::AuthRequest<'_>,
+        failure: brz_http_server::AuthFailure,
+        arena: &brz_http_server::EphemeralBytesArena,
+    ) -> brz_http_server::Response {
+        use brz_http_server::IntoHttpError as _;
+
+        crate::http_compat::FastApiError::unauthorized(session_auth_detail(failure))
+            .into_http_error(arena)
+    }
+}
+
+/// The source detail for a rejected session authentication.
+///
+/// `AuthFailure` carries only a challenge string, so the distinct outcomes are
+/// tagged with the module's challenge constants and recovered here.
+fn session_auth_detail(failure: brz_http_server::AuthFailure) -> &'static str {
+    match failure {
+        brz_http_server::AuthFailure::MissingCredentials {
+            challenge: NOT_AUTHENTICATED,
+        } => "Not authenticated",
+        brz_http_server::AuthFailure::InvalidCredentials {
+            challenge: USER_NOT_ACTIVATED,
+        } => "User not activated",
+        _ => "Could not validate credentials",
+    }
+}
+
+/// Map a `get_current_user` failure to the SDK failure that carries it.
+fn session_auth_failure(failure: AuthFailure) -> brz_http_server::AuthFailure {
+    match failure {
+        AuthFailure::NotAuthenticated => {
+            brz_http_server::AuthFailure::missing_credentials(NOT_AUTHENTICATED)
+        }
+        AuthFailure::InvalidCredentials => {
+            brz_http_server::AuthFailure::invalid_credentials("Bearer")
+        }
+        AuthFailure::UserNotActivated => {
+            brz_http_server::AuthFailure::invalid_credentials(USER_NOT_ACTIVATED)
+        }
+    }
+}
 
 /// JWT claims carried by a user-session token.
 ///
@@ -95,9 +232,15 @@ pub fn extract_authorization_token(authorization: Option<&str>) -> String {
 fn verify_token(config: &AuthConfig, token: &str) -> Result<String, ()> {
     let mut validation = Validation::new(algorithm(config));
     // python-jose rejects the `none` algorithm; HS256 is the configured
-    // algorithm and no audience is required. `exp` is validated when present
-    // but not a required claim, matching python-jose decode defaults.
+    // algorithm and no audience is required. A present `exp`/`nbf` is
+    // validated with no leeway and neither is a required claim, matching
+    // python-jose's default decode options. `jsonwebtoken` otherwise defaults to
+    // a 60-second leeway and skips `nbf`, which would accept a session token the
+    // source rejects.
     validation.validate_aud = false;
+    validation.validate_exp = true;
+    validation.validate_nbf = true;
+    validation.leeway = 0;
     validation.required_spec_claims.clear();
     for key_bytes in decoding_keys(config) {
         let key = DecodingKey::from_secret(&key_bytes);
@@ -164,11 +307,25 @@ pub(crate) const USER_BY_NAME_QUERY: &str = "SELECT users.id AS users_id, users.
      WHERE users.user_name = ? \
      LIMIT 1";
 
+/// The bearer credential accepted by the source `oauth2_scheme`.
+///
+/// FastAPI's `OAuth2PasswordBearer.__call__` splits the header with
+/// `get_authorization_scheme_param` and keeps the credential only when the
+/// first word is `Bearer`, case-insensitively. A missing header, an empty
+/// header, or any other scheme never reaches `get_current_user`: the scheme
+/// itself answers `401 {"detail": "Not authenticated"}`. An empty `Bearer`
+/// credential still reaches verification and fails there.
+fn bearer_credential(authorization: Option<&str>) -> Option<&str> {
+    let header = authorization?;
+    let (scheme, token) = header.split_once(' ').unwrap_or((header, ""));
+    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+}
+
 /// `get_current_user`: verify the bearer token and load the active user.
 ///
 /// Returns `Err(reason)` where the reason selects the source-compatible
-/// 401 response detail (`Could not validate credentials` or
-/// `User not activated`).
+/// 401 response detail (`Not authenticated`, `Could not validate credentials`,
+/// or `User not activated`).
 pub async fn get_current_user<M>(
     config: &AuthConfig,
     mysql: &M,
@@ -177,11 +334,10 @@ pub async fn get_current_user<M>(
 where
     M: brz_mysql::Mysql,
 {
-    let token = extract_authorization_token(authorization);
-    if token.is_empty() {
-        return Err(AuthFailure::InvalidCredentials);
-    }
-    let username = verify_token(config, &token).map_err(|_| AuthFailure::InvalidCredentials)?;
+    let Some(token) = bearer_credential(authorization) else {
+        return Err(AuthFailure::NotAuthenticated);
+    };
+    let username = verify_token(config, token).map_err(|_| AuthFailure::InvalidCredentials)?;
     let user: Option<UserRow> = mysql
         .fetch_optional(USER_BY_NAME_QUERY, (username,))
         .await
@@ -195,6 +351,9 @@ where
 
 /// Authentication failure classification for source-compatible 401 mapping.
 pub enum AuthFailure {
+    /// `401 {"detail": "Not authenticated"}`: the request carried no bearer
+    /// credential, which the source scheme rejects before `get_current_user`.
+    NotAuthenticated,
     /// `401 {"detail": "Could not validate credentials"}`.
     InvalidCredentials,
     /// `401 {"detail": "User not activated"}`.
@@ -236,6 +395,78 @@ mod tests {
     }
 
     #[test]
+    fn bearer_credential_matches_source_scheme() {
+        assert_eq!(bearer_credential(header("Bearer abc")), Some("abc"));
+        assert_eq!(bearer_credential(header("bearer abc")), Some("abc"));
+        assert_eq!(bearer_credential(header("BEARER abc")), Some("abc"));
+        // Only the scheme selects the branch; the credential itself is
+        // forwarded verbatim, including an empty one.
+        assert_eq!(bearer_credential(header("Bearer ")), Some(""));
+        assert_eq!(bearer_credential(header("Bearer")), Some(""));
+        assert_eq!(bearer_credential(header("abc")), None);
+        assert_eq!(bearer_credential(header("Basic abc")), None);
+        assert_eq!(bearer_credential(header("")), None);
+        assert_eq!(bearer_credential(None), None);
+    }
+
+    /// The recorded representative sends no `Authorization` header, which the
+    /// source scheme rejects with `401 "Not authenticated"` before any
+    /// verification or user lookup runs.
+    #[tokio::test]
+    async fn missing_bearer_credential_is_not_authenticated() {
+        let mysql = crate::sql_test_support::KindQueryCapture::default();
+        for (authorization, label) in [
+            (None, "no header"),
+            (header(""), "empty header"),
+            (header("Basic abc"), "non-bearer scheme"),
+        ] {
+            let error = get_current_user(&config(), &mysql, authorization)
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{label} must be rejected"));
+            assert!(
+                matches!(error, AuthFailure::NotAuthenticated),
+                "{label} reports the wrong failure"
+            );
+        }
+        assert!(
+            mysql.queries().is_empty(),
+            "the scheme rejects before the user lookup"
+        );
+    }
+
+    /// An empty `Bearer` credential reaches verification and reports the
+    /// invalid-credential detail instead.
+    #[tokio::test]
+    async fn empty_bearer_credential_is_invalid_credentials() {
+        let mysql = crate::sql_test_support::KindQueryCapture::default();
+        for value in ["Bearer ", "Bearer"] {
+            let error = get_current_user(&config(), &mysql, header(value))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{value:?} must be rejected"));
+            assert!(
+                matches!(error, AuthFailure::InvalidCredentials),
+                "{value:?} reports the wrong failure"
+            );
+        }
+    }
+
+    #[test]
+    fn session_reject_details_follow_the_failure() {
+        for (failure, detail) in [
+            (AuthFailure::NotAuthenticated, "Not authenticated"),
+            (
+                AuthFailure::InvalidCredentials,
+                "Could not validate credentials",
+            ),
+            (AuthFailure::UserNotActivated, "User not activated"),
+        ] {
+            assert_eq!(session_auth_detail(session_auth_failure(failure)), detail);
+        }
+    }
+
+    #[test]
     fn verifies_session_token_and_rejects_scoped_tokens() {
         let token = token_for(serde_json::json!({"sub": "guofeng10"}));
         assert_eq!(verify_token(&config(), &token).unwrap(), "guofeng10");
@@ -248,6 +479,26 @@ mod tests {
 
         let wework = token_for(serde_json::json!({"sub": "u", "token_use": "wework_access"}));
         assert_eq!(verify_token(&config(), &wework).unwrap(), "u");
+    }
+
+    #[test]
+    fn present_exp_and_nbf_are_validated_without_leeway() {
+        // python-jose's default decode options validate a present `exp`/`nbf`
+        // with zero leeway, so a session token the source rejects must not pass
+        // here on `jsonwebtoken`'s 60-second default leeway or its skipped `nbf`.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs() as i64;
+
+        let expired = token_for(serde_json::json!({"sub": "u", "exp": now - 30}));
+        assert!(verify_token(&config(), &expired).is_err());
+
+        let not_yet_valid = token_for(serde_json::json!({"sub": "u", "nbf": now + 30}));
+        assert!(verify_token(&config(), &not_yet_valid).is_err());
+
+        let current = token_for(serde_json::json!({"sub": "u", "exp": now + 30, "nbf": now - 30}));
+        assert_eq!(verify_token(&config(), &current).unwrap(), "u");
     }
 
     #[test]

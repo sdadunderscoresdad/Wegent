@@ -19,9 +19,19 @@ use std::sync::Arc;
 pub struct AppState {
     pub entity_resolvers: crate::permissions::EntityResolvers,
     pub user_profile: Arc<dyn crate::user_profile::UserViewExtension>,
+    /// Current-user `GET /api/users/me` `git_info` resolution. The public
+    /// default renders the stored column.
+    pub user_git_info: Arc<dyn crate::user_profile::UserGitInfoProvider>,
     pub media_policy: Arc<dyn crate::media_policy::MediaPolicy>,
+    /// `_stream_external_attachment`: the registered external media playback
+    /// resolvers and their relay. The public default resolves nothing.
+    pub external_media: Arc<dyn crate::attachments::external_media::ExternalMediaRelay>,
     pub document_download_policy: Arc<dyn crate::knowledge_download_policy::DocumentDownloadPolicy>,
-    pub task_policy: crate::task_routing::TaskPolicy,
+    /// Task and subtask row reads. The public default reads the single
+    /// `tasks` / `subtasks` tables; an application whose deployment resolves
+    /// task storage differently registers its own implementation before route
+    /// construction.
+    pub task_store: Arc<dyn crate::task_store::TaskStore>,
     /// Lookup strategy for Workspace resources referenced by subscriptions.
     pub workspace_repository: Arc<dyn crate::subscriptions_list::workspaces::WorkspaceRepository>,
     pub auth: AuthConfig,
@@ -51,4 +61,13 @@ pub struct AppState {
     /// (for example with a read-through cache) registers its own
     /// implementation before route construction.
     pub user_reader: Arc<dyn UserByIdReader>,
+    /// `GET /api/devices` `runtime_features` projection for the cloud device
+    /// group. The public default renders none; an application whose
+    /// configured cloud store projects cached Runtime features registers its
+    /// own implementation before route construction.
+    pub cloud_runtime_features: Arc<dyn crate::devices::CloudRuntimeFeatures>,
+    /// `executor_version_service`: the cached executor version every device
+    /// listing reads, plus the process-owned background refresh its cache miss
+    /// starts. Built with the process Redis service at startup.
+    pub executor_version: crate::executor_version::ExecutorVersionService,
 }

@@ -10,13 +10,15 @@ import {
 
 export function ScrollableMessageArea({
   workspacePath,
+  imageTarget,
   ...props
 }: Omit<ScrollableMessageAreaProps, DesktopConversationPresentationProp> & {
   workspacePath?: string
+  imageTarget?: { deviceId: string; workspacePath: string } | null
 }) {
   const presentation = useDesktopConversationPresentation(props.messages, workspacePath)
   return (
-    <DesktopToolServices>
+    <DesktopToolServices imageTarget={imageTarget}>
       <SharedScrollableMessageArea {...props} {...presentation} />
     </DesktopToolServices>
   )

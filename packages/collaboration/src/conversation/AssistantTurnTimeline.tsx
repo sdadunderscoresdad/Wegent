@@ -1,9 +1,14 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { useMemo, type ComponentProps, type ReactNode } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { ProcessingBlock, WorkbenchMessage } from '@wegent/chat-core/runtime-conversation'
 import { AssistantMarkdown, type AssistantMarkdownProps } from '../markdown/AssistantMarkdown'
 import { ToolBlocksDisplay } from './blocks/ProcessingSegment'
-import { usePersistentProcessingExpansion } from './blocks/processingExpansionState'
+import {
+  collapsePersistentProcessingExpansions,
+  getProcessingDetailStateKey,
+  useAnyPersistentProcessingExpansion,
+  usePersistentProcessingExpansion,
+} from './blocks/processingExpansionState'
 import {
   getProcessingSummaryStartMs,
   hasRunningProcessingBlocks,
@@ -76,6 +81,20 @@ export function AssistantTurnTimeline({
     `${stateKey}:final-processing`,
     defaultExpanded
   )
+  const detailStateKeys = useMemo(
+    () => blocks.map(block => getProcessingDetailStateKey(stateKey, block.id)),
+    [blocks, stateKey]
+  )
+  const hasExpandedDetail = useAnyPersistentProcessingExpansion(detailStateKeys)
+  const processingExpanded = expanded || hasExpandedDetail
+  const toggleProcessing = () => {
+    if (processingExpanded) {
+      collapsePersistentProcessingExpansions(detailStateKeys)
+      setExpanded(false)
+    } else {
+      setExpanded(true)
+    }
+  }
 
   const renderEntry = (entry: RuntimeDisplaySegment, trailing: boolean) => {
     if (entry.kind === 'content')
@@ -110,6 +129,7 @@ export function AssistantTurnTimeline({
             thinkingContent={thinkingContent}
             showSummary={segment.kind === 'tool'}
             stateKey={`${stateKey}:${segment.blocks[0]?.id ?? 'empty'}`}
+            detailStateScopeKey={stateKey}
           />
         ))}
       </div>
@@ -128,13 +148,13 @@ export function AssistantTurnTimeline({
               <button
                 type="button"
                 data-testid="final-processing-toggle"
-                aria-expanded={expanded}
+                aria-expanded={processingExpanded}
                 className="flex min-h-8 items-center gap-1 text-sm text-text-muted hover:text-text-secondary"
-                onClick={() => setExpanded(value => !value)}
+                onClick={toggleProcessing}
               >
                 {durationLabel}
                 <ChevronDown
-                  className={`h-4 w-4 transition-transform ${expanded ? '' : '-rotate-90'}`}
+                  className={`h-4 w-4 transition-transform ${processingExpanded ? '' : '-rotate-90'}`}
                   strokeWidth={2}
                   aria-hidden="true"
                 />
@@ -144,7 +164,9 @@ export function AssistantTurnTimeline({
             )}
           </div>
         )}
-        {prefix && (!canCollapse || expanded) ? renderEntry(prefix, body.length === 0) : null}
+        {prefix && (!canCollapse || processingExpanded)
+          ? renderEntry(prefix, body.length === 0)
+          : null}
       </div>
       {body.map((entry, index) => renderEntry(entry, index === body.length - 1))}
     </>

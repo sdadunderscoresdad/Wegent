@@ -32,11 +32,14 @@ import {
   notifyMainRuntimeWorkChanged,
 } from '@/desktop/runtimeWorkSync'
 import { disposeDesktopListener } from '@/desktop/disposeDesktopListener'
-import { createLocalCodexPluginApi, peekLocalCodexPluginsReadState } from '@/api/local/codexPlugins'
+import {
+  createLocalCodexPluginApi,
+  listLocalInstalledPluginsFromDisk,
+  peekLocalCodexPluginsReadState,
+} from '@/api/local/codexPlugins'
 import { createHttpClient } from '@/api/http'
 import { createPluginApi } from '@/api/plugins'
 import { listWegentInstalledConnectorApps } from '@/api/cloud/connectorApps'
-import { startLocalRobotQueueDispatcher } from '@/features/todo/localRobotQueueDispatcher'
 import {
   getComposerApps,
   publishComposerApps,
@@ -133,6 +136,7 @@ import {
   settleRuntimeConversationAcceptedMessage,
   settleRuntimeConversationSubagents,
   settleRuntimeConversationGuidance,
+  syncRuntimeConversationDeviceAliases,
 } from './runtimeConversationCache'
 import {
   applyModelContextWindowOverride,
@@ -165,7 +169,7 @@ import {
   consumeWorkspaceTabTransfer,
   publishWorkspaceTabTransferState,
 } from '@/features/workspace-tabs/workspaceTabTransfer'
-import { useOptionalWorkspaceTabs } from '@/features/workspace-tabs/workspaceTabsContextValue'
+import { useOptionalWorkspaceTabActivity } from '@/features/workspace-tabs/workspaceTabsContextValue'
 import { useWorkbenchTelemetry } from './useWorkbenchTelemetry'
 import { useAiGenerationTelemetry } from './useAiGenerationTelemetry'
 import { normalizeAiModelId } from '@/telemetry/modelCatalog'
@@ -209,9 +213,9 @@ export function WorkbenchProvider({
 }: WorkbenchProviderProps) {
   const { t } = useTranslation('common')
   const cloudConnection = useOptionalCloudConnection()
-  const workspaceTabs = useOptionalWorkspaceTabs()
+  const isWorkspaceTabActive = useOptionalWorkspaceTabActivity()
   const canNavigateWorkspaceTab = useStableEvent(
-    () => !workspaceTabId || !workspaceTabs || workspaceTabs.activeTabId === workspaceTabId
+    () => !workspaceTabId || !isWorkspaceTabActive || isWorkspaceTabActive(workspaceTabId)
   )
   // Preferences can change while a turn is running. Runtime transports only
   // need the account identity, so keep their service graph stable across those
@@ -252,10 +256,6 @@ export function WorkbenchProvider({
   const executorClient = useMemo(() => {
     return createExecutorClientForWorkbenchServices(resolvedServices)
   }, [resolvedServices])
-  useEffect(() => {
-    if (!resolvedServices.localLoopItemExecutionApi) return
-    return startLocalRobotQueueDispatcher(resolvedServices)
-  }, [resolvedServices])
   const sharedLifecycleStore = useMemo(
     () => providedLifecycleStore ?? new RuntimeTaskLifecycleStore(user.id),
     [providedLifecycleStore, user.id]
@@ -292,6 +292,14 @@ export function WorkbenchProvider({
   }, [dispatch, state.user?.id, workbenchIdentity])
   const remoteProjectSyncSignatureRef = useRef('')
   const remoteProjectSyncRevisionRef = useRef(0)
+  const remoteProjectSyncAttemptRef = useRef<{
+    signature: string
+    queued: boolean
+    activationRevision: number
+  } | null>(null)
+  const remoteProjectSyncActiveRef = useRef(syncRemoteProjects)
+  const remoteProjectSyncActivationRevisionRef = useRef(0)
+  const [remoteProjectSyncRetryRevision, setRemoteProjectSyncRetryRevision] = useState(0)
   const removedRemoteProjectPathsRef = useRef(new Set<string>())
   const remoteProjectMutationQueueRef = useRef<Promise<void>>(Promise.resolve())
   const projectWorkPreferenceMutationQueueRef = useRef<Promise<void>>(Promise.resolve())
@@ -328,8 +336,10 @@ export function WorkbenchProvider({
   }, [cloudConnection.apiBaseUrl, cloudConnection.token])
   const isOptionsLocked = Boolean(state.currentRuntimeTask)
   useLayoutEffect(() => {
+    syncRuntimeConversationDeviceAliases(state.devices)
+    lifecycleStore.syncDevices(state.devices)
     lifecycleStore.syncRuntimeWork(state.runtimeWork)
-  }, [lifecycleStore, state.runtimeWork])
+  }, [lifecycleStore, state.devices, state.runtimeWork])
   useLayoutEffect(() => {
     lifecycleStore.setCurrentTask(state.currentRuntimeTask)
   }, [lifecycleStore, state.currentRuntimeTask, syncRuntimeTaskLifecycle])
@@ -882,6 +892,13 @@ export function WorkbenchProvider({
     onSelectionChange: persistNewChatModelSelection,
     onSelectionBlocked: handleBlockedModelSelection,
   })
+  const { refreshModels } = modelSelection
+  const handleModelSelectorOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) refreshModels()
+    },
+    [refreshModels]
+  )
   const activeModel = useMemo(() => {
     if (!state.currentRuntimeTask) return null
     const configuredModel = findModelForSelection(modelSelection.models, modelSelectionConfig)
@@ -902,6 +919,8 @@ export function WorkbenchProvider({
     modelSelectionConfig,
     state.currentRuntimeTask,
   ])
+  const selectModelAndOptions = modelSelection.setSelectedModelAndOptions
+  const selectModelForScope = modelSelection.setSelectionForScope
   const continueInNewConversation = useCallback(
     (
       model: UnifiedModel,
@@ -913,7 +932,7 @@ export function WorkbenchProvider({
     ) => {
       const sourceTask = source?.address ?? state.currentRuntimeTask
       if (!sourceTask) {
-        modelSelection.setSelectedModelAndOptions(model, options)
+        selectModelAndOptions(model, options)
         return
       }
 
@@ -939,7 +958,7 @@ export function WorkbenchProvider({
             'Continue from the referenced conversation.'
           )}`
 
-      modelSelection.setSelectionForScope(
+      selectModelForScope(
         nextModelScopeKey,
         model,
         options,
@@ -972,7 +991,8 @@ export function WorkbenchProvider({
     [
       currentUser.id,
       draftInputByScope,
-      modelSelection,
+      selectModelAndOptions,
+      selectModelForScope,
       projectChatScopeKey,
       projectModelSelection,
       setDraftInputForScope,
@@ -1070,9 +1090,17 @@ export function WorkbenchProvider({
   }, [])
 
   useEffect(() => {
+    if (syncRemoteProjects && !remoteProjectSyncActiveRef.current) {
+      remoteProjectSyncActivationRevisionRef.current += 1
+    }
+    remoteProjectSyncActiveRef.current = syncRemoteProjects
     if (!syncRemoteProjects) {
       remoteProjectSyncRevisionRef.current += 1
-      remoteProjectSyncSignatureRef.current = ''
+      const attempt = remoteProjectSyncAttemptRef.current
+      if (attempt?.queued && remoteProjectSyncSignatureRef.current === attempt.signature) {
+        remoteProjectSyncSignatureRef.current = ''
+        remoteProjectSyncAttemptRef.current = null
+      }
       return
     }
     const projects = getRuntimeRemoteProjectRegistrations(
@@ -1094,16 +1122,48 @@ export function WorkbenchProvider({
     if (remoteProjectSyncSignatureRef.current === signature) return
     remoteProjectSyncSignatureRef.current = signature
     const revision = remoteProjectSyncRevisionRef.current
-    void enqueueRemoteProjectStateMutation(() =>
-      revision !== remoteProjectSyncRevisionRef.current ||
-      remoteProjectSyncSignatureRef.current !== signature
-        ? Promise.resolve()
-        : executorClient.runtime
-            .syncRuntimeRemoteProjects({ deviceId: localRuntimeStateDeviceId, projects })
-            .then(() => refreshWorkLists())
-    ).catch(error => {
-      if (remoteProjectSyncSignatureRef.current === signature) {
+    const attempt = {
+      signature,
+      queued: true,
+      activationRevision: remoteProjectSyncActivationRevisionRef.current,
+    }
+    remoteProjectSyncAttemptRef.current = attempt
+    void enqueueRemoteProjectStateMutation(() => {
+      if (
+        remoteProjectSyncAttemptRef.current !== attempt ||
+        revision !== remoteProjectSyncRevisionRef.current ||
+        remoteProjectSyncSignatureRef.current !== signature
+      ) {
+        if (remoteProjectSyncAttemptRef.current === attempt) {
+          remoteProjectSyncAttemptRef.current = null
+          if (remoteProjectSyncSignatureRef.current === signature) {
+            remoteProjectSyncSignatureRef.current = ''
+          }
+        }
+        return Promise.resolve()
+      }
+      attempt.queued = false
+      return executorClient.runtime
+        .syncRuntimeRemoteProjects({ deviceId: localRuntimeStateDeviceId, projects })
+        .then(response => {
+          if (!response.accepted) {
+            throw new Error(response.error || 'Failed to sync remote projects')
+          }
+          return refreshWorkLists()
+        })
+    }).catch(error => {
+      if (
+        remoteProjectSyncAttemptRef.current === attempt &&
+        remoteProjectSyncSignatureRef.current === signature
+      ) {
         remoteProjectSyncSignatureRef.current = ''
+        remoteProjectSyncAttemptRef.current = null
+        if (
+          remoteProjectSyncActiveRef.current &&
+          remoteProjectSyncActivationRevisionRef.current > attempt.activationRevision
+        ) {
+          setRemoteProjectSyncRetryRevision(revision => revision + 1)
+        }
       }
       console.warn('[Wework] Failed to sync remote projects into Codex global state', error)
     })
@@ -1112,6 +1172,7 @@ export function WorkbenchProvider({
     executorClient,
     localRuntimeStateDeviceId,
     refreshWorkLists,
+    remoteProjectSyncRetryRevision,
     state.runtimeWork,
     syncRemoteProjects,
   ])
@@ -1738,7 +1799,9 @@ export function WorkbenchProvider({
     executorClient,
     services: resolvedServices,
     runtimeTasks,
-    lifecycleStore,
+    // Explicit sends own their lifecycle even if navigation hides this provider
+    // while workspace preparation or the executor request is still in flight.
+    lifecycleStore: sharedLifecycleStore,
     projectExecutionMode,
     projectWorktreeBranch,
     isOptionsLocked,
@@ -2273,9 +2336,9 @@ export function WorkbenchProvider({
         replaceComposerApps(apps)
       }
       const loadPromise = (async () => {
-        // Composer only needs installed membership. Never await Codex plugin/list
-        // here — it reconciles for ~10s and stalls turns on the shared app-server
-        // (regression vs fix/wework stop-blocking-send-on-plugin-prep).
+        // Composer only needs installed membership on its warm path. Never await
+        // Codex app/list here — a remote directory failure can take about a minute
+        // and must not stall the rest of the plugin inventory.
         const currentComposerDeviceId =
           peekLocalCodexPluginsReadState({ mergeAllMarketplaces: true })?.deviceId?.trim() ||
           peekLocalCodexPluginsReadState()?.deviceId?.trim() ||
@@ -2283,26 +2346,23 @@ export function WorkbenchProvider({
         if (!currentComposerDeviceId)
           throw new Error('Composer plugin inventory requires a device ID')
 
-        // Both passes share one membership snapshot; logo hydration cannot restore removed plugins.
-        const installedSnapshot = Promise.all([
-          localPluginApi
-            .listInstalledPlugins({
-              shareInflight: !options?.supersedeInstalledRequest,
-              requireComplete: true,
-            })
-            .then(response => response.items),
-          cloudConnection.isConnected
-            ? cloudPluginApi
-                .listInstalledPlugins(currentComposerDeviceId)
-                .then(response => response.items)
-            : Promise.resolve([] as InstalledPlugin[]),
-        ])
-        const composerPluginSources = {
+        // Paint managed local packages directly from the on-disk capability
+        // manifest. Codex plugin/installed also refreshes ChatGPT membership, so
+        // it belongs in the detached enrichment pass with app/list.
+        const localInstalledSnapshot = listLocalInstalledPluginsFromDisk()
+        const cloudInstalledSnapshot = cloudConnection.isConnected
+          ? cloudPluginApi
+              .listInstalledPlugins(currentComposerDeviceId)
+              .then(response => response.items)
+          : Promise.resolve([] as InstalledPlugin[])
+        const composerPluginSources = (
+          codexApps: LocalDeviceApp[],
+          localInstalled: Promise<InstalledPlugin[]> = localInstalledSnapshot
+        ) => ({
           deviceId: currentComposerDeviceId,
-          // Keep inaccessible apps during matching so their plugins cannot add selectable duplicates.
-          listCodexApps: () => localPluginApi.listApps({ includeInaccessible: true }),
-          readLocalInstalledPlugins: async () => (await installedSnapshot)[0],
-          listCloudInstalledPlugins: async () => (await installedSnapshot)[1],
+          listCodexApps: async () => codexApps,
+          readLocalInstalledPlugins: async () => localInstalled,
+          listCloudInstalledPlugins: async () => cloudInstalledSnapshot,
           readLocalInstalledPluginDetail: (plugin: InstalledPlugin) => {
             const labels = plugin.metadata.labels
             const id =
@@ -2311,15 +2371,17 @@ export function WorkbenchProvider({
               typeof id === 'string' || typeof id === 'number' ? id : String(plugin.metadata.name)
             )
           },
-        }
+        })
 
         const marketplaceCache = getPluginMarketplaceCache(
           pluginMarketplaceCacheKey(cloudConnection.apiBaseUrl, cloudConnection.token)
         )
         const marketplaceItems = marketplaceCache?.marketplaceItems ?? []
 
-        // Paint installed plugins before connector sync / relative-logo detail reads.
-        let apps = await loadComposerPluginApps(composerPluginSources, {
+        // Installed membership is the primary composer inventory. Paint it before
+        // starting the remote ChatGPT app directory so a slow or failed app/list
+        // cannot hide local, enterprise, or cloud-managed plugins.
+        let apps = await loadComposerPluginApps(composerPluginSources([]), {
           marketplaceItems,
           visiblePluginKeys,
         })
@@ -2372,7 +2434,7 @@ export function WorkbenchProvider({
         if (isCurrentLoad()) {
           void loadComposerPluginApps(
             {
-              ...composerPluginSources,
+              ...composerPluginSources([]),
               // Reuse the warm snapshot; logo hydration must not issue another app/list.
               listCodexApps: async () => apps,
             },
@@ -2385,7 +2447,7 @@ export function WorkbenchProvider({
             .then(enriched => {
               if (!isCurrentLoad()) return
               const byId = new Map(enriched.map(app => [app.id, app]))
-              const merged = apps.map(app => byId.get(app.id) ?? app)
+              const merged = getComposerApps().map(app => byId.get(app.id) ?? app)
               replaceComposerApps(merged)
               localAppsCacheRef.current = {
                 expiresAt: Date.now() + LOCAL_SKILLS_CACHE_TTL_MS,
@@ -2404,6 +2466,59 @@ export function WorkbenchProvider({
             apps,
           }
         }
+
+        // Remote Codex apps only enrich installed membership (for example, by
+        // replacing a package row with its connector-backed app metadata). Keep
+        // this detached from the primary load and retain Wegent connector rows
+        // that may have arrived while app/list was in flight.
+        window.setTimeout(() => {
+          if (!isCurrentLoad()) return
+          const remoteInstalled = localPluginApi
+            .listInstalledPlugins({
+              shareInflight: !options?.supersedeInstalledRequest,
+              requireComplete: true,
+            })
+            .then(response => response.items)
+          void Promise.all([
+            localPluginApi.listApps({ includeInaccessible: true }),
+            remoteInstalled,
+          ])
+            .then(([codexApps, installed]) =>
+              loadComposerPluginApps(composerPluginSources(codexApps, Promise.resolve(installed)), {
+                marketplaceItems,
+                visiblePluginKeys,
+              })
+            )
+            .then(codexComposerApps => {
+              if (!isCurrentLoad()) return
+              const currentApps = getComposerApps()
+              const currentById = new Map(currentApps.map(app => [app.id, app]))
+              const enrichedApps = codexComposerApps.map(app => {
+                const current = currentById.get(app.id)
+                if (!current) return app
+                return {
+                  ...current,
+                  ...app,
+                  logoUrl: app.logoUrl ?? current.logoUrl,
+                  logoUrlDark: app.logoUrlDark ?? current.logoUrlDark,
+                }
+              })
+              const existingIds = new Set(enrichedApps.map(app => app.id))
+              const connectorApps = currentApps.filter(
+                app => app.source === 'wegent-connector' && !existingIds.has(app.id)
+              )
+              const merged = [...enrichedApps, ...connectorApps]
+              replaceComposerApps(merged)
+              localAppsCacheRef.current = {
+                expiresAt: Date.now() + LOCAL_SKILLS_CACHE_TTL_MS,
+                apps: merged,
+              }
+            })
+            .catch(error => {
+              if (!isCurrentLoad()) return
+              console.warn('[Wework] Failed to enrich composer plugins from Codex apps.', error)
+            })
+        }, 0)
         return apps
       })()
 
@@ -2543,6 +2658,7 @@ export function WorkbenchProvider({
       activeModel,
       selectedModelOptions: modelSelection.selectedModelOptions,
       isModelSelectionReady: modelSelection.isSelectionReady,
+      onModelSelectorOpenChange: handleModelSelectorOpenChange,
       input: draftInput,
       composerError,
       composerErrorByScope,
@@ -2621,6 +2737,7 @@ export function WorkbenchProvider({
       listLocalSkills,
       listLocalApps,
       modelSelection.isSelectionReady,
+      handleModelSelectorOpenChange,
       conversationModels,
       activeModel,
       modelSelection.selectedModel,
@@ -2646,209 +2763,10 @@ export function WorkbenchProvider({
     ]
   )
   const paneProjectChatValue = useMemo(
-    () => ({
-      scopeKey: projectChatScopeKey,
-      inputByScope: draftInputByScope,
-      models: conversationModels,
-      skills: skillSelection.skills,
-      selectedModel: modelSelection.selectedModel,
-      activeModel,
-      selectedModelOptions: modelSelection.selectedModelOptions,
-      isModelSelectionReady: modelSelection.isSelectionReady,
-      input: draftInput,
-      composerError,
-      composerErrorByScope,
-      trialTemplates,
-      trialPluginName,
-      trialPluginApp,
-      hasConversationContext: Boolean(state.currentRuntimeTask),
-      dismissTrialGuide: dismissTrialGuideForScope,
-      showTrialGuide,
-      selectedSkills: skillSelection.selectedSkills,
-      attachmentStateByScope: attachmentSelection.stateByScope,
-      attachments: attachmentSelection.attachments,
-      uploadingFiles: attachmentSelection.uploadingFiles,
-      errors: attachmentSelection.errors,
-      contextUsage: currentContextUsage,
-      isOptionsLocked: false,
-      isAttachmentReadyToSend: attachmentSelection.isAttachmentReadyToSend,
-      setSelectedModel: modelSelection.setSelectedModel,
-      setSelectedModelAndOptions: modelSelection.setSelectedModelAndOptions,
-      continueInNewConversation,
-      setSelectedModelOption: modelSelection.setSelectedModelOption,
-      getSelectedModel: modelSelection.getSelectedModel,
-      getSelectedModelOptions: modelSelection.getSelectedModelOptions,
-      resolveRuntimeTaskModelSelection,
-      setRuntimeTaskSelectedModel,
-      setRuntimeTaskSelectedModelAndOptions,
-      setRuntimeTaskSelectedModelOption,
-      onBlockedModelSelect: handleBlockedModelSelect,
-      setInput: setDraftInput,
-      setInputForScope: setDraftInputForScope,
-      setComposerError,
-      setComposerErrorForScope,
-      setSelectedSkills: skillSelection.setSelectedSkills,
-      toggleSkill: skillSelection.toggleSkill,
-      handleFileSelect: attachmentSelection.handleFileSelect,
-      handleFileSelectForScope: attachmentSelection.handleFileSelectForScope,
-      addExistingAttachment: attachmentSelection.addExistingAttachment,
-      addExistingAttachmentForScope: attachmentSelection.addExistingAttachmentForScope,
-      removeAttachment: attachmentSelection.removeAttachment,
-      removeAttachmentForScope: attachmentSelection.removeAttachmentForScope,
-      resetAttachments: attachmentSelection.resetAttachments,
-      resetAttachmentsForScope: attachmentSelection.resetAttachmentsForScope,
-      listLocalSkills,
-      listLocalApps,
-      requestCatalogs: requestTaskComposerCatalogs,
-    }),
-    [
-      attachmentSelection.addExistingAttachment,
-      attachmentSelection.addExistingAttachmentForScope,
-      attachmentSelection.attachments,
-      attachmentSelection.errors,
-      attachmentSelection.handleFileSelect,
-      attachmentSelection.handleFileSelectForScope,
-      attachmentSelection.isAttachmentReadyToSend,
-      attachmentSelection.removeAttachment,
-      attachmentSelection.removeAttachmentForScope,
-      attachmentSelection.resetAttachments,
-      attachmentSelection.resetAttachmentsForScope,
-      attachmentSelection.stateByScope,
-      attachmentSelection.uploadingFiles,
-      projectChatScopeKey,
-      requestTaskComposerCatalogs,
-      draftInput,
-      draftInputByScope,
-      composerError,
-      composerErrorByScope,
-      trialTemplates,
-      trialPluginName,
-      trialPluginApp,
-      state.currentRuntimeTask,
-      dismissTrialGuideForScope,
-      showTrialGuide,
-      handleBlockedModelSelect,
-      currentContextUsage,
-      listLocalSkills,
-      listLocalApps,
-      modelSelection.isSelectionReady,
-      conversationModels,
-      activeModel,
-      modelSelection.selectedModel,
-      modelSelection.selectedModelOptions,
-      modelSelection.setSelectedModel,
-      modelSelection.setSelectedModelAndOptions,
-      continueInNewConversation,
-      modelSelection.setSelectedModelOption,
-      modelSelection.getSelectedModel,
-      modelSelection.getSelectedModelOptions,
-      resolveRuntimeTaskModelSelection,
-      setRuntimeTaskSelectedModel,
-      setRuntimeTaskSelectedModelAndOptions,
-      setRuntimeTaskSelectedModelOption,
-      setDraftInput,
-      setDraftInputForScope,
-      setComposerError,
-      setComposerErrorForScope,
-      skillSelection.selectedSkills,
-      skillSelection.setSelectedSkills,
-      skillSelection.skills,
-      skillSelection.toggleSkill,
-    ]
+    () => ({ ...projectChatValue, isOptionsLocked: false }),
+    [projectChatValue]
   )
 
-  const value: WorkbenchContextValue = {
-    services: resolvedServices,
-    workspaceTabId,
-    state,
-    isStartupReady,
-    workspaceFileApi,
-    runtimeTaskReminders,
-    cloudWorkStatus,
-    upgradingDevices,
-    projectExecutionMode,
-    setProjectExecutionMode: selectProjectExecutionMode,
-    updateUserPreferences,
-    setWorkbenchError,
-    projectWorktreeBranch,
-    setProjectWorktreeBranch,
-    projectChat: projectChatValue,
-    selectProject,
-    selectProjectWorkspace,
-    selectStandaloneDevice,
-    openStandaloneWorkspace,
-    startNewChat,
-    startNewSkillChat,
-    startStandaloneChat,
-    startNewProjectChat,
-    openRuntimeTask: runtimeTasks.openRuntimeTask,
-    cancelRuntimeTask: stableCancelRuntimeTask,
-    forceStartRuntimeTask: stableForceStartRuntimeTask,
-    reorderQueuedRuntimeTask: stableReorderQueuedRuntimeTask,
-    searchRuntimeWork: runtimeTasks.searchRuntimeWork,
-    loadRuntimeTranscriptForPane: runtimeTasks.loadRuntimeTranscriptForPane,
-    subscribeRuntimeTaskStream: stableSubscribeRuntimeTaskStream,
-    renameRuntimeTask: runtimeTasks.renameRuntimeTask,
-    archiveRuntimeTask: runtimeTasks.archiveRuntimeTask,
-    archiveProjectConversations: runtimeTasks.archiveProjectConversations,
-    archiveProjectsConversations: runtimeTasks.archiveProjectsConversations,
-    archiveChatConversations: runtimeTasks.archiveChatConversations,
-    forkCurrentRuntimeTask: runtimeTasks.forkCurrentRuntimeTask,
-    getRuntimeGoal: runtimeTasks.getRuntimeGoal,
-    setRuntimeGoal: runtimeTasks.setRuntimeGoal,
-    clearRuntimeGoal: runtimeTasks.clearRuntimeGoal,
-    listImPrivateSessions,
-    bindRuntimeTaskToImSessions,
-    getImNotificationSettings,
-    updateGlobalImNotification,
-    subscribeRuntimeTaskNotifications,
-    unsubscribeRuntimeTaskNotifications,
-    refreshWorkLists,
-    refreshDevices,
-    getRemoteDeviceStartupCommand,
-    upgradeDevice,
-    createProject: projectActions.createProject,
-    createLocalRuntimeProject: projectActions.createLocalRuntimeProject,
-    createGitWorkspaceProject: projectActions.createGitWorkspaceProject,
-    prepareDeviceWorkspace: projectActions.prepareDeviceWorkspace,
-    deleteDeviceWorkspace: projectActions.deleteDeviceWorkspace,
-    listGitRepositories: projectActions.listGitRepositories,
-    listGitBranches: projectActions.listGitBranches,
-    updateProjectName: projectActions.updateProjectName,
-    updateLocalRuntimeProject: projectActions.updateLocalRuntimeProject,
-    removeProject: projectActions.removeProject,
-    reorderRuntimeProjects: projectActions.reorderRuntimeProjects,
-    setRuntimeProjectPinned: projectActions.setRuntimeProjectPinned,
-    setRuntimeProjectAppearance: projectActions.setRuntimeProjectAppearance,
-    reorderRuntimeProjectTasks: projectActions.reorderRuntimeProjectTasks,
-    setRuntimeTaskPinned: projectActions.setRuntimeTaskPinned,
-    getDeviceHomeDirectory: projectActions.getDeviceHomeDirectory,
-    getProjectWorkspaceRoot: projectActions.getProjectWorkspaceRoot,
-    listDeviceDirectories: projectActions.listDeviceDirectories,
-    createDeviceDirectory: projectActions.createDeviceDirectory,
-    cloneGitRepository: projectActions.cloneGitRepository,
-    loadEnvironmentInfo: projectActions.loadEnvironmentInfo,
-    loadEnvironmentDiff: projectActions.loadEnvironmentDiff,
-    commitEnvironmentChanges: projectActions.commitEnvironmentChanges,
-    commitAndPushEnvironmentChanges: projectActions.commitAndPushEnvironmentChanges,
-    pushEnvironmentChanges: projectActions.pushEnvironmentChanges,
-    listEnvironmentBranches: projectActions.listEnvironmentBranches,
-    checkoutEnvironmentBranch: projectActions.checkoutEnvironmentBranch,
-    createEnvironmentBranch: projectActions.createEnvironmentBranch,
-    sendRuntimePaneMessage: runtimeMessaging.sendRuntimePaneMessage,
-    interruptAndSendRuntimePaneMessage: runtimeMessaging.interruptAndSendRuntimePaneMessage,
-    sendRuntimePaneGuidance: runtimeMessaging.sendRuntimePaneGuidance,
-    compactRuntimePaneTask: runtimeMessaging.compactRuntimePaneTask,
-    editLastUserMessage: runtimeMessaging.editLastUserMessage,
-    cancelRuntimePaneTask: runtimeMessaging.cancelRuntimePaneTask,
-    sendCurrentInput: runtimeMessaging.sendCurrentInput,
-    createTemporaryRuntimeTask: runtimeMessaging.createTemporaryRuntimeTask,
-    createEphemeralRuntimeTask: runtimeMessaging.createEphemeralRuntimeTask,
-    createProjectRuntimeTask: runtimeMessaging.createProjectRuntimeTask,
-    pauseCurrentResponse: runtimeMessaging.pauseCurrentResponse,
-    loadTurnFileChangesDiff: runtimeMessaging.loadTurnFileChangesDiff,
-    revertTurnFileChanges: runtimeMessaging.revertTurnFileChanges,
-  }
   const paneValue: WorkbenchPaneContextValue = useMemo(
     () => ({
       services: resolvedServices,
@@ -3028,6 +2946,20 @@ export function WorkbenchProvider({
       upgradingDevices,
       workspaceFileApi,
     ]
+  )
+
+  // The pane context already owns stable action wrappers. Reuse them so
+  // activation-only provider props do not broadcast a new workbench value.
+  const value: WorkbenchContextValue = useMemo(
+    () => ({
+      ...paneValue,
+      workspaceTabId,
+      state,
+      cloudWorkStatus,
+      projectChat: projectChatValue,
+      updateUserPreferences,
+    }),
+    [paneValue, workspaceTabId, state, cloudWorkStatus, projectChatValue, updateUserPreferences]
   )
 
   return (

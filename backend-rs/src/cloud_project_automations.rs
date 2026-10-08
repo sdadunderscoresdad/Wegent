@@ -33,8 +33,8 @@ use chrono::NaiveDateTime;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
-use crate::auth::{AuthFailure, get_current_user};
-use crate::cloud_projects::{PROJECT_COLUMNS, ProjectListRow};
+use crate::auth::SessionUser;
+use crate::cloud_projects::{LOOP_ITEMS_COLUMNS, ProjectListRow};
 use crate::http_compat::FastApiError;
 use crate::state::AppState;
 
@@ -218,7 +218,7 @@ async fn list_rule_rows<M: Mysql>(
              ('1970-01-01 00:00:00', '1970-01-01 00:00:01')) \
          AND loop_items.resource_type IN ('automation_rule') \
          ORDER BY loop_items.updated_at DESC",
-        crate::cloud_projects::PROJECT_COLUMNS
+        crate::cloud_projects::LOOP_ITEMS_COLUMNS
     );
     mysql.fetch_all(sql, ()).await
 }
@@ -229,21 +229,17 @@ async fn list_rule_rows<M: Mysql>(
 async fn list_automations(
     #[inject(state)] state: &AppState,
     project_id: &str,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: SessionUser,
 ) -> Result<Vec<ProjectAutomationView>, FastApiError> {
-    automations(state, project_id, authorization).await
+    automations(state, project_id, &current_user).await
 }
 
 /// Handler body for `GET /api/v1/cloud-projects/{project_id}/automations`.
 async fn automations(
     state: &AppState,
     project_id: &str,
-    authorization: Option<&str>,
+    current_user: &SessionUser,
 ) -> Result<Vec<ProjectAutomationView>, FastApiError> {
-    let current_user = get_current_user(&state.auth, &state.mysql, authorization)
-        .await
-        .map_err(auth_error)?;
-
     // `require_cloud_project_role(db, project_id, user_id, Reporter)`: the
     // source passes the path parameter (a string) through, so SQLAlchemy
     // renders `loop_items.id = '<id>'` with a quoted string literal — the
@@ -252,7 +248,7 @@ async fn automations(
         .mysql
         .fetch_optional(
             &format!(
-                "SELECT {PROJECT_COLUMNS} \nFROM loop_items \n\
+                "SELECT {LOOP_ITEMS_COLUMNS} \nFROM loop_items \n\
                  WHERE loop_items.id = '{project_id}' AND loop_items.status = 'active' \
                  AND loop_items.resource_type IN ('project') \n LIMIT 1"
             ),
@@ -502,16 +498,6 @@ fn shifted_datetime(value: NaiveDateTime, offset_hours: i32) -> String {
         .expect("database datetime is representable")
         .with_timezone(&chrono::Utc);
     utc_datetime(shifted.naive_utc())
-}
-
-/// `get_current_user` failures mapped to the source 401 responses.
-fn auth_error(error: AuthFailure) -> FastApiError {
-    match error {
-        AuthFailure::InvalidCredentials => {
-            FastApiError::unauthorized("Could not validate credentials")
-        }
-        AuthFailure::UserNotActivated => FastApiError::unauthorized("User not activated"),
-    }
 }
 
 /// Dependency failures mapped to the source 500 response.

@@ -12,6 +12,7 @@ import {
 import type { RuntimePaneMessageAction } from './runtimePaneMessages'
 import type { RuntimeTransportReplacedPayload } from '@/stream/chatStream'
 import type {
+  DeviceInfo,
   RuntimeGoal,
   RuntimeGoalContinuationPayload,
   RuntimeGuidanceAppliedPayload,
@@ -19,6 +20,7 @@ import type {
   RuntimeSubagentActivityPayload,
   RuntimeTaskAddress,
 } from '@/types/api'
+import { getWorkbenchDeviceIds } from '@/lib/workbench-device'
 import type {
   ProcessingBlock,
   RuntimeConversationTurn,
@@ -33,6 +35,7 @@ import {
   projectRuntimeConversationTurns,
   reduceRuntimeConversationTurns,
 } from './runtimeConversationTurns'
+import { isAnsweredRequestUserInputBlock } from '@wegent/chat-core/runtime-user-input'
 import {
   createAppliedRuntimeGuidanceMessage,
   createOptimisticRuntimeGuidanceMessage,
@@ -75,6 +78,7 @@ const terminalConversationEvictionTimers = new Map<
   ReturnType<typeof globalThis.setTimeout>
 >()
 const goalSnapshotVersionsByConversation = new Map<string, number>()
+const canonicalDeviceIdByAlias = new Map<string, string>()
 let nextRuntimeGoalSnapshotVersion = 1
 
 export interface RuntimeConversationMetadata {
@@ -201,7 +205,10 @@ export function settleRuntimeConversationSubagents(address: RuntimeTaskAddress):
 
 export function getRuntimeConversationMessages(address: RuntimeTaskAddress): WorkbenchMessage[] {
   const key = runtimeConversationKey(address)
-  return projectRuntimeConversationMessages(key, touchEntry(turnsByConversation, key) ?? [])
+  return projectRuntimeConversationMessages(
+    key,
+    touchEntry(turnsByConversation, key) ?? EMPTY_RUNTIME_CONVERSATION_TURNS
+  )
 }
 
 export function getRuntimeConversationTurns(
@@ -218,7 +225,7 @@ export function getRuntimeConversationMessagesForLogicalAddress(
   if (turnsByConversation.has(exactKey) || address.deviceId !== 'local-device') {
     return projectRuntimeConversationMessages(
       exactKey,
-      touchEntry(turnsByConversation, exactKey) ?? []
+      touchEntry(turnsByConversation, exactKey) ?? EMPTY_RUNTIME_CONVERSATION_TURNS
     )
   }
 
@@ -363,9 +370,30 @@ export function replaceRuntimeConversationSnapshot(
   snapshotTurns: RuntimeConversationTurn[]
 ): WorkbenchMessage[] {
   const key = runtimeConversationKey(address)
-  cacheRuntimeConversationTurns(key, snapshotTurns)
+  const localTurnsById = new Map(
+    (turnsByConversation.get(key) ?? []).flatMap(turn =>
+      turn.id === null ? [] : ([[turn.id, turn]] as const)
+    )
+  )
+  const turns = snapshotTurns.map(snapshotTurn => {
+    if (snapshotTurn.id === null) return snapshotTurn
+    const localTurn = localTurnsById.get(snapshotTurn.id)
+    if (!localTurn) return snapshotTurn
+
+    const mergedTurn = mergeRuntimeConversationTurns([localTurn], [snapshotTurn])[0]
+    const authoritativeItemIds = new Set(snapshotTurn.items.map(item => item.id))
+    return {
+      ...mergedTurn,
+      items: mergedTurn.items.filter(
+        item =>
+          authoritativeItemIds.has(item.id) ||
+          (item.type === 'block' && isAnsweredRequestUserInputBlock(item.block))
+      ),
+    }
+  })
+  cacheRuntimeConversationTurns(key, turns)
   notifyRuntimeConversation(key)
-  return projectRuntimeConversationMessages(key, snapshotTurns)
+  return projectRuntimeConversationMessages(key, turns)
 }
 
 export function runtimeConversationSnapshotSettlesLatestTurn(
@@ -806,7 +834,29 @@ export function cacheRuntimeConversationQueuePausedByKey(key: string, paused: bo
 }
 
 export function runtimeConversationKey(address: RuntimeTaskAddress): string {
-  return `${address.deviceId}:${address.taskId}`
+  return `${canonicalRuntimeConversationDeviceId(address.deviceId)}:${address.taskId}`
+}
+
+export function syncRuntimeConversationDeviceAliases(devices: DeviceInfo[]): void {
+  for (const device of devices) {
+    const canonicalDeviceId = device.device_id.trim()
+    if (!canonicalDeviceId) continue
+    for (const alias of getWorkbenchDeviceIds(device)) {
+      canonicalDeviceIdByAlias.set(alias, canonicalDeviceId)
+    }
+  }
+}
+
+function canonicalRuntimeConversationDeviceId(deviceId: string): string {
+  let current = deviceId.trim()
+  const visited = new Set<string>()
+  while (!visited.has(current)) {
+    visited.add(current)
+    const canonical = canonicalDeviceIdByAlias.get(current)
+    if (!canonical || canonical === current) break
+    current = canonical
+  }
+  return current
 }
 
 function updateRuntimeConversationMetadata(
@@ -943,6 +993,7 @@ export function clearRuntimeConversationCacheForTests() {
   queuedMessagesByConversation.clear()
   queuedMessagesPausedByConversation.clear()
   interruptedGuidanceIdsByConversation.clear()
+  canonicalDeviceIdByAlias.clear()
   clearConversationViewportCache()
 }
 

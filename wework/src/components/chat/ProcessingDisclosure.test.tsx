@@ -30,7 +30,7 @@ function preview(appendTool = false) {
         showThinking={false}
         thinkingContent=""
         fileEditDurations={new Map()}
-        stateKey="conversation:message"
+        detailStateScopeKey="conversation:message"
       />
     </ConversationTranslationProvider>
   )

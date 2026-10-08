@@ -51,15 +51,22 @@ pub async fn build() -> Result<AppState> {
             None
         }
     };
+    // `executor_version_service` is created once with the application's Redis
+    // service: its refresh worker is started here, at process startup, so a
+    // device listing only enqueues the refresh a cache miss requires.
+    let executor_version =
+        crate::executor_version::ExecutorVersionService::from_redis(redis.clone());
 
     Ok(AppState {
         entity_resolvers: crate::permissions::EntityResolvers::public(mysql.clone()),
         user_profile: Arc::new(crate::user_profile::DefaultUserViewExtension),
+        user_git_info: Arc::new(crate::user_profile::StoredGitInfo),
         media_policy: Arc::new(crate::media_policy::DefaultMediaPolicy),
+        external_media: Arc::new(crate::attachments::external_media::NoExternalMediaRelay),
         document_download_policy: Arc::new(
             crate::knowledge_download_policy::DefaultDocumentDownloadPolicy,
         ),
-        task_policy: crate::task_routing::TaskPolicy::default(),
+        task_store: Arc::new(crate::task_store::DefaultTaskStore::new(mysql.clone())),
         workspace_repository: Arc::new(
             crate::subscriptions_list::workspaces::BaseWorkspaceRepository,
         ),
@@ -77,5 +84,7 @@ pub async fn build() -> Result<AppState> {
         attachment_http,
         erp: Arc::new(NoopErpProvider),
         video_result_urls: Arc::new(crate::video_result_urls::NoVideoResultUrlRefresh),
+        cloud_runtime_features: Arc::new(crate::devices::NoCloudRuntimeFeatures),
+        executor_version,
     })
 }

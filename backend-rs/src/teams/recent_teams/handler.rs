@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use serde_json::Value;
 
-use super::super::auth::get_current_user;
 use super::super::group_membership::{
     ErpContext, accessible_authorization_namespaces, effective_roles, user_group_memberships,
 };
@@ -75,21 +74,19 @@ fn quick_access_team(id: i64, user_id: i64, name: &str, team_json: &OpaqueJson) 
 #[brz_http_server::get("/api/users/recent-teams")]
 async fn get_user_recent_teams(
     #[inject(state)] state: &AppState,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: crate::teams::auth::TeamsUser,
     is_code: Option<bool>,
 ) -> Result<Vec<RecentTeam>, HttpError> {
-    recent_teams(state, authorization, is_code).await
+    recent_teams(state, &current_user, is_code).await
 }
 
 /// Handler body for `GET /api/users/recent-teams`.
 async fn recent_teams(
     state: &AppState,
-    authorization: Option<&str>,
+    current_user: &crate::teams::auth::TeamsUser,
     is_code: Option<bool>,
 ) -> Result<Vec<RecentTeam>, HttpError> {
     let is_code = is_code.unwrap_or(false);
-    let headers = crate::headers::OwnedHeaders::from_pairs([("authorization", authorization)]);
-    let current_user = get_current_user(&state.auth, &state.mysql, &headers.view()).await?;
     recent_accessible_teams(state, current_user.users_id as i64, is_code).await
 }
 
@@ -106,8 +103,14 @@ async fn recent_accessible_teams(
     // `_get_recent_team_refs`: recent owner-only tasks, filtered by taskType
     // label against `is_code`, extracting `(name, namespace, user_id)` team
     // refs in first-seen order.
-    let recent_tasks = repo::list_recent_owner_only_tasks(&state.mysql, user_id, SCAN_LIMIT)
+    let recent_tasks = state
+        .task_store
+        .list_recent_owner_only_tasks(user_id, SCAN_LIMIT)
         .await
+        .map_err(internal)?
+        .iter()
+        .map(repo::decode_recent_task_json)
+        .collect::<brz_mysql::MysqlResult<Vec<_>>>()
         .map_err(internal)?;
     let mut refs: Vec<repo::TeamRef> = Vec::new();
     let mut seen_refs: HashSet<repo::TeamRef> = HashSet::new();

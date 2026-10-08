@@ -9,6 +9,7 @@ import type { FileEditDurationsByBlock } from './ToolFileChanges'
 import { isContextCompactionToolBlock, type ProcessingDisplayRow } from './toolBlockActivity'
 import { SubagentActivityGroup } from './SubagentBlockItem'
 import { type ToolActivityLabels } from './processingDisplayTypes'
+import { getProcessingDetailStateKey } from './processingExpansionState'
 import {
   countProcessingActivityKinds,
   ToolActivityGroup,
@@ -129,7 +130,8 @@ export function LiveProcessingPreview({
   thinkingContent,
   onOpenWorkspaceFile,
   fileEditDurations,
-  stateKey,
+  detailStateScopeKey,
+  onExpandedDetailChange,
   onOpenSubagent,
 }: {
   rows: ProcessingDisplayRow[]
@@ -137,13 +139,13 @@ export function LiveProcessingPreview({
   thinkingContent: string
   onOpenWorkspaceFile?: (path: string) => void
   fileEditDurations: FileEditDurationsByBlock
-  stateKey?: string
+  detailStateScopeKey?: string
+  onExpandedDetailChange?: (expanded: boolean) => void
   onOpenSubagent?: (block: SubagentBlock) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(() => new Set())
   const hasExpandedDetail = rows.some(row => expandedRowIds.has(row.id))
-
   const updateExpandedRow = useCallback((rowId: string, expanded: boolean) => {
     setExpandedRowIds(current => {
       if (current.has(rowId) === expanded) return current
@@ -153,6 +155,10 @@ export function LiveProcessingPreview({
       return next
     })
   }, [])
+
+  useLayoutEffect(() => {
+    onExpandedDetailChange?.(hasExpandedDetail)
+  }, [hasExpandedDetail, onExpandedDetailChange])
 
   useLayoutEffect(() => {
     const scrollArea = scrollRef.current
@@ -178,7 +184,11 @@ export function LiveProcessingPreview({
             onOpenWorkspaceFile={onOpenWorkspaceFile}
             fileEditDurations={fileEditDurations}
             onExpandedChange={updateExpandedRow}
-            stateKey={stateKey ? `${stateKey}:${row.id}` : undefined}
+            stateKey={
+              detailStateScopeKey
+                ? getProcessingDetailStateKey(detailStateScopeKey, row.id)
+                : undefined
+            }
             onOpenSubagent={onOpenSubagent}
           />
         ))}

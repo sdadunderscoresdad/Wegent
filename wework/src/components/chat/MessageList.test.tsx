@@ -983,6 +983,116 @@ describe('MessageList', () => {
     expect(screen.queryByTestId('generated-image')).not.toBeInTheDocument()
   })
 
+  test('downloads a remote tool image only when its detail is opened', async () => {
+    const user = userEvent.setup()
+    const readWorkspaceFileChunk = vi.fn().mockResolvedValue({
+      path: '/workspace/generated/sunset.png',
+      name: 'sunset.png',
+      contentBase64: 'aW1hZ2U=',
+      offset: 0,
+      eof: true,
+      size: 5,
+    })
+    const createObjectUrl = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockReturnValue('blob:remote-tool-image')
+    const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+
+    const { unmount } = render(
+      <WorkspaceFileReaderProvider readWorkspaceFileChunk={readWorkspaceFileChunk}>
+        <MessageList
+          imageTarget={{ deviceId: 'remote-device', workspacePath: '/workspace/project' }}
+          messages={[
+            {
+              id: 'assistant-remote-image',
+              role: 'assistant',
+              content: 'Done.',
+              status: 'done',
+              createdAt: '2026-09-29T10:00:00Z',
+              blocks: [
+                {
+                  id: 'view-remote-image',
+                  subtaskId: '1',
+                  type: 'tool',
+                  toolName: 'view_image',
+                  toolInput: { path: '/workspace/generated/sunset.png' },
+                  status: 'done',
+                  createdAt: Date.now(),
+                },
+              ],
+            },
+          ]}
+        />
+      </WorkspaceFileReaderProvider>
+    )
+
+    expect(readWorkspaceFileChunk).not.toHaveBeenCalled()
+    await user.click(screen.getByTestId('final-processing-toggle'))
+    await user.click(screen.getByTestId('processing-summary-toggle'))
+    expect(readWorkspaceFileChunk).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: /展开工具详情/ }))
+    expect(await screen.findByTestId('image-view-preview')).toHaveAttribute(
+      'src',
+      'blob:remote-tool-image'
+    )
+    expect(readWorkspaceFileChunk).toHaveBeenCalledWith(
+      'remote-device',
+      '/workspace/generated/sunset.png',
+      0,
+      '/workspace/generated'
+    )
+    expect(createObjectUrl).toHaveBeenCalledWith(expect.objectContaining({ type: 'image/png' }))
+    expect(electronLocalFileMock.read).not.toHaveBeenCalled()
+
+    unmount()
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:remote-tool-image')
+  })
+
+  test('shows a remote image read failure inside the tool detail', async () => {
+    const user = userEvent.setup()
+    const readWorkspaceFileChunk = vi.fn().mockRejectedValue(new Error('Device is offline'))
+
+    render(
+      <WorkspaceFileReaderProvider readWorkspaceFileChunk={readWorkspaceFileChunk}>
+        <MessageList
+          imageTarget={{ deviceId: 'remote-device', workspacePath: '/workspace' }}
+          messages={[
+            {
+              id: 'assistant-remote-image-error',
+              role: 'assistant',
+              content: 'Done.',
+              status: 'done',
+              createdAt: '2026-09-29T10:00:00Z',
+              blocks: [
+                {
+                  id: 'view-remote-image-error',
+                  subtaskId: '1',
+                  type: 'tool',
+                  toolName: 'view_image',
+                  toolInput: { path: 'sunset.png' },
+                  status: 'done',
+                  createdAt: Date.now(),
+                },
+              ],
+            },
+          ]}
+        />
+      </WorkspaceFileReaderProvider>
+    )
+
+    await user.click(screen.getByTestId('final-processing-toggle'))
+    await user.click(screen.getByTestId('processing-summary-toggle'))
+    await user.click(screen.getByRole('button', { name: /展开工具详情/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('图片加载失败: Device is offline')
+    expect(readWorkspaceFileChunk).toHaveBeenCalledWith(
+      'remote-device',
+      '/workspace/sunset.png',
+      0,
+      '/workspace'
+    )
+    expect(screen.queryByTestId('image-view-preview')).not.toBeInTheDocument()
+  })
+
   test('renders both hosts without message containment or window placeholders', () => {
     render(
       <MessageList
@@ -5856,7 +5966,7 @@ describe('MessageList', () => {
     expect(screen.getByTestId('thinking-indicator')).toHaveTextContent('正在思考')
   })
 
-  test('keeps streaming process open, preserves explicit expansion, and keeps the final text mounted', () => {
+  test('keeps expanded tool details open while final text streams, until the user closes them', () => {
     const completedBlock: ProcessingBlock = {
       id: 'call-1',
       subtaskId: 1,
@@ -5870,7 +5980,7 @@ describe('MessageList', () => {
     const streamingMessage = {
       id: '2',
       role: 'assistant' as const,
-      content: 'Let me explore the repo structure for you.',
+      content: '',
       status: 'streaming' as const,
       createdAt: '2026-05-25T18:46:00.000+08:00',
     }
@@ -5886,21 +5996,15 @@ describe('MessageList', () => {
     )
 
     expect(screen.queryByTestId('thinking-indicator')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('tool-block-thinking')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('processing-live-preview')).not.toBeInTheDocument()
-    expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
-    fireEvent.click(screen.getByTestId('final-processing-toggle'))
-    expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(screen.getByTestId('final-processing-toggle'))
-    expect(screen.getByTestId('processing-summary-header')).not.toHaveTextContent('已处理')
-    const content = screen.getByTestId('assistant-message-content')
+    expect(screen.getByTestId('processing-live-preview')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '展开工具详情' }))
 
     rerender(
       <MessageList
         messages={[
           {
             ...streamingMessage,
-            content: `${streamingMessage.content} More text.`,
+            content: 'Let me explore the repo structure for you.',
             blocks: [completedBlock],
           },
         ]}
@@ -5908,6 +6012,30 @@ describe('MessageList', () => {
     )
 
     expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '收起工具详情' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByTestId('processing-live-preview')).toBeInTheDocument()
+    const content = screen.getByTestId('assistant-message-content')
+
+    rerender(
+      <MessageList
+        messages={[
+          {
+            ...streamingMessage,
+            content: 'Let me explore the repo structure for you. More text.',
+            blocks: [completedBlock],
+          },
+        ]}
+      />
+    )
+
+    expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '收起工具详情' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
     expect(screen.getByTestId('assistant-message-content')).toBe(content)
 
     rerender(
@@ -5916,7 +6044,7 @@ describe('MessageList', () => {
         messages={[
           {
             ...streamingMessage,
-            content: `${streamingMessage.content} More text. Done.`,
+            content: 'Let me explore the repo structure for you. More text. Done.',
             status: 'done',
             blocks: [completedBlock],
           },
@@ -5925,6 +6053,10 @@ describe('MessageList', () => {
     )
 
     expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '收起工具详情' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
     expect(screen.getByTestId('assistant-message-content')).toBe(content)
     expect(screen.getByTestId('message-assistant-waiting')).toBeInTheDocument()
 
@@ -5933,7 +6065,7 @@ describe('MessageList', () => {
         messages={[
           {
             ...streamingMessage,
-            content: `${streamingMessage.content} More text. Done.`,
+            content: 'Let me explore the repo structure for you. More text. Done.',
             status: 'done',
             blocks: [completedBlock],
           },
@@ -5942,6 +6074,251 @@ describe('MessageList', () => {
     )
 
     expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '收起工具详情' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByTestId('assistant-message-content')).toBe(content)
+
+    fireEvent.click(screen.getByRole('button', { name: '收起工具详情' }))
+
+    expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  test('collapses expanded tool details when the completed processing shell is toggled', () => {
+    const completedBlock: ProcessingBlock = {
+      id: 'call-final-toggle',
+      subtaskId: 1,
+      type: 'tool',
+      toolName: 'Bash',
+      toolInput: { command: 'rg -n "foo" src' },
+      status: 'done',
+      createdAt: 1770000000000,
+    }
+    const message = {
+      id: 'assistant-final-toggle',
+      role: 'assistant' as const,
+      content: 'Done.',
+      createdAt: '2026-05-25T18:46:00.000+08:00',
+      blocks: [completedBlock],
+    }
+    const { rerender } = render(
+      <MessageList messages={[{ ...message, content: '', status: 'streaming' }]} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '展开工具详情' }))
+
+    rerender(<MessageList messages={[{ ...message, status: 'done' }]} />)
+
+    const finalToggle = screen.getByTestId('final-processing-toggle')
+    expect(finalToggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(finalToggle)
+
+    expect(finalToggle).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(finalToggle)
+
+    expect(finalToggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByTestId('processing-summary-toggle'))
+    expect(screen.getByRole('button', { name: '展开工具详情' })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+  })
+
+  test.each([false, true])(
+    'keeps an expanded file change across streaming and completion (append chunk=%s)',
+    appendChunk => {
+      const fileChangesBlock: ProcessingBlock = {
+        id: 'file-changes-persistence',
+        subtaskId: 1,
+        type: 'file_changes',
+        status: 'done',
+        createdAt: 1770000000000,
+        fileChanges: {
+          version: 1,
+          status: 'active',
+          artifact_id: 'artifact-file-changes-persistence',
+          device_id: 'device-1',
+          workspace_path: '/workspace/project',
+          file_count: 1,
+          additions: 1,
+          deletions: 1,
+          files: [
+            {
+              path: 'scripts/env',
+              change_type: 'modified',
+              additions: 1,
+              deletions: 1,
+              binary: false,
+            },
+          ],
+          reverted_at: null,
+          revertible: false,
+          diff: [
+            'diff --git a/scripts/env b/scripts/env',
+            '--- a/scripts/env',
+            '+++ b/scripts/env',
+            '@@ -1 +1 @@',
+            '-OLD_ENV=remote',
+            '+OLD_ENV=local',
+          ].join('\n'),
+        },
+      }
+      const updatedBlocks = appendChunk
+        ? [fileChangesBlock, { ...fileChangesBlock, id: 'file-changes-next-chunk' }]
+        : [fileChangesBlock]
+      const message = {
+        id: 'assistant-file-changes-persistence',
+        role: 'assistant' as const,
+        content: '',
+        status: 'streaming' as const,
+        createdAt: '2026-05-25T18:46:00.000+08:00',
+        blocks: [fileChangesBlock],
+      }
+      const { rerender } = render(<MessageList messages={[message]} />)
+
+      fireEvent.click(screen.getByRole('button', { name: /编辑 env/ }))
+      const originalDiff = screen.getByTestId('process-file-change-diff')
+
+      rerender(
+        <MessageList
+          messages={[
+            {
+              ...message,
+              blocks: updatedBlocks,
+              content: 'Updated the environment configuration.',
+            },
+          ]}
+        />
+      )
+
+      expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByTestId('process-file-change-diff')).toBe(originalDiff)
+
+      rerender(
+        <MessageList
+          messages={[
+            {
+              ...message,
+              blocks: updatedBlocks,
+              content: 'Updated the environment configuration.',
+              status: 'done',
+            },
+          ]}
+        />
+      )
+
+      expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByTestId('process-file-change-diff')).toBe(originalDiff)
+
+      fireEvent.click(screen.getByRole('button', { name: /编辑 env/ }))
+
+      expect(screen.getByTestId('final-processing-toggle')).toHaveAttribute(
+        'aria-expanded',
+        'false'
+      )
+    }
+  )
+
+  test('keeps an expanded file change open when runtime ordering moves it after text', () => {
+    const fileChangesBlock: ProcessingBlock = {
+      id: 'file-changes-ordered-persistence',
+      subtaskId: 1,
+      type: 'file_changes',
+      status: 'done',
+      createdAt: 1770000000000,
+      fileChanges: {
+        version: 1,
+        status: 'active',
+        artifact_id: 'artifact-file-changes-ordered-persistence',
+        device_id: 'device-1',
+        workspace_path: '/workspace/project',
+        file_count: 1,
+        additions: 1,
+        deletions: 1,
+        files: [
+          {
+            path: 'scripts/env',
+            change_type: 'modified',
+            additions: 1,
+            deletions: 1,
+            binary: false,
+          },
+        ],
+        reverted_at: null,
+        revertible: false,
+        diff: [
+          'diff --git a/scripts/env b/scripts/env',
+          '--- a/scripts/env',
+          '+++ b/scripts/env',
+          '@@ -1 +1 @@',
+          '-OLD_ENV=remote',
+          '+OLD_ENV=local',
+        ].join('\n'),
+      },
+    }
+    const message = {
+      id: 'assistant-file-changes-ordered-persistence',
+      role: 'assistant' as const,
+      content: '',
+      status: 'streaming' as const,
+      createdAt: '2026-05-25T18:46:00.000+08:00',
+      blocks: [fileChangesBlock],
+      runtimeDisplayItems: [
+        {
+          id: fileChangesBlock.id,
+          type: 'block' as const,
+        },
+      ],
+    }
+    const { rerender } = render(<MessageList messages={[message]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /编辑 env/ }))
+    expect(screen.getByTestId('process-file-change-diff')).toBeInTheDocument()
+
+    const finalContent = 'Updated the environment configuration.'
+    const orderedRuntimeDisplayItems = [
+      {
+        id: 'assistant-text',
+        type: 'assistant_text' as const,
+        content: finalContent,
+      },
+      {
+        id: fileChangesBlock.id,
+        type: 'block' as const,
+      },
+    ]
+    rerender(
+      <MessageList
+        messages={[
+          {
+            ...message,
+            content: finalContent,
+            runtimeDisplayItems: orderedRuntimeDisplayItems,
+          },
+        ]}
+      />
+    )
+
+    expect(screen.queryByTestId('final-processing-toggle')).not.toBeInTheDocument()
+    expect(screen.getByTestId('process-file-change-diff')).toBeInTheDocument()
+
+    rerender(
+      <MessageList
+        messages={[
+          {
+            ...message,
+            content: finalContent,
+            status: 'done',
+            runtimeDisplayItems: orderedRuntimeDisplayItems,
+          },
+        ]}
+      />
+    )
+
+    expect(screen.queryByTestId('final-processing-toggle')).not.toBeInTheDocument()
+    expect(screen.getByTestId('process-file-change-diff')).toBeInTheDocument()
   })
 
   test('renders process text inside the processing timeline before the following tool', () => {

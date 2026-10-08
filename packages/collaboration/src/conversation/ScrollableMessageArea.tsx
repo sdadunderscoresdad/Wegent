@@ -41,6 +41,7 @@ function ConversationPane(props: ScrollableMessageAreaProps) {
     onLoadMoreBefore,
     onLoadTurnNavigationItem,
     onLoadTranscriptGap,
+    renderGapAfterMessage,
   } = props
   const { t, translate } = useConversationTranslation()
   const {
@@ -98,7 +99,7 @@ function ConversationPane(props: ScrollableMessageAreaProps) {
   const renderGap = useCallback<NonNullable<MessageListProps['renderGapAfterMessage']>>(
     (message, next) => {
       const gap = runtimeTranscriptGapBetween(message, next, loadedTranscriptRanges)
-      return gap ? (
+      const transcriptGap = gap ? (
         <RuntimeTranscriptGapMarker
           key={runtimeTranscriptGapKey(gap)}
           gap={gap}
@@ -107,8 +108,24 @@ function ConversationPane(props: ScrollableMessageAreaProps) {
           onLoad={onLoadTranscriptGap ? loadGap : undefined}
         />
       ) : null
+      const customGap = renderGapAfterMessage?.(message, next)
+      if (!transcriptGap) return customGap
+      if (!customGap) return transcriptGap
+      return (
+        <>
+          {transcriptGap}
+          {customGap}
+        </>
+      )
     },
-    [gapLoading, loadGap, loadedTranscriptRanges, onLoadTranscriptGap, scrollRef]
+    [
+      gapLoading,
+      loadGap,
+      loadedTranscriptRanges,
+      onLoadTranscriptGap,
+      scrollRef,
+      renderGapAfterMessage,
+    ]
   )
   const navigationState = useCallback(
     (pending: boolean) => {

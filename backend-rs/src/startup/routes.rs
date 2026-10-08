@@ -3,28 +3,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Route composition shared by the public and application applications.
-use crate::{models_unified, state::AppState};
+use crate::{auth::AppAuthenticator, models_unified, state::AppState};
 use anyhow::{Context as _, Result};
 use std::sync::Arc;
 
-pub async fn build(app: Arc<AppState>) -> Result<brz_http_server::Router> {
+pub async fn build(app: Arc<AppState>) -> Result<brz_http_server::Router<AppAuthenticator>> {
     let status_state = super::remote_workspace_status::build(
         app.mysql.clone(),
-        app.task_policy,
+        Arc::clone(&app.task_store),
         Arc::clone(&app.erp),
+        app.entity_resolvers.clone(),
+        crate::remote_workspace_status::app_state::VideoRefresh {
+            client: app.attachment_http.clone(),
+            extension: Arc::clone(&app.video_result_urls),
+        },
     )
     .await
     .context("failed to initialize remote-workspace status dependencies")?;
-    let tree_state = super::remote_workspace_tree::build(app.mysql.clone(), Arc::clone(&app.erp))
-        .await
-        .context("failed to build remote-workspace tree dependencies")?;
-    let runtime_check_state = super::runtime_check::build(
+    let tree_state = super::remote_workspace_tree::build(
         app.mysql.clone(),
-        Arc::clone(&app.user_reader),
-        app.task_policy,
+        Arc::clone(&app.task_store),
+        Arc::clone(&app.erp),
+        app.entity_resolvers.clone(),
+        app.attachment_http.clone(),
+        Arc::clone(&app.video_result_urls),
     )
     .await
-    .context("failed to connect runtime-check dependencies")?;
+    .context("failed to build remote-workspace tree dependencies")?;
+    let runtime_check_state =
+        super::runtime_check::build(app.mysql.clone(), Arc::clone(&app.task_store))
+            .await
+            .context("failed to connect runtime-check dependencies")?;
     let models_unified_config = models_unified::config::AppConfig::from_env();
     let models_unified_state =
         super::models_unified::build(app.mysql.clone(), &models_unified_config, app.erp.clone())

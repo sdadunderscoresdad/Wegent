@@ -2,8 +2,12 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi, type Mock } from 'vitest'
 import {
   clearPersistentProcessingExpansions,
+  collapsePersistentProcessingExpansions,
   evictPersistentProcessingExpansions,
+  getProcessingDetailStateKey,
+  useAnyPersistentProcessingExpansion,
   usePersistentProcessingExpansion,
+  usePersistentProcessingSelection,
 } from '../../../../packages/collaboration/src/conversation/blocks/processingExpansionState'
 
 const { notifications } = vi.hoisted(() => ({ notifications: [] as Mock<() => void>[] }))
@@ -186,4 +190,75 @@ test('the 2000-choice limit notifies the oldest mounted disclosure when it is ev
   expect(oldest.notified).toHaveBeenCalledOnce()
   expect(retained.notified).not.toHaveBeenCalled()
   expect(writerNotification).toHaveBeenCalledOnce()
+})
+
+test('file selections survive remounting and stay isolated by conversation', () => {
+  const key = getProcessingDetailStateKey('conversation:message', 'file')
+  const first = renderHook(() => usePersistentProcessingSelection(key))
+  act(() => first.result.current[1]('src/main.ts'))
+  first.unmount()
+  const restored = renderHook(() => usePersistentProcessingSelection(key))
+  const other = renderHook(() =>
+    usePersistentProcessingSelection(getProcessingDetailStateKey('other:message', 'file'))
+  )
+  expect(restored.result.current[0]).toBe('src/main.ts')
+  expect(other.result.current[0]).toBeNull()
+  act(() => other.result.current[1]('src/other.ts'))
+  act(() => evictPersistentProcessingExpansions('conversation'))
+  expect(restored.result.current[0]).toBeNull()
+  expect(other.result.current[0]).toBe('src/other.ts')
+})
+
+test('detail aggregates notify only their keys and batch summary collapse once', () => {
+  const command = renderExpansion('conversation:command')
+  const file = renderHook(() => usePersistentProcessingSelection('conversation:file'))
+  const fileNotification = notifications.at(-1)!
+  const other = renderExpansion('other:command')
+  const keys = ['conversation:command', 'conversation:file']
+  const aggregate = renderHook(() => useAnyPersistentProcessingExpansion(keys))
+  const aggregateNotification = notifications.at(-1)!
+  act(() => other.result.current[1](true))
+  expect(aggregateNotification).not.toHaveBeenCalled()
+  act(() => {
+    command.result.current[1](true)
+    file.result.current[1]('src/main.ts')
+  })
+  expect(aggregate.result.current).toBe(true)
+  vi.clearAllMocks()
+  act(() => file.result.current[1](current => current))
+  expect(fileNotification).not.toHaveBeenCalled()
+  expect(aggregateNotification).not.toHaveBeenCalled()
+
+  act(() => collapsePersistentProcessingExpansions(keys))
+
+  expect(command.result.current[0]).toBe(false)
+  expect(file.result.current[0]).toBeNull()
+  expect(aggregate.result.current).toBe(false)
+  expect(aggregateNotification).toHaveBeenCalledOnce()
+  expect(other.notified).not.toHaveBeenCalled()
+  vi.clearAllMocks()
+  act(() => collapsePersistentProcessingExpansions(keys))
+  expect(aggregateNotification).not.toHaveBeenCalled()
+})
+
+test('changing aggregate keys unsubscribes the previous conversation', () => {
+  const old = renderExpansion('old:detail')
+  const next = renderExpansion('next:detail')
+  const aggregate = renderHook(({ keys }) => useAnyPersistentProcessingExpansion(keys), {
+    initialProps: { keys: ['old:detail'] },
+  })
+  const oldNotification = notifications.at(-1)!
+  aggregate.rerender({ keys: ['next:detail'] })
+  const nextNotification = notifications.at(-1)!
+  act(() => old.result.current[1](true))
+  expect(oldNotification).not.toHaveBeenCalled()
+  expect(nextNotification).not.toHaveBeenCalled()
+  expect(aggregate.result.current).toBe(false)
+  act(() => next.result.current[1](true))
+  expect(aggregate.result.current).toBe(true)
+  expect(nextNotification).toHaveBeenCalledOnce()
+  aggregate.unmount()
+  nextNotification.mockClear()
+  act(() => next.result.current[1](false))
+  expect(nextNotification).not.toHaveBeenCalled()
 })

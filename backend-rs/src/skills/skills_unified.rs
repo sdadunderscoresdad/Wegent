@@ -27,7 +27,7 @@ use brz_mysql::{FromMysqlRow, Json, Mysql, MysqlResult};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use crate::auth::{AuthFailure, UserRow, get_current_user};
+use crate::auth::UserRow;
 use crate::http_compat::FastApiError;
 use crate::state::AppState;
 use crate::teams::group_membership::{
@@ -314,7 +314,16 @@ where
         let Some(skill) = get_active_skill(mysql, skill_id).await? else {
             continue;
         };
-        if !can_user_access_skill(mysql, erp, user, &skill).await? {
+        let accessible = can_user_access_skill(
+            mysql,
+            erp,
+            i64::from(user.id),
+            i64::from(skill.kinds_user_id),
+            &skill.kinds_namespace,
+            is_published_public(&skill),
+        )
+        .await?;
+        if !accessible {
             continue;
         }
         ids.insert(skill_id);
@@ -339,21 +348,10 @@ where
         .await
 }
 
-/// `can_user_access_skill`: owner/system access, published-public
-/// visibility, or a Reporter-or-above role in the Skill's group namespace.
-async fn can_user_access_skill<M>(
-    mysql: &M,
-    erp: &ErpContext<'_>,
-    user: &UserRow,
-    skill: &KindRow,
-) -> MysqlResult<bool>
-where
-    M: Mysql,
-{
-    if skill.kinds_user_id == user.id || skill.kinds_user_id == 0 {
-        return Ok(true);
-    }
-    let published_public = skill
+/// The published-public capability of a Skill
+/// (`_get_capability`'s `visibility`/`publishStatus` pair).
+fn is_published_public(skill: &KindRow) -> bool {
+    skill
         .input()
         .and_then(|input| input.spec.as_ref())
         .and_then(|spec| spec.capability.as_ref())
@@ -370,12 +368,38 @@ where
                     .and_then(|value| value.project::<String>())
                     .as_deref()
                     == Some("published")
-        });
+        })
+}
+
+/// `can_user_access_skill`: owner/system access, published-public
+/// visibility, or a Reporter-or-above role in the Skill's group namespace.
+/// Shared by every source call site (`skill_binding_service` and the tasks'
+/// skill resolution).
+pub(crate) async fn can_user_access_skill<M, R: brz_redis::Redis>(
+    mysql: &M,
+    erp: &ErpContext<'_, R>,
+    user_id: i64,
+    skill_user_id: i64,
+    skill_namespace: &str,
+    published_public: bool,
+) -> MysqlResult<bool>
+where
+    M: Mysql,
+{
+    if skill_user_id == user_id || skill_user_id == 0 {
+        return Ok(true);
+    }
     if published_public {
         return Ok(true);
     }
-    if skill.kinds_namespace != "default" {
-        let role = effective_role_in_group(mysql, erp, user.id, &skill.kinds_namespace).await?;
+    if skill_namespace != "default" {
+        let role = effective_role_in_group(
+            mysql,
+            erp,
+            i32::try_from(user_id).unwrap_or(i32::MAX),
+            skill_namespace,
+        )
+        .await?;
         if role.as_deref().is_some_and(reporter_or_above) {
             return Ok(true);
         }
@@ -615,8 +639,8 @@ where
 }
 
 /// `get_user_groups`: sorted group names where the user has an effective
-/// role.
-async fn get_user_groups<M>(
+/// role. Shared with the download path's `list_user_group_skill_ids`.
+pub(crate) async fn get_user_groups<M>(
     mysql: &M,
     erp: &ErpContext<'_>,
     user_id: i32,
@@ -698,31 +722,22 @@ where
 #[brz_http_server::get("/api/v1/kinds/skills/unified")]
 async fn list_unified_skills(
     #[inject(state)] state: &AppState,
-    #[header] authorization: Option<&str>,
+    #[auth] current_user: crate::auth::SessionUser,
     query: brz_http_server::Query<UnifiedParams>,
 ) -> Result<Vec<SkillItem>, FastApiError> {
-    unified_skills(state, authorization, &query).await
+    unified_skills(state, &current_user, &query).await
 }
 
 /// Handler body for `GET /api/v1/kinds/skills/unified`.
 async fn unified_skills(
     state: &AppState,
-    authorization: Option<&str>,
+    user: &crate::auth::SessionUser,
     params: &UnifiedParams,
 ) -> Result<Vec<SkillItem>, FastApiError> {
     let mysql = &state.mysql;
     let erp = ErpContext {
         erp: state.erp.as_ref(),
         redis: state.redis.as_ref(),
-    };
-    let user = match get_current_user(&state.auth, mysql, authorization).await {
-        Ok(user) => user,
-        Err(AuthFailure::InvalidCredentials) => {
-            return Err(FastApiError::unauthorized("Could not validate credentials"));
-        }
-        Err(AuthFailure::UserNotActivated) => {
-            return Err(FastApiError::unauthorized("User not activated"));
-        }
     };
 
     let scope = params
@@ -734,7 +749,7 @@ async fn unified_skills(
     // `list_user_default_skill_ids` runs before the scope branch; its
     // per-binding `can_user_access_skill` calls are part of the recorded
     // dependency sequence.
-    let user_default_ids = match list_user_default_skill_ids(mysql, &erp, &user).await {
+    let user_default_ids = match list_user_default_skill_ids(mysql, &erp, user).await {
         Ok(ids) => ids,
         Err(error) => return Err(dependency_error(error)),
     };
@@ -779,7 +794,7 @@ async fn unified_skills(
         // Group scope with a specific group: permission check first, then
         // ALL skills in that namespace.
         let group_name = group_name.as_deref().expect("checked above");
-        let allowed = match check_group_reporter_permission(mysql, &erp, &user, group_name).await {
+        let allowed = match check_group_reporter_permission(mysql, &erp, user, group_name).await {
             Ok(allowed) => allowed,
             Err(error) => return Err(dependency_error(error)),
         };
