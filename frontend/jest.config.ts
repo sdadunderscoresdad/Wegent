@@ -65,10 +65,10 @@ const config: Config = {
 }
 
 // Next adds node_modules exclusions before custom patterns. Replace those
-// exclusions after resolution so the real shared Markdown parser runs in Jest,
+// exclusions after resolution so shared Markdown and conversation dependencies run in Jest,
 // including packages installed through pnpm's virtual store.
-const markdownPackages =
-  '(?:@chenglou[/+]pretext|unified|remark-[^/]+|rehype-[^/]+|mdast-util-[^/]+|micromark[^/]*|unist-util-[^/]+|vfile(?:-message)?|bail|devlop|extend|is-plain-obj|trough|zwitch|decode-named-character-reference|character-entities[^/]*|ccount|escape-string-regexp|longest-streak|markdown-table|property-information|comma-separated-tokens|space-separated-tokens|hast-util-[^/]+|html-void-elements|stringify-entities|trim-lines|web-namespaces)'
+const esmPackages =
+  '(?:use-stick-to-bottom|@chenglou[/+]pretext|unified|remark-[^/]+|rehype-[^/]+|mdast-util-[^/]+|micromark[^/]*|unist-util-[^/]+|vfile(?:-message)?|bail|devlop|extend|is-plain-obj|trough|zwitch|decode-named-character-reference|character-entities[^/]*|ccount|escape-string-regexp|longest-streak|markdown-table|property-information|comma-separated-tokens|space-separated-tokens|hast-util-[^/]+|html-void-elements|stringify-entities|trim-lines|web-namespaces)'
 
 const resolveJestConfig = async () => {
   const resolved = await createJestConfig(config)()
@@ -78,7 +78,7 @@ const resolveJestConfig = async () => {
       pattern.startsWith('/node_modules/')
         ? pattern.replace(
             '/node_modules/',
-            `/node_modules/(?!${markdownPackages}/)(?!\\.pnpm/${markdownPackages}@)`
+            `/node_modules/(?!${esmPackages}/)(?!\\.pnpm/${esmPackages}@)`
           )
         : pattern
     ),
