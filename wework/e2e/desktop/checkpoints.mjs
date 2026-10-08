@@ -50,6 +50,7 @@ export const DESKTOP_CHECKPOINTS = [
   'runtime-task-queue',
   'executor-stream-recovery',
   'transcript-sync',
+  'conversation-scroll-performance',
   'running-conversation-history',
   'running-plan-history',
   'codex-notification-isolation',

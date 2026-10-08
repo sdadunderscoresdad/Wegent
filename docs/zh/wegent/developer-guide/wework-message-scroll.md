@@ -8,8 +8,36 @@ sidebar_position: 19
 
 消息列表采用普通 DOM、正常 top-origin 文档流和单一自动跟随引擎。
 Runtime、transcript 分页、消息业务 UI 和 `streamdown@2.5.0` 保持原有职责。
-已加载消息全部挂载，不使用消息虚拟范围、估算高度占位或 Markdown chunk 窗口化。
+已加载消息全部挂载，不使用消息虚拟范围或 Markdown chunk 窗口化。
 这减少了布局协调路径，不意味着已证明任意长度会话的性能或所有频闪问题。
+
+已完成的历史 assistant 消息先批量测量真实高度，再启用 `content-visibility: auto`
+和 `contain-intrinsic-block-size: auto <实测高度>`。浏览器可跳过离屏子树的布局和绘制，
+但消息 DOM、内容和操作状态仍然存在。最新消息、流式消息和包含焦点的消息不跳过渲染。
+`useDeferredMessageRendering` 在消息新增时只测量尚未初始化的历史行；列表宽度变化时
+统一失效并重新测量。没有固定高度猜测，也没有按滚动帧运行的测量或位置补偿循环。
+这降低深历史滚动成本，不为 DOM、React 节点或内存占用提供上限。
+
+轮次导航在存在 `turnId` 时只按轮次身份匹配已加载消息；不能把尚未加载的轮次
+按页内消息索引匹配到另一轮，否则会产生重复 React key、残留按钮和错误跳转。
+
+### Codex 桌面实现核对（2026-10-08）
+
+本机 `/Applications/ChatGPT.app` 的版本为 `26.930.61225`，bundle ID 为
+`com.openai.codex`。同一包包含 ChatGPT 与 Codex 本地会话路径；仅检查内部
+transcript 的 `map`，不能推出外层没有虚拟化。
+
+静态代码确认 `local-conversation-thread` 和一个 `chatgpt-conversation-page`
+接入 `virtualized-turn-list`。其几何模块以实测高度优先、每轮预估高度其次、默认
+280px 最后计算总高度；按可见范围加前后各两轮挂载，以轮次身份保持阅读锚点。
+`useLayoutEffect` 与共享 `ResizeObserver` 校正测量，最多连续八轮同步校正后让到
+下一帧。导航先挂载目标再测量定位，恢复状态含高度缓存和窗口锚点，最新轮次另有
+跟随状态机与局部高度更新路径。
+
+部分正文块另用 `content-visibility: auto` 和 240px 初始占位；虚拟列表会把其内部
+正文强制为 `visible`，避免嵌套高度估算。Wework 采用离屏渲染思想，但先测量真实
+高度，不复制其虚拟列表、底部坐标系或占位常量。这是代码路径核对，不是对 Codex
+所有功能开关或快速滚动体验的运行时证明。
 
 | 模块                                           | 职责                                                     |
 | ---------------------------------------------- | -------------------------------------------------------- |
@@ -143,7 +171,7 @@ lockfile 同时绑定版本和补丁哈希。补丁位于依赖层，不复制�
 - `streamingScrollFollow`；
 - `messagePretextLayout` 及虚拟条目尺寸缓存；
 - `assistantMarkdownWindowing`、`WindowedMarkdownChunk` 及估算占位；
-- message 级 `content-visibility` 高度占位和虚拟测量注入。
+- 旧 message 级估算占位和虚拟测量注入；当前离屏优化使用真实 DOM 高度。
 
 保留 Streamdown 的受控链接、图片、代码、表格、可视化及流式 DOM 连续性；
 `useBufferedStreamingText` 仍只合并帧内更新，不维护落后于权威内容的逐字队列。
@@ -173,6 +201,41 @@ pnpm --filter wework typecheck
 
 E2E 源码同步改为正坐标，保留长代码身份、用户取消、历史重开等场景，
 增加全部 Markdown 标题挂载、无占位及滚动前后消息数量不变的断言。
+
+### 滑动性能的量化回归
+
+长会话"滑不滑得动"现在有可断言的数字，入口是桌面 E2E 检查点
+`conversation-scroll-performance`。三个前提缺一不可：
+
+- **明确输入路径**：`e2e.wheelGesture` 用 `webContents.sendInputEvent`
+  探测原生滚轮，但后台窗口不保证执行原生滚动。性能比较使用相同的
+  `scrollSteps`：每步发送滚轮意图、修改位置、等待动画帧。这测量真实
+  Electron 中的主线程渲染负载，不等同于触控板或合成器滚动的端到端流畅度。
+- **真实帧采样**：`startScrollPerformanceSampling` /
+  `stopScrollPerformanceSampling` 按 `requestAnimationFrame` 记录每帧的
+  `scrollTop`，并用 `PerformanceObserver` 收集 `longtask`。按手势实际起止
+  时间截取样本，手势完成后显式停止；不能按步数乘间隔预估采样长度，
+  否则卡顿会让手势超出采样窗口。不要用
+  `startScrollStabilitySampling` 得出滑动结论：它按 `setInterval` 计时，并把
+  DOM 变更混进同一数组，无法区分掉帧和 MutationObserver 回调。
+- **机器无关的断言**：`assertScrollHealth` 保证手势真的滚动了
+  （`scrolledPx`）且没有超过 2s 的冻结；`assertScrollScaling` 在同一次运行内
+  用同一手势比较"首屏"与"全部加载"两种状态，用比值抵消机器速度，避免把
+  绝对值写进 CI。需要硬阈值时设置 `WEWORK_E2E_SCROLL_P95_BUDGET_MS`。
+
+指标含义：`p95FrameGapMs`/`maxFrameGapMs`（帧间隔）、`droppedFrameCount` 与
+`droppedFrameRatio`（超过 1.75 个 vsync 的间隔占比）、`longestScrollStallMs`
+（输入仍在持续但内容连续不动的时长）、`longTaskTotalMs`（主线程长任务）、
+`scrolledPx`（手势实际滚动了多少像素）。
+
+```sh
+pnpm --filter wework e2e:desktop -- --segment conversation-scroll-performance
+node --test wework/e2e/desktop/modules/scroll-performance.test.mjs
+```
+
+数字写在本次运行的 `perf-heavy-conversation.json`：`scroll.measurements`
+是每个阶段（首屏、全部加载、向下）的指标，`scroll.comparison.p95Ratio` 是
+"全部加载 / 首屏"的帧间隔倍数。
 `rendering-extensions` 调用 `streaming-text.scenario.mjs`；
 `window-lifecycle` 覆盖重开；由现有 desktop runner 和
 `.github/workflows/wework-e2e.yml` 的 checkpoint matrix 调用，没有新增本地专用套件。

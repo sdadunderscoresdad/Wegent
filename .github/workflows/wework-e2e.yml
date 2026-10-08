@@ -80,6 +80,9 @@ jobs:
             fi
           fi
 
+      - name: Run Wework desktop E2E module tests
+        run: node --test wework/e2e/desktop/modules/scroll-performance.test.mjs
+
       - name: Resolve Wework E2E image
         id: image
         run: |

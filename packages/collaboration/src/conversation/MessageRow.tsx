@@ -35,6 +35,7 @@ type MessageRowProps = Pick<
   message: WorkbenchMessage
   runtimeTurn?: RuntimeConversationTurn
   isActiveTurn: boolean
+  deferOffscreenRendering: boolean
   editable: boolean
   editing: boolean
   editSubmitting: boolean
@@ -50,6 +51,7 @@ export const MessageRow = memo(function MessageRow({
   renderVisualization,
   conversationKey,
   isActiveTurn,
+  deferOffscreenRendering,
   devices,
   onBeforeUserMessageToggle,
   onRetryFailedMessage,
@@ -75,7 +77,13 @@ export const MessageRow = memo(function MessageRow({
 }: MessageRowProps) {
   return (
     <article
-      className={cn('min-w-0', message.role === 'user' && 'flex justify-end')}
+      className={cn(
+        'min-w-0',
+        message.role === 'user' && 'flex justify-end',
+        deferOffscreenRendering &&
+          'data-[offscreen-ready=true]:[content-visibility:auto] focus-within:![content-visibility:visible]'
+      )}
+      data-defer-offscreen-rendering={deferOffscreenRendering || undefined}
       data-message-id={message.id}
       data-testid={`message-${message.role}`}
     >

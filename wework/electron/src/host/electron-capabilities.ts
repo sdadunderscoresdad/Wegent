@@ -33,6 +33,7 @@ import { readLocalFileChunk } from './local-file-reader.js'
 import { registerWorkspaceFileActions } from './workspace-file-actions.js'
 import { getElectronProcessSnapshot } from './process-diagnostics.js'
 import { sendE2EKey, sendE2EText, type E2EKeyPhase } from './e2e-keyboard.js'
+import { sendE2EWheelGesture } from './e2e-wheel.js'
 import {
   extractFilePathsFromNativePayloads,
   inspectWorkspacePaths,
@@ -627,6 +628,19 @@ export function createElectronCapabilityRouter(
       () => (label === 'main' ? e2eHost.focusMainWindow() : e2eHost.focusWindow(label)),
       process.env,
       phase as E2EKeyPhase
+    )
+  })
+  router.register('e2e.wheelGesture', params => {
+    const label = optionalStringParam(params, 'windowLabel') ?? 'main'
+    const contents = e2eHost.captureTarget(label)
+    if (!contents) {
+      throw new HostCapabilityError('e2e_view_unavailable', 'Verification view is unavailable')
+    }
+    return sendE2EWheelGesture(
+      contents,
+      params,
+      () => (label === 'main' ? e2eHost.focusMainWindow() : e2eHost.focusWindow(label)),
+      process.env
     )
   })
   router.register('e2e.getProcessSnapshot', () => getElectronProcessSnapshot())

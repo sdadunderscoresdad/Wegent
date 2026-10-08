@@ -46,6 +46,7 @@ core_segments=(
   executor-stream-recovery
   transcript-sync
   context-compaction
+  conversation-scroll-performance
   split-workbench
   release-package-startup
   component-update
@@ -153,7 +154,7 @@ core_shards=(
   resilience,environment-panel-scroll
   workspace-attachments,automation-lifecycle
   project-assignment-notification,split-workbench,priority-filter,project-event-sources,board-focus-view
-  rendering-extensions
+  rendering-extensions,conversation-scroll-performance
   runtime-task-queue,release-package-startup,component-update,native-window-startup,renderer-storage,external-content-import
   local-harness,running-conversation-history,running-plan-history,native-window-chrome
   codex-notification-isolation,core-dsh-plugin-management,plugin-development,workbench-mode,executor-stream-recovery,transcript-sync

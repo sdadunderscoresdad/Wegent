@@ -96,6 +96,31 @@ interface ScrollStabilitySample {
   stop: () => void
 }
 
+/**
+ * Frame-accurate scroll instrumentation. `startScrollStabilitySampling` ticks on
+ * a `setInterval` and mixes DOM mutations into the same array, so its "frames"
+ * cannot distinguish a dropped frame from a MutationObserver callback. This
+ * sampler records real animation frames plus long tasks, which is what a human
+ * perceives as stutter while scrolling.
+ */
+interface ScrollPerformanceFrame {
+  time: number
+  scrollTop: number
+}
+
+interface ScrollPerformanceLongTask {
+  startTime: number
+  duration: number
+}
+
+interface ScrollPerformanceSample {
+  startedAt: number
+  done: boolean
+  frames: ScrollPerformanceFrame[]
+  longTasks: ScrollPerformanceLongTask[]
+  stop: () => void
+}
+
 interface ElementMetricsSamplePoint {
   elements?: ReturnType<ReturnType<typeof createElementFrameSampler>>
   connected: boolean
@@ -116,7 +141,44 @@ interface ElementMetricsSample {
 }
 
 let activeScrollStabilitySample: ScrollStabilitySample | null = null
+let activeScrollPerformanceSample: ScrollPerformanceSample | null = null
 let activeElementMetricsSample: ElementMetricsSample | null = null
+
+/**
+ * Wheel input is positional, so a gesture aimed at the middle of the transcript
+ * can land on an inner scroll container (a code block, a diff, a tool output) and
+ * never reach the conversation scroller. Candidate points prefer the message
+ * gutter and skip any that would be swallowed by a nested scroller.
+ */
+function resolveWheelGestureOrigin(
+  scroller: HTMLElement,
+  requestedX?: number,
+  requestedY?: number
+): { x: number; y: number } {
+  const rect = scroller.getBoundingClientRect()
+  if (Number.isFinite(requestedX) && Number.isFinite(requestedY)) {
+    return { x: Math.round(Number(requestedX)), y: Math.round(Number(requestedY)) }
+  }
+  const swallowedByNestedScroller = (element: Element) => {
+    let node: Element | null = element
+    while (node && node !== scroller) {
+      if (node.scrollHeight > node.clientHeight + 1) return true
+      node = node.parentElement
+    }
+    return false
+  }
+  for (const ratioX of [0.03, 0.08, 0.5]) {
+    for (const ratioY of [0.25, 0.5, 0.75, 0.1, 0.9]) {
+      const x = Math.round(rect.left + rect.width * ratioX)
+      const y = Math.round(rect.top + rect.height * ratioY)
+      const hit = document.elementFromPoint(x, y)
+      if (!hit || !scroller.contains(hit)) continue
+      if (swallowedByNestedScroller(hit)) continue
+      return { x, y }
+    }
+  }
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+}
 
 export interface WeworkAutomationBridge {
   version: 1
@@ -2309,6 +2371,68 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
         scrollEvents: sample.scrollEvents,
       })
     }
+    case 'startScrollPerformanceSampling': {
+      const options = JSON.parse(command.value ?? '{}') as { durationMs?: number }
+      const durationMs = options.durationMs ?? 1_000
+      if (!Number.isFinite(durationMs) || durationMs <= 0) {
+        throw new Error('startScrollPerformanceSampling requires a finite positive durationMs')
+      }
+      const scroller = findDesktopControlElements(command.selector)[0]
+      if (!scroller) throw new Error(`Unable to find selector "${command.selector}"`)
+      activeScrollPerformanceSample?.stop()
+      const startedAt = performance.now()
+      const sample: ScrollPerformanceSample = {
+        startedAt,
+        done: false,
+        frames: [],
+        longTasks: [],
+        stop: () => {},
+      }
+      let animationFrame = 0
+      let longTaskObserver: PerformanceObserver | null = null
+      const finish = () => {
+        if (sample.done) return
+        sample.done = true
+        window.cancelAnimationFrame(animationFrame)
+        longTaskObserver?.disconnect()
+      }
+      sample.stop = finish
+      try {
+        longTaskObserver = new PerformanceObserver(list => {
+          for (const entry of list.getEntries()) {
+            sample.longTasks.push({ startTime: entry.startTime, duration: entry.duration })
+          }
+        })
+        longTaskObserver.observe({ entryTypes: ['longtask'] })
+      } catch {
+        // `longtask` is unavailable on some Chromium builds; frames still measure stutter.
+        longTaskObserver = null
+      }
+      const captureFrame = (time: number) => {
+        if (sample.done) return
+        sample.frames.push({ time: time - startedAt, scrollTop: scroller.scrollTop })
+        if (time - startedAt >= durationMs) {
+          finish()
+          return
+        }
+        animationFrame = window.requestAnimationFrame(captureFrame)
+      }
+      animationFrame = window.requestAnimationFrame(captureFrame)
+      activeScrollPerformanceSample = sample
+      return ''
+    }
+    case 'stopScrollPerformanceSampling':
+    case 'getScrollPerformanceSample': {
+      const sample = activeScrollPerformanceSample
+      if (!sample) throw new Error('Scroll performance sampling has not started')
+      if (command.action === 'stopScrollPerformanceSampling') sample.stop()
+      return JSON.stringify({
+        startedAt: sample.startedAt,
+        done: sample.done,
+        frames: sample.frames,
+        longTasks: sample.longTasks,
+      })
+    }
     case 'getAttribute': {
       const elements = findDesktopControlElements(command.selector)
       const candidates = command.visible ? elements.filter(desktopControlElementVisible) : elements
@@ -2473,6 +2597,123 @@ async function executeDesktopControlCommand(command: DesktopControlCommand): Pro
       scroller.scrollTop = nextContentScrollTop
       scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
       return String(scroller.scrollTop)
+    }
+    case 'wheelGesture': {
+      const options = JSON.parse(command.value ?? '{}') as {
+        x?: number
+        y?: number
+        deltaY?: number
+        steps?: number
+        intervalMs?: number
+      }
+      const deltaY = Number(options.deltaY)
+      if (!Number.isFinite(deltaY) || deltaY === 0) {
+        throw new Error('wheelGesture requires a non-zero deltaY')
+      }
+      const scroller = findDesktopControlElements(command.selector)[0]
+      if (!scroller) throw new Error(`Unable to find selector "${command.selector}"`)
+      const origin = resolveWheelGestureOrigin(scroller, options.x, options.y)
+      const x = origin.x
+      const y = origin.y
+      const windowLabel = getDesktopWindowLabel()
+      const hit = document.elementFromPoint(x, y)
+      const scrollBefore = scroller.scrollTop
+      // The conversation pauses its bottom-following only for input it can see as
+      // a DOM `wheel` event. Chromium may scroll for injected input without ever
+      // dispatching one, so count what the page actually received.
+      let domWheelEvents = 0
+      let domWheelDeltaY = 0
+      const countWheel = (event: WheelEvent) => {
+        domWheelEvents += 1
+        domWheelDeltaY += event.deltaY
+      }
+      scroller.addEventListener('wheel', countWheel, { passive: true })
+      const result = await invokeDesktopHost<{
+        steps?: number
+        deltaY?: number
+        durationMs?: number
+        backend?: string
+      }>('e2e.wheelGesture', {
+        windowLabel,
+        x,
+        y,
+        deltaY,
+        steps: options.steps ?? 1,
+        intervalMs: options.intervalMs ?? 0,
+      })
+      await waitForDesktopControlTick()
+      scroller.removeEventListener('wheel', countWheel)
+      return JSON.stringify({
+        ...result,
+        scrollTop: scroller.scrollTop,
+        // Diagnostics for a gesture that reaches the wrong element: the wheel is
+        // positional, so a mis-aimed origin silently scrolls something else.
+        scrollBefore,
+        scrollAfter: scroller.scrollTop,
+        originX: x,
+        originY: y,
+        domWheelEvents,
+        domWheelDeltaY: Math.round(domWheelDeltaY),
+        scrollerHeight: scroller.clientHeight,
+        scrollerScrollHeight: scroller.scrollHeight,
+        hitTestId:
+          hit instanceof Element
+            ? (hit.closest('[data-testid]')?.getAttribute('data-testid') ?? hit.tagName)
+            : null,
+      })
+    }
+    case 'scrollSteps': {
+      const options = JSON.parse(command.value ?? '{}') as {
+        deltaY?: number
+        steps?: number
+        intervalMs?: number
+      }
+      const scroller = findDesktopControlElements(command.selector)[0]
+      if (!scroller) throw new Error(`Unable to find selector "${command.selector}"`)
+      const intentDelta = Number.isFinite(Number(options.deltaY)) ? Number(options.deltaY) : -120
+      if (intentDelta === 0) throw new Error('scrollSteps requires a non-zero deltaY')
+      const steps = Math.max(1, Math.min(600, Math.trunc(Number(options.steps ?? 60))))
+      const intervalMs = Math.max(0, Math.min(100, Number(options.intervalMs ?? 16)))
+      const range = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+      // Bottom-origin timelines keep 0 at the newest message and go negative
+      // toward history, so the clamp has to follow the scroller's own origin.
+      const bottomOrigin = scroller.getAttribute('data-scroll-origin') === 'bottom'
+      const clampScrollTop = (value: number) =>
+        bottomOrigin ? Math.min(0, Math.max(-range, value)) : Math.max(0, Math.min(range, value))
+      const scrollBefore = scroller.scrollTop
+      let moved = 0
+      const startedAt = performance.now()
+      for (let step = 0; step < steps; step += 1) {
+        // The conversation only stops following the bottom for input it can see as
+        // a wheel event, so each step carries the intent a real gesture would.
+        scroller.dispatchEvent(
+          new WheelEvent('wheel', {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            deltaY: intentDelta,
+          })
+        )
+        // A negative wheel delta scrolls toward older messages.
+        const next = clampScrollTop(scroller.scrollTop + intentDelta)
+        moved += next - scroller.scrollTop
+        scroller.scrollTop = next
+        await new Promise(resolve => window.requestAnimationFrame(() => resolve(null)))
+        if (intervalMs > 0 && step + 1 < steps) {
+          await new Promise(resolve => window.setTimeout(resolve, intervalMs))
+        }
+      }
+      return JSON.stringify({
+        backend: 'renderer-frame-stepped',
+        startedAt,
+        endedAt: performance.now(),
+        durationMs: performance.now() - startedAt,
+        steps,
+        deltaY: intentDelta,
+        scrollBefore,
+        scrollAfter: scroller.scrollTop,
+        movedPx: Math.round(Math.abs(moved)),
+      })
     }
     case 'sampleRapidScrollContent': {
       const scroller = findDesktopControlElements(command.selector)[0]

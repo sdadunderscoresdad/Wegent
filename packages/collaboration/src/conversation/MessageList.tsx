@@ -28,6 +28,7 @@ import { AssistantThinkingIndicator } from './AssistantThinkingIndicator'
 import type { RequestUserInputPayload } from './RequestUserInputCard'
 import type { AssistantPlanOpenRequest } from './AssistantPlanCard'
 import { SelectionActionsPopover } from './SelectionActionsPopover'
+import { useDeferredMessageRendering } from './useDeferredMessageRendering'
 
 export interface MessageListProps {
   userMessageServices: UserMessageServices
@@ -139,6 +140,7 @@ export const MessageList = memo(function MessageList({
     [onEditLastUserMessage]
   )
   const visibleMessages = useMemo(() => messages.filter(shouldRenderMessage), [messages])
+  useDeferredMessageRendering(listRef, visibleMessages)
   const runtimeTurnsById = useMemo(
     () => new Map(turns.flatMap(turn => (turn.id ? [[turn.id, turn] as const] : []))),
     [turns]
@@ -251,6 +253,11 @@ export const MessageList = memo(function MessageList({
             renderVisualization={renderVisualization}
             conversationKey={conversationKey}
             isActiveTurn={isWaitingForAssistant && index === visibleMessages.length - 1}
+            deferOffscreenRendering={
+              message.role === 'assistant' &&
+              message.status === 'done' &&
+              index < visibleMessages.length - 1
+            }
             devices={devices}
             onBeforeUserMessageToggle={onBeforeUserMessageToggle}
             onRetryFailedMessage={onRetryFailedMessage}

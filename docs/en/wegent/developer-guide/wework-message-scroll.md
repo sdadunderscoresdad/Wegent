@@ -8,9 +8,43 @@ sidebar_position: 19
 
 The timeline uses mounted DOM, normal top-origin flow, and one automatic follower.
 Runtime, transcript pagination, message business UI, and `streamdown@2.5.0` retain
-their responsibilities. Every loaded message stays mounted; virtual ranges,
-estimated height placeholders, and Markdown windowing are removed. This reduces
+their responsibilities. Every loaded message stays mounted; virtual ranges
+and Markdown windowing are removed. This reduces
 coordination, but does not prove unlimited-history performance or fix every flicker.
+
+Completed historical assistant messages are measured in a batch before enabling
+`content-visibility: auto` and `contain-intrinsic-block-size: auto <measured height>`.
+The browser can skip offscreen layout and paint while DOM, content, and action state
+remain mounted. Latest, streaming, and focused messages keep normal rendering.
+`useDeferredMessageRendering` measures only newly eligible rows on message updates,
+and invalidates all heights when the list width changes. It uses no fixed height
+guess and no per-scroll measurement or position-compensation loop. This reduces
+deep-history scrolling cost; it does not bound DOM, React nodes, or memory.
+
+Navigation with a `turnId` resolves loaded messages by turn identity. An unloaded
+turn must not match another turn by a page-local message index: that creates duplicate
+React keys, stale buttons, and incorrect jumps.
+
+### Codex desktop audit (2026-10-08)
+
+The local `/Applications/ChatGPT.app` is version `26.930.61225`, bundle ID
+`com.openai.codex`. It contains both ChatGPT and local Codex conversation paths;
+an inner transcript's `map` does not establish whether its parent virtualizes it.
+
+Static code connects `local-conversation-thread` and one `chatgpt-conversation-page`
+to `virtualized-turn-list`. Its geometry prioritizes measured heights, then per-turn
+estimates, then a 280px default. It renders the visible range plus two turns on each
+side and preserves reading anchors by turn identity. Layout effects and a shared
+`ResizeObserver` correct measurements, yielding after eight synchronous correction
+passes. Navigation mounts and measures its target before positioning; restoration
+includes height caches and a window anchor. Latest-turn follow state and local
+height updates have dedicated paths.
+
+Some body blocks also use `content-visibility: auto` with a 240px initial placeholder.
+The virtual list forces nested body content to `visible` to avoid layered estimates.
+Wework adopts offscreen rendering with measured heights, without copying that virtual
+list, bottom-origin coordinates, or placeholder constants. This is a code-path audit,
+not runtime proof of every Codex feature flag or fast-scroll behavior.
 
 | Module                                         | Responsibility                                                         |
 | ---------------------------------------------- | ---------------------------------------------------------------------- |
@@ -171,7 +205,8 @@ implementation-only tests include:
 - `streamingScrollFollow`;
 - `messagePretextLayout` and virtual measurement caches;
 - `assistantMarkdownWindowing`, `WindowedMarkdownChunk`, estimated placeholders;
-- message-level `content-visibility` placeholders and measurement injection.
+- old message-level estimated placeholders and virtual measurement injection;
+  current offscreen rendering uses measured DOM heights.
 
 Streamdown retains controlled links, images, code, tables, visualizations, and
 streaming DOM continuity. `useBufferedStreamingText` coalesces frame updates,
@@ -207,6 +242,46 @@ heading stays mounted, no placeholders, and unchanged mounted-message counts
 after scrolling. `rendering-extensions` runs `streaming-text.scenario.mjs`;
 `window-lifecycle` covers reopening. The existing runner and
 `.github/workflows/wework-e2e.yml` checkpoint matrix cover both.
+
+### Quantified scroll regression
+
+"Does a long conversation still scroll smoothly" now has assertable numbers. The
+desktop E2E checkpoint is `conversation-scroll-performance`, and it needs all
+three of these:
+
+- **Explicit input path.** `e2e.wheelGesture` probes native wheel delivery with
+  `webContents.sendInputEvent`; background windows do not reliably scroll natively.
+  Comparisons use the same `scrollSteps` path: dispatch wheel intent, update the
+  position, and await an animation frame per step. This measures main-thread
+  rendering in real Electron, not end-to-end trackpad or compositor smoothness.
+- **Real frame sampling.** `startScrollPerformanceSampling` and
+  `stopScrollPerformanceSampling` record `scrollTop` per `requestAnimationFrame` and
+  collect `longtask` entries through `PerformanceObserver`. Filter by actual gesture
+  timestamps and stop explicitly after completion: estimating duration from step
+  count and interval truncates slow gestures. Do not draw scroll
+  conclusions from `startScrollStabilitySampling`: it ticks on `setInterval` and
+  mixes DOM mutations into the same array, so a dropped frame and a
+  MutationObserver callback are indistinguishable there.
+- **Machine-independent assertions.** `assertScrollHealth` proves the gesture
+  actually scrolled (`scrolledPx`) and that nothing froze for more than two
+  seconds. `assertScrollScaling` runs the same gesture over the initial page and
+  the fully loaded history inside one run and compares the ratio, which cancels
+  out machine speed instead of writing an absolute number into CI. Set
+  `WEWORK_E2E_SCROLL_P95_BUDGET_MS` when a hard budget is needed.
+
+Metrics: `p95FrameGapMs`/`maxFrameGapMs`, `droppedFrameCount` and
+`droppedFrameRatio` (intervals beyond 1.75 vsyncs), `longestScrollStallMs` (input
+still arriving while the content did not move), `longTaskTotalMs`, and
+`scrolledPx`.
+
+```sh
+pnpm --filter wework e2e:desktop -- --segment conversation-scroll-performance
+node --test wework/e2e/desktop/modules/scroll-performance.test.mjs
+```
+
+The numbers land in that run's `perf-heavy-conversation.json`: `scroll.measurements`
+holds each phase (initial page, fully loaded, downward) and
+`scroll.comparison.p95Ratio` is the fully-loaded-to-initial-page frame-gap ratio.
 
 **E2E and `ai:verify` require explicit authorization.** Initial implementation ran
 unit/static checks only; the subsequently authorized real-Electron results are

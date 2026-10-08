@@ -1,5 +1,6 @@
 import type { KeyboardInputEvent, WebContents } from 'electron'
 import { HostCapabilityError } from './capability-router.js'
+import { requireAvailableContents, requireE2EControl } from './e2e-input-guard.js'
 
 const KEYS: Record<string, string> = {
   Tab: 'Tab',
@@ -26,18 +27,6 @@ const MODIFIERS: Record<string, 'shift' | 'control' | 'alt' | 'meta'> = {
 }
 
 export type E2EKeyPhase = 'press' | 'down' | 'up'
-
-function requireE2EControl(environment: NodeJS.ProcessEnv) {
-  if (!environment.WEWORK_E2E_CONTROL_URL || environment.VITE_WEWORK_E2E !== 'true') {
-    throw new HostCapabilityError('e2e_control_required', 'An isolated E2E controller is required')
-  }
-}
-
-function requireAvailableContents(contents: WebContents) {
-  if (contents.isDestroyed()) {
-    throw new HostCapabilityError('e2e_view_unavailable', 'Verification view is unavailable')
-  }
-}
 
 export async function sendE2EKey(
   contents: WebContents,

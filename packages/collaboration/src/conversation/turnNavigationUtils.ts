@@ -85,10 +85,11 @@ function buildUserTurnsFromNavigation(
   const uniqueNavigation = deduplicateNavigationItems(navigation, loadedTurnsByIndex)
 
   const navigationTurns = uniqueNavigation.map((item, index) => {
-    const loadedTurn =
-      (item.turnId ? loadedTurnsByTurnId.get(item.turnId) : undefined) ??
-      loadedTurnsByIndex.get(item.messageIndex) ??
-      loadedTurnsById.get(item.id)
+    // A known turn identity must not resolve to another turn just because a
+    // paginated projection currently assigns it the same message index.
+    const loadedTurn = item.turnId
+      ? loadedTurnsByTurnId.get(item.turnId)
+      : (loadedTurnsById.get(item.id) ?? loadedTurnsByIndex.get(item.messageIndex))
     return {
       id: loadedTurn?.id ?? item.id,
       turnId: item.turnId ?? loadedTurn?.turnId,
