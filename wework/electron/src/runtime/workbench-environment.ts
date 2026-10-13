@@ -7,7 +7,10 @@ import {
 } from './brand-runtime-environment.js'
 import { migrateWorkbenchHome } from './workbench-home-migration.js'
 import { assertExecutorWorkbenchCompatibility } from './workbench-executor-schema.js'
-import { assertCodexHomeCanMove } from './workbench-codex-migration.js'
+import {
+  describeCodexHomeMigrationVerdict,
+  inspectCodexHomeMigration,
+} from './workbench-codex-migration.js'
 import { executorMigrationLock } from './workbench-migration-lock.js'
 import { migrateWorkbenchDataInWorker } from './workbench-data-worker.js'
 
@@ -90,15 +93,38 @@ export async function prepareWorkbenchEnvironment(
 
   await assertExecutorWorkbenchCompatibility(branded)
   const acquireLock = executorMigrationLock(branded.WEWORK_EXECUTOR_PATH!)
-  if (!environment.WEGENT_CODEX_HOME?.trim())
-    await migrateWorkbenchHome({
+  const legacyCodexHome = join(executorHome, 'codex')
+  let codexHome = paths.codexHome
+  if (!environment.WEGENT_CODEX_HOME?.trim()) {
+    const result = await migrateWorkbenchHome({
       acquireLock,
-      sourceHome: join(executorHome, 'codex'),
+      sourceHome: legacyCodexHome,
       targetHome: paths.codexHome,
       stateDirectory: join(paths.migrations, 'codex-home-v1'),
       initialize: true,
-      beforeMove: home => assertCodexHomeCanMove(branded.WEWORK_EXECUTOR_PATH!, home),
+      beforeMove: async home => {
+        const verdict = await inspectCodexHomeMigration(branded.WEWORK_EXECUTOR_PATH!, home)
+        // A Home-bound credential store keeps its current path: moving it would
+        // strand the keyring identity, while refusing to start would strand the
+        // whole desktop. The next launch retries once the evidence is gone.
+        if (!verdict.allowed) {
+          console.warn('[startup] codex-home-migration-skipped', {
+            home,
+            detail: describeCodexHomeMigrationVerdict(verdict),
+          })
+          return 'skip'
+        }
+        if (verdict.warnings.length > 0) {
+          console.warn('[startup] codex-home-migration-warnings', {
+            home,
+            detail: describeCodexHomeMigrationVerdict(verdict),
+          })
+        }
+        return 'move'
+      },
     })
+    if (result === 'skipped') codexHome = legacyCodexHome
+  }
   if (!environment.WEGENT_CAPABILITIES_HOME?.trim()) {
     await migrateWorkbenchHome({
       acquireLock,
@@ -154,7 +180,7 @@ export async function prepareWorkbenchEnvironment(
     ...branded,
     WEGENT_EXECUTOR_HOME: paths.desktop,
     WEGENT_WORKBENCH_HOME: paths.root,
-    WEGENT_CODEX_HOME: environment.WEGENT_CODEX_HOME?.trim() || paths.codexHome,
+    WEGENT_CODEX_HOME: environment.WEGENT_CODEX_HOME?.trim() || codexHome,
     WEGENT_CAPABILITIES_HOME: environment.WEGENT_CAPABILITIES_HOME?.trim() || paths.capabilities,
     WEGENT_CLAUDE_HOME: claudeHome,
   }

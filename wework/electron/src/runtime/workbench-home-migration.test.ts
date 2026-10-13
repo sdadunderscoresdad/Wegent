@@ -154,8 +154,9 @@ describe('migrateWorkbenchHome', () => {
     await createSource()
     const before = await fs.lstat(options.sourceHome)
     await migrateWorkbenchHome({ ...options, preserveExistingSource: true })
-    const beforeMove = vi.fn(async () => {
+    const beforeMove = vi.fn(async (): Promise<'move'> => {
       expect(heldResources.has(options.sourceHome)).toBe(true)
+      return 'move'
     })
     await expect(migrateWorkbenchHome({ ...options, beforeMove })).resolves.toBe('migrated')
     expect(beforeMove).toHaveBeenCalledOnce()
@@ -163,6 +164,23 @@ describe('migrateWorkbenchHome', () => {
     await assertBridge()
     await expect(migrateWorkbenchHome({ ...options, beforeMove })).resolves.toBe('already-migrated')
     expect(beforeMove).toHaveBeenCalledOnce()
+  })
+
+  test('skips the move without touching either Home when the decision says skip', async () => {
+    await createSource()
+    const source = await fs.lstat(options.sourceHome)
+    const beforeMove = vi.fn(async () => 'skip' as const)
+    await expect(migrateWorkbenchHome({ ...options, beforeMove })).resolves.toBe('skipped')
+    expect(beforeMove).toHaveBeenCalledOnce()
+    expect((await fs.lstat(options.sourceHome)).ino).toBe(source.ino)
+    expect((await fs.lstat(options.sourceHome)).isDirectory()).toBe(true)
+    await expect(fs.lstat(options.targetHome)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      fs.lstat(join(options.stateDirectory, 'workbench-home-migration.json'))
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    // A later launch that can prove the Home is movable still migrates it.
+    await expect(migrateWorkbenchHome(options)).resolves.toBe('migrated')
+    await assertBridge()
   })
 
   test.each(['journal', 'move', 'bridge'])(
@@ -187,7 +205,7 @@ describe('migrateWorkbenchHome', () => {
     }
   )
 
-  test('rejects conversion if the new entry was replaced or credential preflight fails', async () => {
+  test('rejects conversion if the new entry was replaced or the decision callback fails', async () => {
     await createSource()
     await migrateWorkbenchHome({ ...options, preserveExistingSource: true })
     const journalPath = join(options.stateDirectory, 'workbench-home-migration.json')

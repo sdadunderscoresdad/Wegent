@@ -24,6 +24,27 @@ The default Executor Home is `~/.wework` and contains:
 The `WEGENT_EXECUTOR_HOME` environment variable overrides the default Executor
 Home. This is useful for isolated sessions, tests, and custom deployments.
 
+## Deciding Whether a Codex Home Can Move
+
+Before moving a legacy Codex Home into the workbench directory, the desktop asks
+the executor (`--workbench-codex-migration-check`) for a read-only verdict, so a
+move never strands stored credentials. Codex derives keyring accounts from the
+canonical Codex Home path, so a new path can no longer decrypt them:
+
+- Only confirmed evidence blocks a move: encrypted credential files under
+  `secrets/`, explicitly configured keyring login storage, or `ema-idp:`
+  enterprise identities. Such a Home keeps its current path and is not migrated.
+- Unset configuration keeps the Codex defaults, which store login credentials in
+  a file inside the Home, instead of inferring platform defaults. Windows and
+  macOS therefore reach the same verdict.
+- Unreadable metadata or configuration is reported as a warning, never as a
+  reason to block. The check returns `reasons`, `warnings`, and readable
+  `reason`/`warning` texts, and the desktop writes the verdict to the startup log.
+
+A blocked Home does not block startup: `WEGENT_CODEX_HOME` keeps pointing at the
+legacy path while the remaining data (executor Home, capabilities, Claude Home,
+workspace) still migrates, and the next launch evaluates the Home again.
+
 ## Directory Scanning During Home Migration
 
 When moving a legacy Codex Home into the workbench directory, relative symlink

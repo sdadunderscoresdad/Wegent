@@ -23,9 +23,24 @@ Wework 的本地运行时数据统一存放在用户主目录下的 `~/.wework`�
 `WEGENT_EXECUTOR_HOME` 环境变量可以覆盖默认 Executor Home。显式设置该变量时，
 适用于隔离会话、测试和自定义部署。
 
-## Home 迁移中的目录扫描
+## Codex Home 迁移的判定
 
-迁移旧 Codex Home 到工作台目录时，相对符号链接扫描使用目录枚举提供的类型信息，
+迁移旧 Codex Home 到工作台目录前，工作台会通过 Executor 的
+`--workbench-codex-migration-check` 做一次只读判定，确认搬移不会让已保存的凭证失效。
+Codex 的 keyring 账号由 Codex Home 的规范路径派生，路径变化会让这些凭证无法解密：
+
+- 只有可确认的证据才阻止搬移：`secrets/` 下的加密凭证文件存在、配置显式使用
+  keyring 登录存储，或配置了 `ema-idp:` 企业身份。这类 Home 保持原路径，不参与迁移。
+- 配置未设置时按 Codex 默认值处理（登录凭证保存在 Home 内的文件里），不再按平台默认值
+  推断，因此 Windows 与 macOS 的判定结果一致。
+- 读取元数据或配置失败只记录为告警，不再作为阻止搬移的理由。检查结果同时返回
+  `reasons`、`warnings` 和可读的 `reason`、`warning`，桌面把判定结果写入启动日志。
+
+判定为不可迁移时，桌面仍然正常启动：这台机器的 Codex Home 保持原路径，
+`WEGENT_CODEX_HOME` 指向旧路径，其余数据（Executor Home、capabilities、Claude Home、
+workspace）照常迁移到工作台目录，下一次启动会重新判定。
+
+迁移旧 Codex Home 时，相对符号链接扫描使用目录枚举提供的类型信息，
 只递归目录并校验符号链接，不额外读取普通文件的元数据。因此，后台 Git 操作在枚举
 后删除临时锁文件不会阻止启动；无法解析的相对符号链接仍会阻止迁移。
 

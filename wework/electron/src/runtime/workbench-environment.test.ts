@@ -6,9 +6,12 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { prepareWorkbenchEnvironment, resolveWorkbenchPaths } from './workbench-environment.js'
 import { assertExecutorWorkbenchCompatibility } from './workbench-executor-schema.js'
-import { assertCodexHomeCanMove } from './workbench-codex-migration.js'
+import { inspectCodexHomeMigration } from './workbench-codex-migration.js'
 
-vi.mock('./workbench-codex-migration.js', () => ({ assertCodexHomeCanMove: vi.fn() }))
+vi.mock('./workbench-codex-migration.js', () => ({
+  inspectCodexHomeMigration: vi.fn(),
+  describeCodexHomeMigrationVerdict: () => 'synthetic-verdict-detail',
+}))
 
 // Keep environment/path cases focused; the worker has separate real-thread coverage.
 vi.mock('./workbench-data-worker.js', async () => {
@@ -32,7 +35,9 @@ vi.mock('./workbench-migration-lock.js', () => ({
 
 beforeEach(() => {
   vi.mocked(assertExecutorWorkbenchCompatibility).mockReset().mockResolvedValue(undefined)
-  vi.mocked(assertCodexHomeCanMove).mockReset().mockResolvedValue(undefined)
+  vi.mocked(inspectCodexHomeMigration)
+    .mockReset()
+    .mockResolvedValue({ allowed: true, reasons: [], warnings: [] })
 })
 
 const temporaryDirectories: string[] = []
@@ -149,7 +154,7 @@ test('default upgrade physically relocates Codex and retains the old entry', asy
   expect((await lstat(result.WEGENT_CODEX_HOME!)).ino).toBe(before.ino)
   expect((await lstat(result.WEGENT_CODEX_HOME!)).isDirectory()).toBe(true)
   expect(await realpath(oldHome)).toBe(await realpath(result.WEGENT_CODEX_HOME!))
-  expect(assertCodexHomeCanMove).toHaveBeenCalledOnce()
+  expect(inspectCodexHomeMigration).toHaveBeenCalledOnce()
 })
 
 test.each(['HOME', 'USERPROFILE'])(
@@ -313,7 +318,7 @@ test('schema rejection happens before any Home or journal is initialized', async
   await expect(lstat(join(executorHome, 'capabilities'))).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
-test('credential preflight rejection keeps Codex and its authentication link in place', async () => {
+test('keeps a Home-bound Codex Home in place without failing startup', async () => {
   const { homeDirectory, executorHome } = await fixture()
   const oldHome = join(executorHome, 'codex')
   const auth = join(homeDirectory, '.codex', 'auth.json')
@@ -321,14 +326,32 @@ test('credential preflight rejection keeps Codex and its authentication link in 
   await writeFile(auth, 'synthetic-auth')
   await mkdir(oldHome, { recursive: true })
   await symlink(auth, join(oldHome, 'auth.json'))
-  vi.mocked(assertCodexHomeCanMove).mockRejectedValue(new Error('credential store blocked'))
-  const options = { environment: {}, metadata, homeDirectory }
-  await expect(prepareWorkbenchEnvironment(options)).rejects.toThrow('credential store blocked')
-  expect((await lstat(oldHome)).isDirectory()).toBe(true)
-  expect(await realpath(join(oldHome, 'auth.json'))).toBe(await realpath(auth))
-  await expect(lstat(resolveWorkbenchPaths(options).codexHome)).rejects.toMatchObject({
-    code: 'ENOENT',
+  vi.mocked(inspectCodexHomeMigration).mockResolvedValue({
+    allowed: false,
+    reasons: ['encrypted_storage'],
+    warnings: [],
   })
+  const options = { environment: {}, metadata, homeDirectory }
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const result = await prepareWorkbenchEnvironment(options)
+    expect(result.WEGENT_CODEX_HOME).toBe(oldHome)
+    expect(result.WEGENT_EXECUTOR_HOME).toBe(resolveWorkbenchPaths(options).desktop)
+    expect((await lstat(oldHome)).isDirectory()).toBe(true)
+    expect(await realpath(join(oldHome, 'auth.json'))).toBe(await realpath(auth))
+    await expect(lstat(resolveWorkbenchPaths(options).codexHome)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    expect(warn).toHaveBeenCalledWith(
+      '[startup] codex-home-migration-skipped',
+      expect.objectContaining({
+        home: await realpath(oldHome),
+        detail: 'synthetic-verdict-detail',
+      })
+    )
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('relocates an auth symlink without copying or changing native authentication', async () => {
@@ -349,5 +372,5 @@ test('relocates an auth symlink without copying or changing native authenticatio
   expect((await lstat(auth)).mode).toBe(before.mode)
   expect(await readFile(newAuth, 'utf8')).toBe('synthetic-auth')
   await prepareWorkbenchEnvironment(options)
-  expect(assertCodexHomeCanMove).toHaveBeenCalledOnce()
+  expect(inspectCodexHomeMigration).toHaveBeenCalledOnce()
 })

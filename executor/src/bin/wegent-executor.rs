@@ -114,22 +114,26 @@ fn main() {
         return;
     }
     if env::args().nth(1).as_deref() == Some("--workbench-codex-migration-check") {
-        let result = env::args()
-            .nth(2)
-            .ok_or_else(|| "Missing Codex Home".to_owned())
-            .and_then(|home| {
-                wegent_executor::local::workbench_codex_migration::check(std::path::Path::new(
-                    &home,
-                ))
-            });
+        use wegent_executor::local::workbench_codex_migration::{
+            check, CodexHomeMigrationReason, CodexHomeMigrationVerdict,
+        };
+        let verdict = env::args().nth(2).map_or_else(
+            || CodexHomeMigrationVerdict::blocked(CodexHomeMigrationReason::MissingHome),
+            |home| check(std::path::Path::new(&home)),
+        );
         // Return bounded, credential-free diagnostics without initializing the runtime.
+        // `reasons` and `warnings` are stable codes; `reason` and `warning` are
+        // human-readable texts for manual diagnosis.
         println!(
             "{}",
-            match result {
-                Ok(()) => serde_json::json!({"codex_home_migration": 1, "allowed": true}),
-                Err(reason) =>
-                    serde_json::json!({"codex_home_migration": 1, "allowed": false, "reason": reason}),
-            }
+            serde_json::json!({
+                "codex_home_migration": 1,
+                "allowed": verdict.allowed,
+                "reasons": verdict.reasons,
+                "warnings": verdict.warnings,
+                "reason": verdict.reason,
+                "warning": verdict.warning,
+            })
         );
         return;
     }

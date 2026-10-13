@@ -11,10 +11,16 @@ export interface WorkbenchHomeMigrationOptions {
   stateDirectory: string
   initialize?: boolean
   preserveExistingSource?: boolean
-  beforeMove?: (sourceHome: string) => Promise<void>
+  /**
+   * Decides whether the imminent move may proceed. `skip` keeps the source Home
+   * in place and reports `skipped`; a thrown error still aborts the migration.
+   */
+  beforeMove?: (sourceHome: string) => Promise<WorkbenchHomeMoveDecision>
 }
 
-export type WorkbenchHomeMigrationResult = 'migrated' | 'already-migrated' | 'no-source'
+export type WorkbenchHomeMoveDecision = 'move' | 'skip'
+
+export type WorkbenchHomeMigrationResult = 'migrated' | 'already-migrated' | 'no-source' | 'skipped'
 
 interface MigrationJournal {
   version: 1
@@ -348,7 +354,8 @@ async function resumeMigration(
  * Call before starting any executor. The caller must exclusively control both
  * Home paths and their parents, and reuse one persistent stateDirectory.
  * The mover reads only metadata and symlink targets. beforeMove may inspect
- * configuration under the same lock, but must not read credential contents.
+ * configuration under the same lock, but must not read credential contents; it
+ * can also skip a move whose Home-bound credentials stay valid only in place.
  * External relative links are journaled and rebased without reading target data.
  * Unresolvable relative links fail closed rather than changing their meaning.
  * The journal supports process-crash recovery, not power-loss durability.
@@ -372,7 +379,7 @@ export async function migrateWorkbenchHome(
     let existing = await readJournal(journalPath, options)
     let source = await metadata(sourceHome)
     if (source?.isDirectory() && !options.preserveExistingSource) {
-      await options.beforeMove?.(sourceHome)
+      if ((await options.beforeMove?.(sourceHome)) === 'skip') return 'skipped'
       lock.assertHeld()
       if (existing?.strategy === 'preserve-source') {
         if (!ownsDirectory(source, existing))
