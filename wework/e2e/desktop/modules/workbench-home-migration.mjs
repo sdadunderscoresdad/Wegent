@@ -7,6 +7,7 @@ import {
   readFile,
   readlink,
   realpath,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -27,6 +28,10 @@ const CONFIG_MARKER = 'WEWORK_E2E_WORKBENCH_HOME_CONFIG'
 const SESSION_PATH = join('sessions', 'workbench-home-e2e', 'session.marker')
 const ATTACHMENT_PATH = join('workspace', 'attachments', 'workbench-home-e2e.bin')
 const ATTACHMENT = Buffer.from([0, 1, 2, 127, 128, 254, 255])
+// Encrypted credential files derive their keyring identity from the canonical
+// Codex Home, so their presence must keep the Home at its current path.
+const HOME_BOUND_CREDENTIAL_PATH = join('secrets', 'codex_auth.age')
+const HOME_BOUND_CREDENTIAL = 'synthetic-encrypted-credential\n'
 const NATIVE_SESSION_MARKER = 'WEWORK_MIGRATION_NATIVE_HISTORY_42'
 
 async function runNativeTurn(fixture, home, resumeId) {
@@ -203,6 +208,23 @@ export function createWorkbenchHomeMigrationScenario({
     return journal
   }
 
+  async function assertHomeBoundHomeKeptInPlace(control) {
+    const config = await requestExecutor(control, 'executor.codex_home.config.read', uiTimeoutMs)
+    assert.equal(
+      resolve(config.codexHome),
+      fixture.sourceHome,
+      'A Home-bound Codex Home must keep its current path'
+    )
+    const credential = join(fixture.sourceHome, HOME_BOUND_CREDENTIAL_PATH)
+    assert.equal(await readFile(credential, 'utf8'), HOME_BOUND_CREDENTIAL)
+    const source = await lstat(fixture.sourceHome, { bigint: true })
+    assert.equal(source.isDirectory(), true, 'The legacy Home must stay a real directory')
+    assert.equal(source.ino, fixture.sourceInode, 'The legacy Home must not move')
+    await assertSeed(fixture.sourceHome)
+    await assertAbsent(fixture.targetHome)
+    await assertAbsent(fixture.journalPath)
+  }
+
   return {
     codexConfigToml: `# ${CONFIG_MARKER}\n[features]\napps = false\n`,
 
@@ -261,6 +283,9 @@ export function createWorkbenchHomeMigrationScenario({
       })}\n`
       await writeFile(join(sourceHome, SESSION_PATH), session)
       await writeFile(attachmentPath, ATTACHMENT)
+      const homeBoundCredential = join(sourceHome, HOME_BOUND_CREDENTIAL_PATH)
+      await mkdir(dirname(homeBoundCredential), { recursive: true })
+      await writeFile(homeBoundCredential, HOME_BOUND_CREDENTIAL)
       const capabilitiesSource = join(defaultExecutorHome, 'capabilities')
       await mkdir(join(capabilitiesSource, 'store', 'migration-fixture'), { recursive: true })
       const skill =
@@ -348,6 +373,14 @@ export function createWorkbenchHomeMigrationScenario({
     async verify(control) {
       assert.ok(fixture, 'Workbench Home fixture was not prepared before Electron startup')
       assert.equal(typeof restartDesktopApp, 'function')
+      await assertHomeBoundHomeKeptInPlace(control)
+      completed.push('home-bound-store-keeps-legacy-home')
+      // Drop the Home-bound evidence so the next launch completes the migration.
+      await rm(dirname(join(fixture.sourceHome, HOME_BOUND_CREDENTIAL_PATH)), {
+        recursive: true,
+        force: true,
+      })
+      await restartDesktopApp()
       const journal = await assertMigrated(control)
       completed.push('migrated')
       await runNativeTurn(fixture, fixture.targetHome, fixture.nativeThread)
