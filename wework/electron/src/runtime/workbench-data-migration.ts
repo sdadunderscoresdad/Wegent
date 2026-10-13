@@ -118,7 +118,11 @@ function preserveRelativeLinks(directory: string): void {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
       if (directory) {
-        fs.symlinkSync(`${dirname(path)}${sep}${target}`, temporary, 'dir')
+        fs.symlinkSync(
+          `${dirname(path)}${sep}${target}`,
+          temporary,
+          process.platform === 'win32' ? 'junction' : 'dir'
+        )
       } else if (createFileAlias(`${dirname(path)}${sep}${target}`, temporary) === 'none') {
         console.warn('[startup] migration-relative-link-unavailable', { path })
         continue

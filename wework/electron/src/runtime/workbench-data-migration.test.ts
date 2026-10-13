@@ -73,12 +73,22 @@ test('moves a directory once and preserves internal, external and dangling links
   fs.symlinkSync('config.json', join(options.source, 'internal'))
   fs.symlinkSync('../../external.txt', join(options.source, 'external'))
   fs.symlinkSync('missing-cookie', join(options.source, 'SingletonCookie'))
+  write(join(options.source, 'subdir/seed'))
+  fs.symlinkSync('subdir', join(options.source, 'dirlink'))
   const inode = fs.statSync(options.source).ino
   migrateWorkbenchDataEntry(options)
   expect(fs.lstatSync(options.source).isSymbolicLink()).toBe(true)
   expect(fs.statSync(options.target).ino).toBe(inode)
   expect(fs.readFileSync(join(options.target, 'internal'), 'utf8')).toBe('fixture')
   expect(fs.realpathSync(join(options.target, 'external'))).toBe(join(root, 'external.txt'))
+  // Directory links use a junction on Windows, where a standard user cannot
+  // create a directory symlink either.
+  expect(fs.readFileSync(join(options.target, 'dirlink/seed'), 'utf8')).toBe('fixture')
+  expect(vi.mocked(fs.symlinkSync)).toHaveBeenCalledWith(
+    expect.stringContaining('subdir'),
+    expect.stringContaining(`${join(options.source, 'dirlink')}.migration-`),
+    process.platform === 'win32' ? 'junction' : 'dir'
+  )
   const journal = fs.statSync(options.journal)
   migrateWorkbenchDataEntry(options)
   expect(fs.statSync(options.journal).mtimeMs).toBe(journal.mtimeMs)
