@@ -448,6 +448,27 @@ export function createWorkbenchHomeMigrationScenario({
         'Legacy Home lost native conversation history'
       )
       completed.push('legacy-entry-session-continuity')
+      // Simulate an uninstall/reinstall that recreated the legacy Codex Home:
+      // the desktop must start and keep both Homes instead of refusing.
+      await rm(fixture.sourceHome, { recursive: true, force: true })
+      await mkdir(join(fixture.sourceHome, 'reinstalled'), { recursive: true })
+      await writeFile(join(fixture.sourceHome, 'reinstalled', 'marker'), 'reinstall')
+      await restartDesktopApp()
+      assert.equal(
+        (await lstat(fixture.sourceHome)).isDirectory(),
+        true,
+        'A recreated legacy Home must stay in place'
+      )
+      assert.equal(
+        await readFile(join(fixture.sourceHome, 'reinstalled', 'marker'), 'utf8'),
+        'reinstall'
+      )
+      assert.equal(
+        (await lstat(fixture.targetHome)).isDirectory(),
+        true,
+        'The migrated Home must stay untouched'
+      )
+      completed.push('reinstall-conflict-keeps-both-homes')
       control.setScenario('initial')
       await writeFile(
         join(resultDir, 'workbench-home-migration.json'),

@@ -64,6 +64,27 @@ volume. When neither works, the desktop logs a warning and keeps starting, and
 that entry simply has no legacy alias. Retained historical artifacts such as
 attachments follow the same rule, so a failed alias never blocks startup.
 
+## Recovering Conflicting Migration State
+
+A migration journal records the device and inode of its entry. Reinstalling,
+cleaning up by hand, antivirus interference, or an older build recreating a
+directory can leave both sides mismatched. The migration keeps both sides and
+continues instead of refusing to start:
+
+- Data entries (Electron userData, logs, updater cache, executor data): the side
+  that no longer matches is renamed to `<name>.target-conflict-<timestamp>` or
+  `<name>.legacy-conflict-<timestamp>`, the authoritative side reaches the new
+  layout, and the legacy alias is republished. Every repair is appended to
+  `<migrations>/conflict-repairs.jsonl` and logged as
+  `migration-conflict-repaired`.
+- A journal that cannot be parsed or does not describe its entry is kept as
+  evidence and rebuilt, logged as `migration-journal-discarded`.
+- Codex, capabilities and Claude Homes without an ownership journal are left
+  untouched: the legacy Home keeps serving startup and logs
+  `home-migration-skipped`, and the next launch retries.
+- A failed task database integrity check or a historical artifact path conflict
+  is reported and never blocks startup.
+
 ## Automatic Cleanup and Retention
 
 Wework runs storage maintenance in the background immediately after launch and

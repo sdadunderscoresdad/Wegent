@@ -31,6 +31,29 @@ export interface WorkbenchPaths {
   migrations: string
 }
 
+/**
+ * Runs one Home migration and reports whether the new layout is authoritative.
+ *
+ * Migration state on disk can be inconsistent (a reinstall, manual cleanup, or
+ * antivirus interference). Starting the desktop with the legacy path is always
+ * better than refusing to start, so any failure keeps that Home in place and is
+ * reported; the next launch retries.
+ */
+async function keepLegacyHomeOnFailure(
+  home: string,
+  migrate: () => Promise<boolean>
+): Promise<boolean> {
+  try {
+    return await migrate()
+  } catch (error) {
+    console.warn('[startup] home-migration-skipped', {
+      home,
+      detail: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+}
+
 function resolveWorkbenchUserHome(options: WorkbenchEnvironmentOptions): string {
   // macOS Electron getPath('home') ignores HOME, unlike the executor child.
   const home =
@@ -96,73 +119,86 @@ export async function prepareWorkbenchEnvironment(
   const legacyCodexHome = join(executorHome, 'codex')
   let codexHome = paths.codexHome
   if (!environment.WEGENT_CODEX_HOME?.trim()) {
-    const result = await migrateWorkbenchHome({
-      acquireLock,
-      sourceHome: legacyCodexHome,
-      targetHome: paths.codexHome,
-      stateDirectory: join(paths.migrations, 'codex-home-v1'),
-      initialize: true,
-      beforeMove: async home => {
-        const verdict = await inspectCodexHomeMigration(branded.WEWORK_EXECUTOR_PATH!, home)
-        // A Home-bound credential store keeps its current path: moving it would
-        // strand the keyring identity, while refusing to start would strand the
-        // whole desktop. The next launch retries once the evidence is gone.
-        if (!verdict.allowed) {
-          console.warn('[startup] codex-home-migration-skipped', {
-            home,
-            detail: describeCodexHomeMigrationVerdict(verdict),
-          })
-          return 'skip'
-        }
-        if (verdict.warnings.length > 0) {
-          console.warn('[startup] codex-home-migration-warnings', {
-            home,
-            detail: describeCodexHomeMigrationVerdict(verdict),
-          })
-        }
-        return 'move'
-      },
+    const migrated = await keepLegacyHomeOnFailure('codex', async () => {
+      const result = await migrateWorkbenchHome({
+        acquireLock,
+        sourceHome: legacyCodexHome,
+        targetHome: paths.codexHome,
+        stateDirectory: join(paths.migrations, 'codex-home-v1'),
+        initialize: true,
+        beforeMove: async home => {
+          const verdict = await inspectCodexHomeMigration(branded.WEWORK_EXECUTOR_PATH!, home)
+          // A Home-bound credential store keeps its current path: moving it would
+          // strand the keyring identity, while refusing to start would strand the
+          // whole desktop. The next launch retries once the evidence is gone.
+          if (!verdict.allowed) {
+            console.warn('[startup] codex-home-migration-skipped', {
+              home,
+              detail: describeCodexHomeMigrationVerdict(verdict),
+            })
+            return 'skip'
+          }
+          if (verdict.warnings.length > 0) {
+            console.warn('[startup] codex-home-migration-warnings', {
+              home,
+              detail: describeCodexHomeMigrationVerdict(verdict),
+            })
+          }
+          return 'move'
+        },
+      })
+      return result !== 'skipped'
     })
-    if (result === 'skipped') codexHome = legacyCodexHome
+    if (!migrated) codexHome = legacyCodexHome
   }
+  const legacyCapabilitiesHome = join(executorHome, 'capabilities')
+  let capabilitiesHome = paths.capabilities
   if (!environment.WEGENT_CAPABILITIES_HOME?.trim()) {
-    await migrateWorkbenchHome({
-      acquireLock,
-      sourceHome: join(executorHome, 'capabilities'),
-      targetHome: paths.capabilities,
-      stateDirectory: join(paths.migrations, 'capabilities-v1'),
-      initialize: true,
+    const migrated = await keepLegacyHomeOnFailure('capabilities', async () => {
+      await migrateWorkbenchHome({
+        acquireLock,
+        sourceHome: legacyCapabilitiesHome,
+        targetHome: paths.capabilities,
+        stateDirectory: join(paths.migrations, 'capabilities-v1'),
+        initialize: true,
+      })
+      return true
     })
+    if (!migrated) capabilitiesHome = legacyCapabilitiesHome
   }
   const customClaudeHome =
     environment.WEGENT_CLAUDE_HOME?.trim() || environment.CLAUDE_CONFIG_DIR?.trim()
   let claudeHome = customClaudeHome || paths.claudeHome
   if (!customClaudeHome) {
-    // The user's ~/.claude is not owned by Wework and must never be relocated.
-    await migrateWorkbenchHome({
-      acquireLock,
-      sourceHome: join(executorHome, 'claude'),
-      targetHome: paths.claudeHome,
-      stateDirectory: join(paths.migrations, 'claude-home-v1'),
-      initialize: true,
-      preserveExistingSource: true,
-    })
-    await migrateWorkbenchHome({
-      acquireLock,
-      sourceHome: join(executorHome, 'claude'),
-      targetHome: paths.claudeHome,
-      stateDirectory: join(paths.migrations, 'claude-home-v1'),
-    })
-    // Claude hashes the lexical CLAUDE_CONFIG_DIR for Keychain service identity.
-    // Keep its lexical spelling while physically relocating the backing data.
     const legacyClaudeHome = join(executorHome, 'claude')
-    const journal = JSON.parse(
-      await readFile(
-        join(paths.migrations, 'claude-home-v1', 'workbench-home-migration.json'),
-        'utf8'
+    const migrated = await keepLegacyHomeOnFailure('claude', async () => {
+      // The user's ~/.claude is not owned by Wework and must never be relocated.
+      await migrateWorkbenchHome({
+        acquireLock,
+        sourceHome: legacyClaudeHome,
+        targetHome: paths.claudeHome,
+        stateDirectory: join(paths.migrations, 'claude-home-v1'),
+        initialize: true,
+        preserveExistingSource: true,
+      })
+      await migrateWorkbenchHome({
+        acquireLock,
+        sourceHome: legacyClaudeHome,
+        targetHome: paths.claudeHome,
+        stateDirectory: join(paths.migrations, 'claude-home-v1'),
+      })
+      // Claude hashes the lexical CLAUDE_CONFIG_DIR for Keychain service identity.
+      // Keep its lexical spelling while physically relocating the backing data.
+      const journal = JSON.parse(
+        await readFile(
+          join(paths.migrations, 'claude-home-v1', 'workbench-home-migration.json'),
+          'utf8'
+        )
       )
-    )
-    if (journal.strategy === 'relocate-source') claudeHome = legacyClaudeHome
+      if (journal.strategy === 'relocate-source') claudeHome = legacyClaudeHome
+      return true
+    })
+    if (!migrated) claudeHome = legacyClaudeHome
   }
   const lock = await acquireLock([executorHome, paths.desktop])
   try {
@@ -181,7 +217,7 @@ export async function prepareWorkbenchEnvironment(
     WEGENT_EXECUTOR_HOME: paths.desktop,
     WEGENT_WORKBENCH_HOME: paths.root,
     WEGENT_CODEX_HOME: environment.WEGENT_CODEX_HOME?.trim() || codexHome,
-    WEGENT_CAPABILITIES_HOME: environment.WEGENT_CAPABILITIES_HOME?.trim() || paths.capabilities,
+    WEGENT_CAPABILITIES_HOME: environment.WEGENT_CAPABILITIES_HOME?.trim() || capabilitiesHome,
     WEGENT_CLAUDE_HOME: claudeHome,
   }
 }

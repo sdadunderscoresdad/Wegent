@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -26,6 +26,7 @@ async function fixture() {
     'workbench-executor-data',
     'workbench-data-migration',
     'workbench-link-alias',
+    'workbench-migration-repair',
   ]) {
     const source = await readFile(new URL(`./${name}.ts`, import.meta.url), 'utf8')
     const result = ts.transpileModule(source, {
@@ -98,10 +99,13 @@ test('large history migrates without blocking the parent event loop and restarts
 
 test('worker failure rejects startup and leaves conflicting data intact', async () => {
   const { source, target, migrate } = await fixture()
-  writeFileSync(join(source, 'device-config.json'), 'old')
   mkdirSync(target, { recursive: true })
   writeFileSync(join(target, 'device-config.json'), 'new')
-  await expect(migrate()).rejects.toThrow('conflict')
-  expect(readFileSync(join(source, 'device-config.json'), 'utf8')).toBe('old')
+  // A source that is no longer a directory cannot be inventoried: the worker must
+  // fail loudly instead of starting with a half-migrated Home.
+  rmSync(source, { recursive: true, force: true })
+  writeFileSync(source, 'not a directory')
+  await expect(migrate()).rejects.toThrow()
+  expect(readFileSync(source, 'utf8')).toBe('not a directory')
   expect(readFileSync(join(target, 'device-config.json'), 'utf8')).toBe('new')
 })

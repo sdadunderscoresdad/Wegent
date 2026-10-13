@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
@@ -129,32 +129,63 @@ test('accepts a completed directory bridge after the device number changes', () 
   expect(fs.readFileSync(join(options.target, 'tasks.sqlite'), 'utf8')).toBe('original')
 })
 
-test.each(['replacement', 'redirect'])('rejects a completed bridge with a %s directory', change => {
-  const options = entry()
-  write(join(options.source, 'tasks.sqlite'), 'original')
-  migrateWorkbenchDataEntry(options)
-  const other = join(root, 'other')
-  if (change === 'replacement') {
-    fs.renameSync(options.target, other)
-    write(join(options.target, 'tasks.sqlite'), 'unrelated')
-  } else {
-    write(join(other, 'tasks.sqlite'), 'unrelated')
-    fs.unlinkSync(options.source)
-    fs.symlinkSync(other, options.source, 'junction')
+test.each(['replacement', 'redirect'])(
+  'recovers a completed bridge replaced by a %s directory',
+  change => {
+    const options = entry()
+    write(join(options.source, 'tasks.sqlite'), 'original')
+    migrateWorkbenchDataEntry(options)
+    const other = join(root, 'other')
+    if (change === 'replacement') {
+      fs.renameSync(options.target, other)
+      write(join(options.target, 'tasks.sqlite'), 'unrelated')
+    } else {
+      write(join(other, 'tasks.sqlite'), 'unrelated')
+      fs.unlinkSync(options.source)
+      fs.symlinkSync(other, options.source, 'junction')
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      migrateWorkbenchDataEntry(options)
+      // The legacy path becomes a bridge again, and nothing is deleted: the
+      // replaced side survives where it was renamed to.
+      expect(fs.lstatSync(options.source).isSymbolicLink()).toBe(true)
+      if (change === 'replacement') {
+        // The recreated target is adopted; the original data survives at `other`.
+        expect(fs.readFileSync(join(options.target, 'tasks.sqlite'), 'utf8')).toBe('unrelated')
+        expect(fs.readFileSync(join(other, 'tasks.sqlite'), 'utf8')).toBe('original')
+      } else {
+        // The migrated target stays authoritative; the redirect survives as
+        // evidence where it pointed.
+        expect(fs.readFileSync(join(options.target, 'tasks.sqlite'), 'utf8')).toBe('original')
+        expect(fs.readFileSync(join(other, 'tasks.sqlite'), 'utf8')).toBe('unrelated')
+      }
+    } finally {
+      warn.mockRestore()
+    }
   }
-  expect(() => migrateWorkbenchDataEntry(options)).toThrow('conflict')
-  expect(fs.readFileSync(join(other, 'tasks.sqlite'), 'utf8')).toBe(
-    change === 'replacement' ? 'original' : 'unrelated'
-  )
-})
+)
 
-test('refuses to merge two existing directories', () => {
+test('keeps an unexpected target directory aside instead of merging', () => {
   const options = entry()
   write(join(options.source, 'keep'), 'old')
   write(join(options.target, 'keep'), 'new')
-  expect(() => migrateWorkbenchDataEntry(options)).toThrow('conflict')
-  expect(fs.readFileSync(join(options.source, 'keep'), 'utf8')).toBe('old')
-  expect(fs.readFileSync(join(options.target, 'keep'), 'utf8')).toBe('new')
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    migrateWorkbenchDataEntry(options)
+    expect(fs.readFileSync(join(options.target, 'keep'), 'utf8')).toBe('old')
+    expect(fs.lstatSync(options.source).isSymbolicLink()).toBe(true)
+    const preserved = fs
+      .readdirSync(dirname(options.target))
+      .filter(name => name.startsWith('data.target-conflict-'))
+    expect(preserved).toHaveLength(1)
+    expect(fs.readFileSync(join(dirname(options.target), preserved[0], 'keep'), 'utf8')).toBe('new')
+    expect(
+      fs.readFileSync(join(dirname(options.journal), 'conflict-repairs.jsonl'), 'utf8')
+    ).toContain('"role":"target"')
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('migrates a real WAL database and credentials; historical artifacts stay in place', () => {
@@ -230,7 +261,20 @@ test('recreates a completed file bridge after SQLite removes both sidecar entrie
   expect(fs.readFileSync(options.source, 'utf8')).toBe('new WAL')
   fs.unlinkSync(options.source)
   write(options.source, 'unmanaged')
-  expect(() => migrateWorkbenchDataEntry(options)).toThrow('conflict')
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    // The unmanaged legacy file is adopted and the replaced target survives
+    // next to it, so the sidecar keeps working after a crash or manual cleanup.
+    migrateWorkbenchDataEntry(options)
+    expect(fs.readFileSync(options.target, 'utf8')).toBe('unmanaged')
+    const preserved = fs
+      .readdirSync(join(root, 'new'))
+      .filter(name => name.startsWith('tasks.sqlite-wal.target-conflict-'))
+    expect(preserved).toHaveLength(1)
+    expect(fs.readFileSync(join(root, 'new', preserved[0]), 'utf8')).toBe('new WAL')
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('moves a file to a hard-link alias when the platform denies symbolic links', () => {

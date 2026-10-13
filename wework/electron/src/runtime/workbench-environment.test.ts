@@ -286,7 +286,7 @@ test('relocates Claude backing data while preserving its lexical credential iden
   expect(await prepareWorkbenchEnvironment(options)).toEqual(result)
 })
 
-test('a migration conflict aborts before returning an environment for startup', async () => {
+test('keeps the legacy Home when its target cannot be migrated into', async () => {
   const { homeDirectory, executorHome, root } = await fixture()
   const options = { environment: { WEGENT_WORKBENCH_HOME: root }, metadata, homeDirectory }
   const oldHome = join(executorHome, 'codex')
@@ -295,9 +295,22 @@ test('a migration conflict aborts before returning an environment for startup', 
   await mkdir(target, { recursive: true })
   await writeFile(join(oldHome, 'keep.txt'), 'old')
   await writeFile(join(target, 'keep.txt'), 'new')
-  await expect(prepareWorkbenchEnvironment(options)).rejects.toThrow()
-  expect(await readFile(join(oldHome, 'keep.txt'), 'utf8')).toBe('old')
-  expect(await readFile(join(target, 'keep.txt'), 'utf8')).toBe('new')
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const result = await prepareWorkbenchEnvironment(options)
+    // Neither side is touched: the desktop starts with the legacy Home and the
+    // next launch retries once the target conflict is resolved.
+    expect(result.WEGENT_CODEX_HOME).toBe(oldHome)
+    expect(await readFile(join(oldHome, 'keep.txt'), 'utf8')).toBe('old')
+    expect(await readFile(join(target, 'keep.txt'), 'utf8')).toBe('new')
+    expect((await lstat(oldHome)).isDirectory()).toBe(true)
+    expect(warn).toHaveBeenCalledWith(
+      '[startup] home-migration-skipped',
+      expect.objectContaining({ home: 'codex' })
+    )
+  } finally {
+    warn.mockRestore()
+  }
 })
 
 test('schema rejection happens before any Home or journal is initialized', async () => {

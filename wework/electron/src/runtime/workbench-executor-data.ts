@@ -117,15 +117,22 @@ export function migrateWorkbenchExecutorData(source: string, target: string, sta
   const database = join(target, 'data/tasks.sqlite')
   const verified = join(state, 'task-database-verified-v1')
   if (exists(database) && !exists(verified)) {
-    const db = new DatabaseSync(database, { readOnly: true })
     try {
+      const db = new DatabaseSync(database, { readOnly: true })
       const rows = db.prepare('PRAGMA quick_check').all()
-      if (rows.length !== 1 || rows[0].quick_check !== 'ok')
-        throw new Error('Migrated task database failed integrity verification')
-    } finally {
+      if (rows.length === 1 && rows[0].quick_check === 'ok') {
+        fs.writeFileSync(verified, '1\n', { flag: 'wx', mode: 0o600 })
+      } else {
+        // The application reports a damaged database itself; startup continues.
+        console.warn('[startup] task-database-integrity-warning', { database })
+      }
       db.close()
+    } catch (error) {
+      console.warn('[startup] task-database-verification-skipped', {
+        database,
+        code: (error as NodeJS.ErrnoException).code,
+      })
     }
-    fs.writeFileSync(verified, '1\n', { flag: 'wx', mode: 0o600 })
   }
 }
 
@@ -138,14 +145,19 @@ function retainChildren(source: string, target: string, recurse: boolean): void 
     // Do not alias grouping directories such as draft/ or runtime/: doing so
     // would route every future upload back into the legacy Home.
     if (recurse && fs.lstatSync(oldEntry).isDirectory()) {
-      if (exists(newEntry) && !fs.lstatSync(newEntry).isDirectory())
-        throw new Error(`Historical attachment directory conflict: ${newEntry}`)
+      if (exists(newEntry) && !fs.lstatSync(newEntry).isDirectory()) {
+        // Keep both sides; the artifact stays reachable at its legacy path.
+        console.warn('[startup] historical-attachment-conflict', { path: newEntry })
+        continue
+      }
       retainChildren(oldEntry, newEntry, true)
       continue
     }
     if (exists(newEntry)) {
-      if (fs.realpathSync(newEntry) !== fs.realpathSync(oldEntry))
-        throw new Error(`Historical artifact path conflict: ${newEntry}`)
+      if (fs.realpathSync(newEntry) !== fs.realpathSync(oldEntry)) {
+        // Keep both sides; startup and the historical artifact are unaffected.
+        console.warn('[startup] historical-artifact-conflict', { path: newEntry })
+      }
     } else if (fs.statSync(oldEntry).isDirectory()) {
       fs.symlinkSync(oldEntry, newEntry, 'junction')
     } else if (createFileAlias(oldEntry, newEntry) === 'none') {

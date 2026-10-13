@@ -52,6 +52,21 @@ workspace）照常迁移到工作台目录，下一次启动会重新判定。
 两者都不可用时只记录告警并继续启动，该条目不再提供原路径别名。历史附件等保留在原位的
 文件同样遵循这套规则，因此迁移不会因为文件别名失败而中断启动。
 
+## 迁移状态冲突的恢复
+
+迁移 journal 记录条目的设备号与 inode。重装、手动清理、杀毒软件或旧版本重建目录，都可能让
+两侧不再匹配。此时迁移不再拒绝启动，而是保留两侧数据后继续：
+
+- 数据条目（Electron userData、日志、更新缓存、Executor 数据等）：把不再匹配的一侧改名为
+  `<名称>.target-conflict-<时间戳>` 或 `<名称>.legacy-conflict-<时间戳>`，让仍然权威的一侧落到
+  新布局并重建原路径别名；每次修复都会向 `<migrations>/conflict-repairs.jsonl` 追加一条记录，
+  启动日志输出 `migration-conflict-repaired`。
+- 无法解析或与条目不匹配的 journal 会被改名保留为证据并重建，日志输出
+  `migration-journal-discarded`。
+- Codex、capabilities、Claude Home 缺少归属 journal 时不做任何改名：保留旧 Home 继续启动并
+  输出 `home-migration-skipped`，下次启动重试。
+- 任务数据库完整性校验失败、历史附件路径冲突只记录告警，不再阻止启动。
+
 ## 自动清理与保留策略
 
 Wework 启动后会立即在后台执行一次存储维护，之后每 30 分钟重复执行。维护过程只处理
