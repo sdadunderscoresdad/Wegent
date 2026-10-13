@@ -28,6 +28,15 @@ const CONFIG_MARKER = 'WEWORK_E2E_WORKBENCH_HOME_CONFIG'
 const SESSION_PATH = join('sessions', 'workbench-home-e2e', 'session.marker')
 const ATTACHMENT_PATH = join('workspace', 'attachments', 'workbench-home-e2e.bin')
 const ATTACHMENT = Buffer.from([0, 1, 2, 127, 128, 254, 255])
+// Top-level files and historical artifacts use file aliases instead of
+// junctions, so the checkpoint proves they survive a migration on every
+// platform, including Windows accounts without the symbolic-link privilege.
+const LEGACY_FILE_NAME = 'migration-legacy-file.marker'
+const LEGACY_FILE = 'WEWORK_E2E_LEGACY_FILE_MARKER\n'
+const STALE_IPC_ADDRESS_NAME = 'app-ipc.addr'
+const STALE_IPC_ADDRESS = '\\\\.\\pipe\\wework-e2e-stale-app-ipc'
+const RETAINED_ATTACHMENT_PATH = join('attachments', 'migration-fixture', 'blob.bin')
+const RETAINED_ATTACHMENT = Buffer.from([9, 8, 7, 6, 255])
 // Encrypted credential files derive their keyring identity from the canonical
 // Codex Home, so their presence must keep the Home at its current path.
 const HOME_BOUND_CREDENTIAL_PATH = join('secrets', 'codex_auth.age')
@@ -204,6 +213,24 @@ export function createWorkbenchHomeMigrationScenario({
       await readFile(join(fixture.desktopRoot, 'credentials', 'migration-marker'), 'utf8'),
       'synthetic-key-marker'
     )
+    // File entries keep a legacy alias with identical content: a symlink where
+    // the platform allows it, otherwise a hard link.
+    assert.equal(await readFile(join(fixture.executorHome, LEGACY_FILE_NAME), 'utf8'), LEGACY_FILE)
+    assert.equal(await readFile(join(fixture.desktopRoot, LEGACY_FILE_NAME), 'utf8'), LEGACY_FILE)
+    const ipcAlias = await lstat(join(fixture.executorHome, STALE_IPC_ADDRESS_NAME))
+    assert.equal(
+      ipcAlias.isFile() || ipcAlias.isSymbolicLink(),
+      true,
+      'A migrated runtime file must keep a legacy alias'
+    )
+    assert.deepEqual(
+      await readFile(join(fixture.desktopRoot, RETAINED_ATTACHMENT_PATH)),
+      RETAINED_ATTACHMENT
+    )
+    assert.deepEqual(
+      await readFile(join(fixture.executorHome, RETAINED_ATTACHMENT_PATH)),
+      RETAINED_ATTACHMENT
+    )
     await assertActiveHome(control, fixture.targetHome)
     return journal
   }
@@ -286,6 +313,11 @@ export function createWorkbenchHomeMigrationScenario({
       const homeBoundCredential = join(sourceHome, HOME_BOUND_CREDENTIAL_PATH)
       await mkdir(dirname(homeBoundCredential), { recursive: true })
       await writeFile(homeBoundCredential, HOME_BOUND_CREDENTIAL)
+      await writeFile(join(defaultExecutorHome, LEGACY_FILE_NAME), LEGACY_FILE)
+      await writeFile(join(defaultExecutorHome, STALE_IPC_ADDRESS_NAME), STALE_IPC_ADDRESS)
+      const retainedAttachment = join(defaultExecutorHome, RETAINED_ATTACHMENT_PATH)
+      await mkdir(dirname(retainedAttachment), { recursive: true })
+      await writeFile(retainedAttachment, RETAINED_ATTACHMENT)
       const capabilitiesSource = join(defaultExecutorHome, 'capabilities')
       await mkdir(join(capabilitiesSource, 'store', 'migration-fixture'), { recursive: true })
       const skill =
@@ -319,6 +351,7 @@ export function createWorkbenchHomeMigrationScenario({
       fixture = {
         namespace: namespace || 'default',
         desktopRoot,
+        executorHome: defaultExecutorHome,
         legacyDatabase,
         sourceHome,
         targetHome: join(desktopRoot, 'codex'),

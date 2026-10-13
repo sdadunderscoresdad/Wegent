@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
+import { createFileAlias } from './workbench-link-alias.js'
+
 interface EntryMigration {
   source: string
   target: string
@@ -57,7 +59,19 @@ function readJournal(options: EntryMigration): Journal | undefined {
 }
 
 function bridge(options: EntryMigration, directory: boolean): void {
-  fs.symlinkSync(options.target, options.source, directory ? 'junction' : 'file')
+  if (directory) {
+    fs.symlinkSync(options.target, options.source, 'junction')
+    return
+  }
+  // A missing legacy alias must never block startup: on Windows a standard user
+  // cannot create file symlinks, and the migrated entry stays available at its
+  // new path either way.
+  if (createFileAlias(options.target, options.source) === 'none') {
+    console.warn('[startup] migration-legacy-alias-missing', {
+      path: options.source,
+      target: options.target,
+    })
+  }
 }
 
 function complete(journal: Journal): void {
@@ -103,7 +117,12 @@ function preserveRelativeLinks(directory: string): void {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
       }
-      fs.symlinkSync(`${dirname(path)}${sep}${target}`, temporary, directory ? 'dir' : 'file')
+      if (directory) {
+        fs.symlinkSync(`${dirname(path)}${sep}${target}`, temporary, 'dir')
+      } else if (createFileAlias(`${dirname(path)}${sep}${target}`, temporary) === 'none') {
+        console.warn('[startup] migration-relative-link-unavailable', { path })
+        continue
+      }
       fs.renameSync(temporary, path)
     }
   }
@@ -191,10 +210,6 @@ export function migrateWorkbenchDataEntry(options: EntryMigration): void {
     }
     fs.mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
     if (journal.directory) preserveRelativeLinks(source)
-    // Check link privileges before moving any data; never fall back to copying.
-    const probe = `${source}.migration-${randomUUID()}`
-    fs.symlinkSync(target, probe, journal.directory ? 'junction' : 'file')
-    fs.unlinkSync(probe)
     fs.renameSync(source, target)
   }
   if (!owns(target, journal)) throw new Error('Application data migration target identity changed')

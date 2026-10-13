@@ -54,6 +54,16 @@ metadata. A background Git operation removing a temporary lock file after
 enumeration therefore does not block startup. Unresolvable relative symlinks
 still block migration.
 
+## Legacy Aliases After Migration
+
+Migrated entries keep an alias at their legacy path: directory entries use a
+junction on Windows or a directory symlink, and file entries use a symbolic
+link. Windows only grants symbolic links to elevated or Developer Mode accounts,
+so a file falls back to a **hard link**, which any user can create on the same
+volume. When neither works, the desktop logs a warning and keeps starting, and
+that entry simply has no legacy alias. Retained historical artifacts such as
+attachments follow the same rule, so a failed alias never blocks startup.
+
 ## Automatic Cleanup and Retention
 
 Wework runs storage maintenance in the background immediately after launch and

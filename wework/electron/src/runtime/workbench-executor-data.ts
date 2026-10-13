@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { migrateWorkbenchDataEntry } from './workbench-data-migration.js'
+import { createFileAlias } from './workbench-link-alias.js'
 
 function exists(path: string): boolean {
   try {
@@ -145,8 +146,14 @@ function retainChildren(source: string, target: string, recurse: boolean): void 
     if (exists(newEntry)) {
       if (fs.realpathSync(newEntry) !== fs.realpathSync(oldEntry))
         throw new Error(`Historical artifact path conflict: ${newEntry}`)
-    } else {
-      fs.symlinkSync(oldEntry, newEntry, fs.statSync(oldEntry).isDirectory() ? 'junction' : 'file')
+    } else if (fs.statSync(oldEntry).isDirectory()) {
+      fs.symlinkSync(oldEntry, newEntry, 'junction')
+    } else if (createFileAlias(oldEntry, newEntry) === 'none') {
+      // The artifact stays readable at its legacy path; never block startup.
+      console.warn('[startup] historical-artifact-alias-missing', {
+        path: newEntry,
+        target: oldEntry,
+      })
     }
   }
 }

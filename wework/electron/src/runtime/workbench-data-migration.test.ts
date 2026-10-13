@@ -18,11 +18,17 @@ import {
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
-  return { ...actual, renameSync: vi.fn(actual.renameSync), symlinkSync: vi.fn(actual.symlinkSync) }
+  return {
+    ...actual,
+    linkSync: vi.fn(actual.linkSync),
+    renameSync: vi.fn(actual.renameSync),
+    symlinkSync: vi.fn(actual.symlinkSync),
+  }
 })
 const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
 let root: string
 beforeEach(() => {
+  vi.mocked(fs.linkSync).mockImplementation(actual.linkSync)
   vi.mocked(fs.renameSync).mockImplementation(actual.renameSync)
   vi.mocked(fs.symlinkSync).mockImplementation(actual.symlinkSync)
   root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), 'workbench-data-')))
@@ -41,6 +47,23 @@ function entry() {
     target: join(root, 'new/data'),
     journal: join(root, 'new/migrations/data.json'),
   }
+}
+
+function fileEntry(name: string) {
+  return {
+    source: join(root, 'old', name),
+    target: join(root, 'new', name),
+    journal: join(root, 'new/migrations', `${name}.json`),
+  }
+}
+
+/** Windows standard users cannot create file symlinks without Developer Mode. */
+function denyFileSymlinks() {
+  vi.mocked(fs.symlinkSync).mockImplementation((target, path, type) => {
+    if (type === 'file')
+      throw Object.assign(new Error('EPERM: operation not permitted, symlink'), { code: 'EPERM' })
+    return actual.symlinkSync(target, path, type)
+  })
 }
 
 test('moves a directory once and preserves internal, external and dangling links', () => {
@@ -198,6 +221,61 @@ test('recreates a completed file bridge after SQLite removes both sidecar entrie
   fs.unlinkSync(options.source)
   write(options.source, 'unmanaged')
   expect(() => migrateWorkbenchDataEntry(options)).toThrow('conflict')
+})
+
+test('moves a file to a hard-link alias when the platform denies symbolic links', () => {
+  const options = fileEntry('tasks.sqlite-wal')
+  write(options.source, 'wal contents')
+  denyFileSymlinks()
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    migrateWorkbenchDataEntry(options)
+    expect(fs.lstatSync(options.source).isSymbolicLink()).toBe(false)
+    expect(fs.readFileSync(options.source, 'utf8')).toBe('wal contents')
+    expect(fs.statSync(options.source).ino).toBe(fs.statSync(options.target).ino)
+    // A hard link keeps following the same inode, so later writes stay visible.
+    write(options.target, 'rotated')
+    expect(fs.readFileSync(options.source, 'utf8')).toBe('rotated')
+    expect(warn).not.toHaveBeenCalled()
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('moves a file without a legacy alias when the platform denies every link', () => {
+  const options = fileEntry('app-ipc.addr')
+  write(options.source, 'synthetic address')
+  denyFileSymlinks()
+  vi.mocked(fs.linkSync).mockImplementation((existing, path) => {
+    // Journal publication also uses link(2); only alias creation is denied.
+    if (path === options.journal) return actual.linkSync(existing, path)
+    throw new Error('link denied')
+  })
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    migrateWorkbenchDataEntry(options)
+    expect(fs.readFileSync(options.target, 'utf8')).toBe('synthetic address')
+    expect(fs.existsSync(options.source)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(
+      '[startup] migration-legacy-alias-missing',
+      expect.objectContaining({ path: options.source })
+    )
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('retains historical artifact files without file symlinks', () => {
+  const source = join(root, 'old')
+  const target = join(root, 'new')
+  const artifact = join(source, 'attachments', 'task', 'image.bin')
+  write(artifact, 'attachment bytes')
+  denyFileSymlinks()
+  migrateWorkbenchExecutorData(source, target, join(target, 'migrations'))
+  const retained = join(target, 'attachments', 'task', 'image.bin')
+  expect(fs.readFileSync(retained, 'utf8')).toBe('attachment bytes')
+  expect(fs.readFileSync(artifact, 'utf8')).toBe('attachment bytes')
+  expect(fs.statSync(retained).ino).toBe(fs.statSync(artifact).ino)
 })
 
 test('moves browser partitions, preferences, logs and updater cache before stores open', () => {

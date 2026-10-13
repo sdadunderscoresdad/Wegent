@@ -3,6 +3,7 @@ import { type BigIntStats } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { WorkbenchMigrationLockAdapter } from './workbench-migration-lock.js'
+import { createFileAlias } from './workbench-link-alias.js'
 
 export interface WorkbenchHomeMigrationOptions {
   acquireLock: WorkbenchMigrationLockAdapter
@@ -223,11 +224,17 @@ async function repairRelativeLinks(home: string, journal: MigrationJournal): Pro
       }
     } else {
       const target = await fs.stat(path)
-      await fs.symlink(
-        link.destination,
-        temporary,
-        target.isDirectory() ? (process.platform === 'win32' ? 'junction' : 'dir') : 'file'
-      )
+      if (target.isDirectory()) {
+        await fs.symlink(
+          link.destination,
+          temporary,
+          process.platform === 'win32' ? 'junction' : 'dir'
+        )
+      } else if (createFileAlias(link.destination, temporary) === 'none') {
+        // Keep the original relative link; an unrepaired link must not block startup.
+        console.warn('[startup] home-migration-relative-link-unavailable', { path })
+        continue
+      }
     }
     // Windows cannot replace a directory link with rename. The journal and
     // owned temporary link recover the gap if publication is interrupted.
