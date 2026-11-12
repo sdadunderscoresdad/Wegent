@@ -21,6 +21,9 @@ import {
 
 const MARKER = 'WEWORK_NATIVE_COLLABORATION_RECOVERY'
 const CONTROLLER = `${MARKER}_CONTROLLER`
+// This checkpoint starts real MCP servers and a child Codex turn. The shared
+// step budget is too short for that multi-stage native flow on loaded runners.
+const COLLABORATION_TIMEOUT_MS = 60_000
 const TOOLS = [
   'followup_task',
   'interrupt_agent',
@@ -150,7 +153,8 @@ export function createWorkbenchControlCollaboration({ uiTimeoutMs, findValue }) 
     },
     async verify(control, workspacePath) {
       active = true
-      const rpc = (method, params) => requestExecutor(control, method, params, uiTimeoutMs)
+      const timeoutMs = Math.max(uiTimeoutMs, COLLABORATION_TIMEOUT_MS)
+      const rpc = (method, params) => requestExecutor(control, method, params, timeoutMs)
       const model = (await rpc('runtime.runner.catalog', {})).models.find(
         model => model.runtime === 'codex' && model.is_default
       )
@@ -185,7 +189,7 @@ export function createWorkbenchControlCollaboration({ uiTimeoutMs, findValue }) 
           },
           value => value.running === false && value.status === 'done',
           'Native collaboration did not complete',
-          uiTimeoutMs
+          timeoutMs
         )
       try {
         const created = await rpc('runtime.tasks.create', {
@@ -220,7 +224,7 @@ export function createWorkbenchControlCollaboration({ uiTimeoutMs, findValue }) 
           () => rpc('runtime.codex.app_server.restart', { ifIdle: true }),
           value => value.restarted === true,
           'Native collaboration did not become idle for cold resume',
-          uiTimeoutMs
+          timeoutMs
         )
         phase = 'recovered'
         const controllerId = `native-collaboration-controller-${randomUUID()}`
