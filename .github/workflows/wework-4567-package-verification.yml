@@ -1,6 +1,9 @@
 name: Wework 4567 Package Verification
 
 on:
+  push:
+    branches:
+      - fix/wework-installed-source-snapshot-reuse-ci
   workflow_dispatch:
 
 permissions:
