@@ -29,11 +29,11 @@ jobs:
             --dir "$RUNNER_TEMP/packages/target" \
             --pattern 'release-macos-arm64.json' \
             --pattern 'WeWorkRelease_0.6.8-beta.6_macos_arm64.tar.gz'
-          gh release download wework-v0.6.7 \
+          gh release download wework-v0.6.8-beta.5 \
             --repo wecode-ai/Wegent \
             --dir "$RUNNER_TEMP/packages/source" \
             --pattern 'release-macos-arm64.json' \
-            --pattern 'WeWorkRelease_0.6.7_macos_arm64.tar.gz'
+            --pattern 'WeWorkRelease_0.6.8-beta.5_macos_arm64.tar.gz'
 
       - name: Verify the complete package transaction
         env:
@@ -41,7 +41,7 @@ jobs:
           WEWORK_E2E_REQUIRE_RELEASE_PACKAGE: "1"
           WEWORK_UPGRADE_DIAGNOSTIC_CHECKPOINT: upgrade-and-rollback
           WEWORK_UPGRADE_SOURCE_ASSETS: ${{ runner.temp }}/packages/source
-          WEWORK_UPGRADE_SOURCE_VERSION: 0.6.7
+          WEWORK_UPGRADE_SOURCE_VERSION: 0.6.8-beta.5
           WEWORK_UPGRADE_DIAGNOSTICS_DIR: ${{ runner.temp }}/diagnostics
         run: |
           set -euo pipefail
