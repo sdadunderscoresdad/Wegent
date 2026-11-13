@@ -37,6 +37,7 @@ jobs:
 
       - name: Verify the complete package transaction
         env:
+          GH_TOKEN: ${{ github.token }}
           CFFIXED_USER_HOME: ${{ runner.temp }}/wework-4567-home
           WEWORK_E2E_REQUIRE_RELEASE_PACKAGE: "1"
           WEWORK_UPGRADE_DIAGNOSTIC_CHECKPOINT: upgrade-and-rollback
