@@ -38,7 +38,6 @@ jobs:
       - name: Verify the complete package transaction
         env:
           GH_TOKEN: ${{ github.token }}
-          CFFIXED_USER_HOME: ${{ runner.temp }}/wework-4567-home
           WEWORK_E2E_REQUIRE_RELEASE_PACKAGE: "1"
           WEWORK_UPGRADE_DIAGNOSTIC_CHECKPOINT: upgrade-and-rollback
           WEWORK_UPGRADE_SOURCE_ASSETS: ${{ runner.temp }}/packages/source
@@ -46,16 +45,33 @@ jobs:
           WEWORK_UPGRADE_DIAGNOSTICS_DIR: ${{ runner.temp }}/diagnostics
         run: |
           set -euo pipefail
-          mkdir -p "$CFFIXED_USER_HOME"
+          status=0
           node wework/scripts/verify-release-upgrades.mjs \
             "${{ runner.temp }}/packages/target" \
-            macos arm64 stable wecode-ai/Wegent wework-v0.6.7
+            macos arm64 stable wecode-ai/Wegent wework-v0.6.7 || status=$?
+          if [[ "$status" -ne 0 ]]; then
+            while IFS= read -r file; do
+              echo "===== $file ====="
+              tail -n 200 "$file"
+            done < <(
+              find "$WEWORK_UPGRADE_DIAGNOSTICS_DIR" -type f \
+                \( -name 'failure*.json' -o -name 'failure*.txt' -o -name '*.log' -o \
+                   -name '*result.json' -o -name 'ui-snapshot.json' \) \
+                -size -5M -print | sort
+            )
+          fi
+          exit "$status"
 
       - name: Retain package verification diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wework-4567-package-verification
-          path: ${{ runner.temp }}/diagnostics/
+          path: |
+            ${{ runner.temp }}/diagnostics/**/*.log
+            ${{ runner.temp }}/diagnostics/**/*result.json
+            ${{ runner.temp }}/diagnostics/**/failure*.json
+            ${{ runner.temp }}/diagnostics/**/failure*.txt
+            ${{ runner.temp }}/diagnostics/**/ui-snapshot.json
           if-no-files-found: ignore
           retention-days: 3
