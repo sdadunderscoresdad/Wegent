@@ -1,0 +1,57 @@
+name: Wework 4567 Package Verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify packaged upgrade and rollback
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-workspace
+
+      - name: Download immutable release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/packages/target" "$RUNNER_TEMP/packages/source"
+          gh release download wework-v0.6.7 \
+            --repo wecode-ai/Wegent \
+            --dir "$RUNNER_TEMP/packages/target" \
+            --pattern 'release-macos-arm64.json' \
+            --pattern 'WeWorkRelease_0.6.7_macos_arm64.tar.gz'
+          gh release download wework-v0.6.6 \
+            --repo wecode-ai/Wegent \
+            --dir "$RUNNER_TEMP/packages/source" \
+            --pattern 'release-macos-arm64.json' \
+            --pattern 'WeWorkRelease_0.6.6_macos_arm64.tar.gz'
+
+      - name: Verify the complete package transaction
+        env:
+          CFFIXED_USER_HOME: ${{ runner.temp }}/wework-4567-home
+          WEWORK_E2E_REQUIRE_RELEASE_PACKAGE: "1"
+          WEWORK_UPGRADE_DIAGNOSTIC_CHECKPOINT: upgrade-and-rollback
+          WEWORK_UPGRADE_SOURCE_ASSETS: ${{ runner.temp }}/packages/source
+          WEWORK_UPGRADE_SOURCE_VERSION: 0.6.6
+          WEWORK_UPGRADE_DIAGNOSTICS_DIR: ${{ runner.temp }}/diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p "$CFFIXED_USER_HOME"
+          node wework/scripts/verify-release-upgrades.mjs \
+            "${{ runner.temp }}/packages/target" \
+            macos arm64 stable wecode-ai/Wegent wework-v0.6.7
+
+      - name: Retain package verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wework-4567-package-verification
+          path: ${{ runner.temp }}/diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
