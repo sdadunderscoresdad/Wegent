@@ -837,7 +837,7 @@ jobs:
         # Finish before the job deadline so failure logs and artifacts can upload.
         timeout-minutes: 55
         continue-on-error: true
-        shell: powershell
+        shell: pwsh
         env:
           CI: true
           WEWORK_E2E_APP_BIN: ${{ github.workspace }}/wework/electron/release/WeWork-win32-x64/WeWork.exe
@@ -851,6 +851,7 @@ jobs:
           WEWORK_E2E_SCREENSHOTS: ${{ contains(matrix.segments, 'harness-apps') && 'harness-milestones' || 'all' }}
           WEWORK_E2E_SEGMENTS: ${{ matrix.segments }}
         run: |
+          $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
           $pwshDirectories = @(
             Get-Command pwsh.exe -All -ErrorAction SilentlyContinue |
               ForEach-Object { Split-Path -Parent $_.Source } |
@@ -902,7 +903,8 @@ jobs:
             $env:WEWORK_E2E_SEGMENTS
           )
           $nodePath = (Get-Command node).Source
-          & ./.github/scripts/run-windows-standard-user-process.ps1 `
+          $runnerScript = (Resolve-Path ./.github/scripts/run-windows-standard-user-process.ps1).Path
+          & $pwshPath -NoProfile -NonInteractive -File $runnerScript `
             -FilePath $nodePath `
             @arguments
 
