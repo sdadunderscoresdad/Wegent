@@ -15,7 +15,6 @@ jobs:
     env:
       CI: "true"
       WEWORK_EXECUTOR_PROFILE: debug
-      WEWORK_EXECUTOR_TARGET_DIR: ${{ runner.temp }}/startup-executor
       STARTUP_BASE: 16201e4d48cd0c8d55477d64624e0e471d658e72
       STARTUP_CANDIDATE: 3f589aa9250896835784545a156f12f6324bf903
     steps:
@@ -39,6 +38,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8f
       - name: Build the exact baseline and PR packages
         shell: bash
+        env:
+          WEWORK_EXECUTOR_TARGET_DIR: ${{ runner.temp }}/startup-executor
         run: |
           set -euo pipefail
           for variant in baseline candidate; do
