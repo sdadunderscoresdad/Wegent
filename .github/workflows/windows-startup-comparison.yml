@@ -1,0 +1,70 @@
+name: Windows startup comparison
+
+on:
+  push:
+    branches:
+      - diagnostic/wework-4537-windows-startup-ab
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: windows-latest
+    timeout-minutes: 110
+    env:
+      CI: "true"
+      WEWORK_EXECUTOR_PROFILE: debug
+      WEWORK_EXECUTOR_TARGET_DIR: ${{ runner.temp }}/startup-executor
+      STARTUP_BASE: 16201e4d48cd0c8d55477d64624e0e471d658e72
+      STARTUP_CANDIDATE: 3f589aa9250896835784545a156f12f6324bf903
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.STARTUP_BASE }}
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.STARTUP_CANDIDATE }}
+          path: candidate
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8f
+      - name: Build the exact baseline and PR packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in baseline candidate; do
+            if [[ "$variant" == baseline ]]; then
+              expected="$STARTUP_BASE"
+            else
+              expected="$STARTUP_CANDIDATE"
+            fi
+            (
+              cd "$variant"
+              test "$(git rev-parse HEAD)" = "$expected"
+              pnpm install --frozen-lockfile
+              WEWORK_SOURCE_SHA="$expected" pnpm --filter wework ai:verify:electron:build
+              test -f wework/electron/release/WeWork-win32-x64/WeWork.exe
+            )
+          done
+      - name: Compare packaged startup in one standard-user session
+        shell: pwsh
+        run: |
+          & ./.github/scripts/run-windows-standard-user-process.ps1 `
+            -FilePath (Get-Command node).Source `
+            'wework/e2e/desktop/windows-startup-comparison.mjs' $env:STARTUP_BASE $env:STARTUP_CANDIDATE
+      - name: Keep timing samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-startup-comparison
+          path: .ci-artifacts/windows-startup-comparison.json
+          if-no-files-found: ignore
