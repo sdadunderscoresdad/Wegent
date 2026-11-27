@@ -1,0 +1,79 @@
+name: Wework Windows installer PR 5040
+
+on:
+  push:
+    branches: [test/wework-windows-installer-5040]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  installer:
+    if: github.repository == 'sdadunderscoresdad/Wegent'
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      PR_HEAD: ab84dda9f8245d9739bb5824fe2f45100852d37f
+      SOURCE_VERSION: 0.6.5
+      TARGET_VERSION: 0.6.6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45932319135
+          name: upgrade-regression-windows-x64-target
+          path: ${{ runner.temp }}/wework-target
+      - name: Build an NSIS installer around the verified PR application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $target = Join-Path $env:RUNNER_TEMP 'wework-target'
+          $manifest = Get-Content (Join-Path $target 'release.json') -Raw | ConvertFrom-Json
+          if ($manifest.sourceSha -cne $env:PR_HEAD -or $manifest.version -cne $env:TARGET_VERSION -or
+              $manifest.platform -cne 'windows' -or $manifest.arch -cne 'x64') {
+            throw 'Artifact does not identify the Windows package of the requested PR head'
+          }
+          $archive = Join-Path $target "WeWorkRelease_${env:TARGET_VERSION}_windows_x64.tar.gz"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ine $manifest.sha256 -or
+              (Get-Item $archive).Length -ne $manifest.bytes) {
+            throw 'Packaged application archive differs from its manifest'
+          }
+          New-Item -ItemType Directory (Join-Path $target 'unpacked') | Out-Null
+          tar.exe -xzf $archive -C (Join-Path $target 'unpacked')
+          pnpm --dir wework/electron install --frozen-lockfile --ignore-scripts
+          node wework/scripts/sync-desktop-release-version.mjs $env:TARGET_VERSION
+          pnpm --dir wework/electron exec electron-builder --config electron-builder.config.cjs --win nsis --x64 --publish never --prepackaged (Join-Path $target 'unpacked/application')
+      - name: Download the published source installer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $name = "WeWork_${env:SOURCE_VERSION}_windows_x64-setup.exe"
+          gh release download "wework-v$env:SOURCE_VERSION" --repo wecode-ai/Wegent --pattern $name --dir $env:RUNNER_TEMP
+          if ((Get-FileHash (Join-Path $env:RUNNER_TEMP $name) -Algorithm SHA256).Hash -ine
+              '91c06539e0a471ee7e50ff5a7ef36dddde207277aa4d4f85983cc24cd5ac41ef') {
+            throw 'Published 0.6.5 installer checksum differs'
+          }
+      - name: Verify overwrite installation and shortcut relaunch
+        shell: pwsh
+        run: |
+          ./.github/scripts/verify-wework-windows-installer-5040.ps1
+      - name: Retain installer verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-5040-evidence
+          path: ${{ runner.temp }}/wework-installer-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
